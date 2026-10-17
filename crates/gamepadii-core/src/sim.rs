@@ -49,13 +49,25 @@ struct State {
     user: Option<UserAction>,
     /// Comes back from a gamepad reboot as this, whatever is saved.
     come_back_as: Option<InputMode>,
-    /// Never comes back after a reboot.
-    stays_away: bool,
+    /// Reboots so far (HTTP or the channel).
+    reboots: usize,
+    /// Never comes back from this reboot (1 is the first) on.
+    away_from: Option<usize>,
+    /// The web configurator never answers (the network didn't come up).
+    server_down: bool,
     scans: usize,
     /// What answers on EP0.
     channel: SimChannel,
     /// Opening the device node fails with `EACCES` (no udev rule).
     no_access: bool,
+}
+
+impl State {
+    /// Counts a reboot; whether the pad comes back from it.
+    fn comes_back(&mut self) -> bool {
+        self.reboots += 1;
+        self.away_from.is_none_or(|n| self.reboots < n)
+    }
 }
 
 /// How many scans a reboot keeps the pad off USB.
@@ -83,7 +95,9 @@ impl SimPad {
                 scans_in_mode: 0,
                 user: None,
                 come_back_as: None,
-                stays_away: false,
+                reboots: 0,
+                away_from: None,
+                server_down: false,
                 scans: 0,
                 channel: SimChannel::stock(Some(mode)),
                 no_access: false,
@@ -104,7 +118,18 @@ impl SimPad {
 
     /// After a reboot it never re-enumerates.
     pub fn stays_away(self) -> Self {
-        self.lock().stays_away = true;
+        self.stays_away_after(0)
+    }
+
+    /// Comes back from the first `n` reboots, never from the next.
+    pub fn stays_away_after(self, n: usize) -> Self {
+        self.lock().away_from = Some(n + 1);
+        self
+    }
+
+    /// In web-config its server never answers.
+    pub fn server_down(self) -> Self {
+        self.lock().server_down = true;
         self
     }
 
@@ -175,7 +200,7 @@ impl SimPad {
     /// A client for its server; fails unless it is in web-config, like a
     /// pad whose network interface isn't up.
     pub fn open(self: &Arc<Self>) -> Result<Client> {
-        if self.mode() != Some(InputMode::Webconfig) {
+        if self.mode() != Some(InputMode::Webconfig) || self.lock().server_down {
             return Err(Error::io(
                 "GET http://192.168.7.1/api/getFirmwareVersion",
                 std::io::Error::new(std::io::ErrorKind::NotConnected, "no route (sim)"),
@@ -217,7 +242,7 @@ impl SimPad {
                 _ => s.come_back_as.unwrap_or(saved),
             };
             s.mode = None;
-            s.coming_back = (!s.stays_away).then_some((OFF_USB_SCANS, next));
+            s.coming_back = s.comes_back().then_some((OFF_USB_SCANS, next));
             return;
         }
         if let Some((left, next)) = s.coming_back {
@@ -370,7 +395,7 @@ impl ControlTransport for SimControl {
                     InputMode::from_proto(s.channel.saved_mode.into()).unwrap_or(InputMode::Xinput);
                 let next = reboot_target(s, saved, mode);
                 s.mode = None;
-                s.coming_back = (!s.stays_away).then_some((OFF_USB_SCANS, next));
+                s.coming_back = s.comes_back().then_some((OFF_USB_SCANS, next));
             }
             Ok(())
         })

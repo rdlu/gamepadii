@@ -1302,3 +1302,257 @@ fn without_the_channel_hints_use_the_recorded_profile() {
         "{msg}"
     );
 }
+
+// ---- info and backup through web-config -------------------------------------
+
+type Read = (gamepadii_core::commands::Info, Option<flow::Trip>);
+
+fn info_trip(rig: &Rig, stay: bool, log: &mut Log) -> gamepadii_core::Result<Read> {
+    rig.run(|env| {
+        flow::through_webconfig(env, stay, log, gamepadii_core::commands::info, |_| {
+            "the pad was read".to_string()
+        })
+    })
+}
+
+fn reboots(rig: &Rig) -> Vec<Value> {
+    rig.pad
+        .mock()
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == "/api/reboot")
+        .map(|r| r.json())
+        .collect()
+}
+
+#[test]
+fn info_from_xinput_goes_to_web_config_and_back() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let mut log = Log::default();
+    let (info, trip) = info_trip(&rig, false, &mut log).unwrap();
+    assert_eq!(info.firmware.version.as_deref(), Some("v0.7.12"));
+    let t = trip.unwrap();
+    assert_eq!(t.via, flow::Route::Control);
+    assert_eq!(t.host, "/dev/bus/usb/003/007");
+    assert_eq!(t.before.mode, Some(InputMode::Xinput));
+    assert_eq!(t.profile, Some(2));
+    assert_eq!(t.back_via, Some(flow::Route::WebConfig));
+    let after = t.after.unwrap();
+    assert_eq!(after.mode, Some(InputMode::Xinput));
+    assert_eq!(
+        after.confidence,
+        gamepadii_core::mode::Confidence::Confirmed
+    );
+    assert!(t.verified && !t.stayed);
+    assert_eq!(t.note, None);
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+    // REBOOT(1) on the channel, then /api/reboot {"bootMode": 0}; no write.
+    assert_eq!(rig.channel_commands(), [0x11]);
+    assert_eq!(reboots(&rig), [serde_json::json!({"bootMode": 0})]);
+    assert!(rig.writes().is_empty());
+    assert_eq!(log.other, ["rebooting webconfig", "rebooting gamepad"]);
+    assert!(log.guides.is_empty(), "no button press");
+}
+
+#[test]
+fn backup_from_keyboard_goes_to_web_config_and_back() {
+    // A pad in Keyboard has Keyboard saved.
+    let mock = Mock::new(s16_dir());
+    let mut o = mock.current("getGamepadOptions").unwrap();
+    o["inputMode"] = 3.into();
+    mock.store("getGamepadOptions", o);
+    let rig = Rig::new(SimPad::with_mock(mock, InputMode::Keyboard).with_channel());
+    let out = rig.dirs.path().join("b.json");
+    let (report, trip) = rig
+        .run(|env| {
+            flow::through_webconfig(
+                env,
+                false,
+                &mut Log::default(),
+                |c| gamepadii_core::commands::backup(c, Some(&out), env.clock.wall()),
+                |b| format!("the backup is saved in {}", b.path.display()),
+            )
+        })
+        .unwrap();
+    assert_eq!(report.endpoints.len(), 21);
+    assert!(out.exists());
+    assert!(trip.unwrap().verified);
+    assert_eq!(rig.pad.mode(), Some(InputMode::Keyboard));
+}
+
+#[test]
+fn stay_leaves_it_in_web_config() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let (_, trip) = info_trip(&rig, true, &mut Log::default()).unwrap();
+    let t = trip.unwrap();
+    assert!(t.stayed);
+    assert_eq!(t.back_via, None);
+    assert_eq!(t.after, None);
+    assert!(t.note.unwrap().contains("gamepadii webconfig --exit"));
+    assert_eq!(rig.pad.mode(), Some(InputMode::Webconfig));
+    assert!(reboots(&rig).is_empty());
+}
+
+#[test]
+fn in_web_config_there_is_no_trip() {
+    let rig = Rig::cc(InputMode::Webconfig);
+    let (_, trip) = info_trip(&rig, false, &mut Log::default()).unwrap();
+    assert_eq!(trip, None);
+    assert!(rig.pad.control_log().is_empty(), "no probe in web-config");
+    assert!(reboots(&rig).is_empty());
+}
+
+#[test]
+fn without_the_channel_info_needs_the_user_as_before() {
+    let rig = Rig::s16(InputMode::Xinput);
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    let msg = err.to_string();
+    assert!(msg.contains("XInput mode, not web-config"), "{msg}");
+    assert!(msg.contains("S2+B3+B4 for 4 seconds"), "{msg}");
+    assert!(rig.requests().is_empty());
+    // A pad known to have the channel, with no permission: the udev hint too.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .no_access(),
+    )
+    .knows_the_channel();
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    assert!(err.to_string().contains("gamepadii setup udev"), "{err}");
+    // BOOTSEL: the boot ROM has no channel.
+    let rig = Rig::cc(InputMode::Bootsel);
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+}
+
+#[test]
+fn a_failed_read_still_sends_the_pad_back() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let err = rig
+        .run(|env| {
+            flow::through_webconfig(
+                env,
+                false,
+                &mut Log::default(),
+                |_| -> gamepadii_core::Result<()> {
+                    Err(gamepadii_core::Error::io(
+                        "GET http://192.168.7.1/api/getPinMappings",
+                        std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"),
+                    ))
+                },
+                |_| unreachable!(),
+            )
+        })
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    assert_eq!(
+        err.to_string(),
+        "in web-config: GET http://192.168.7.1/api/getPinMappings: timed out; the pad \
+         was sent back and is in XInput mode again"
+    );
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+    assert_eq!(reboots(&rig), [serde_json::json!({"bootMode": 0})]);
+}
+
+#[test]
+fn a_silent_web_configurator_sends_it_back_over_the_channel() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .server_down(),
+    );
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    let msg = err.to_string();
+    assert!(
+        msg.starts_with("the pad is in web-config, but its web configurator didn't answer"),
+        "{msg}"
+    );
+    assert!(
+        msg.ends_with("; the pad was sent back and is in XInput mode again"),
+        "{msg}"
+    );
+    // REBOOT(1) from XInput, REBOOT(0) from web-config: the channel
+    // answers there too.
+    assert_eq!(rig.channel_commands(), [0x11, 0x11]);
+    assert!(reboots(&rig).is_empty());
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+}
+
+#[test]
+fn a_pad_lost_on_the_way_there() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .stays_away(),
+    );
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    let msg = err.to_string();
+    assert!(msg.contains("asked for web-config"), "{msg}");
+    assert!(msg.contains("nothing was read"), "{msg}");
+    assert!(msg.contains("`gamepadii reboot gamepad`"), "{msg}");
+}
+
+#[test]
+fn a_pad_lost_on_the_way_back() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .stays_away_after(1),
+    );
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    assert_eq!(
+        err.to_string(),
+        "the pad was read, but on the way back: asked for XInput and the pad \
+         was rebooted: it hasn't come back on USB after 10 s"
+    );
+}
+
+#[test]
+fn coming_back_in_another_mode_fails_the_check() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .come_back_as(InputMode::Ps3),
+    );
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::CHECK_FAILED);
+    assert_eq!(
+        err.to_string(),
+        "check failed: the pad was read, but on the way back: the pad came \
+         back as PS3 (054c:0268), not XInput"
+    );
+}
+
+#[test]
+fn a_locked_web_config_changes_nothing() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| c.forced_setup = 2),
+    );
+    let err = info_trip(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(err.exit_code(), exit::USAGE);
+    assert!(err.to_string().contains("locks web-config"), "{err}");
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+}
+
+#[test]
+fn the_trip_drops_a_ram_only_profile_and_says_so() {
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "3", false).unwrap();
+    let (_, trip) = info_trip(&rig, false, &mut Log::default()).unwrap();
+    let note = trip.unwrap().note.unwrap();
+    assert!(
+        note.contains(
+            "it ran profile 3 before, not saved; the restart put it back on its saved profile 2"
+        ),
+        "{note}"
+    );
+    assert_eq!(rig.pad.firmware().active, 2);
+    assert_eq!(cached(&rig).active_profile(), Some(2));
+}

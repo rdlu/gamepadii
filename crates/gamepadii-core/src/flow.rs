@@ -1,8 +1,10 @@
-//! The guided flows: `mode`, `webconfig`, `reboot` with a wait, and
-//! `profile switch`. They poll USB through a [`Scan`] and time through a
-//! [`Clock`], open the web-config client and the control channel through
-//! closures, and report progress through a [`Progress`], so every branch
-//! runs in tests against a simulated pad with no real sleeps.
+//! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
+//! switch`, and the trip through web-config that `info` and `backup` take
+//! from a gamepad mode ([`through_webconfig`]). They poll USB through a
+//! [`Scan`] and time through a [`Clock`], open the web-config client and
+//! the control channel through closures, and report progress through a
+//! [`Progress`], so every branch runs in tests against a simulated pad
+//! with no real sleeps.
 //!
 //! In a gamepad mode the flows first send HELLO on the control channel
 //! (`crate::channel`). When the firmware answers, they switch the mode or
@@ -1410,6 +1412,299 @@ fn watch_reboot(
         }
     }
     Ok(report)
+}
+
+/// How `info` or `backup` got a pad in a gamepad mode into web-config, and
+/// back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Trip {
+    /// Always `control`: REBOOT into web-config on the control channel.
+    pub via: Route,
+    /// The device node it went through.
+    pub host: String,
+    /// What the pad was in before.
+    pub before: Seen,
+    /// The profile it ran before (from STATUS).
+    pub profile: Option<u8>,
+    /// `--stay`: it was left in web-config.
+    pub stayed: bool,
+    /// How it was sent back: `web_config` (`/api/reboot {"bootMode":0}`), or
+    /// `control` (REBOOT on the channel, when the web configurator didn't
+    /// answer); `null` with `--stay`.
+    pub back_via: Option<Route>,
+    /// How it came back; `null` with `--stay` or custom USB ids.
+    pub after: Option<Seen>,
+    /// Whether it came back in the mode it was in.
+    pub verified: bool,
+    pub note: Option<String>,
+}
+
+/// `e` with `prefix` in front of its message, same kind and exit code.
+fn prefixed(e: Error, prefix: &str) -> Error {
+    match e {
+        Error::Io { context, source } => Error::io(format!("{prefix}: {context}"), source),
+        Error::NotFound(m) => Error::NotFound(format!("{prefix}: {m}")),
+        Error::Usage(m) => Error::Usage(format!("{prefix}: {m}")),
+        Error::Protocol(m) => Error::Protocol(format!("{prefix}: {m}")),
+        Error::NeedsUser(m) => Error::NeedsUser(format!("{prefix}: {m}")),
+        Error::CheckFailed(m) => Error::CheckFailed(format!("{prefix}: {m}")),
+    }
+}
+
+/// `e` with `suffix` after its message, same kind and exit code.
+fn suffixed(e: Error, suffix: &str) -> Error {
+    match e {
+        Error::Io { context, source } => Error::io(
+            context,
+            std::io::Error::new(source.kind(), format!("{source}{suffix}")),
+        ),
+        Error::NotFound(m) => Error::NotFound(format!("{m}{suffix}")),
+        Error::Usage(m) => Error::Usage(format!("{m}{suffix}")),
+        Error::Protocol(m) => Error::Protocol(format!("{m}{suffix}")),
+        Error::NeedsUser(m) => Error::NeedsUser(format!("{m}{suffix}")),
+        Error::CheckFailed(m) => Error::CheckFailed(format!("{m}{suffix}")),
+    }
+}
+
+/// Runs `work` against the pad's web configurator: `info` and `backup`.
+///
+/// In web-config that is all (`null` trip). In a gamepad mode with the
+/// control channel, it reboots the pad into web-config first (REBOOT),
+/// waits for `cafe:4028` and the HTTP server, runs `work`, then reboots it
+/// back (`/api/reboot {"bootMode":0}`) and checks it returns in the mode it
+/// was in, unless `stay`. Whatever fails on the way, it still tries to send
+/// the pad back, and says how that went. `done` says what `work` achieved,
+/// for an error on the way back. Without the channel it is
+/// [`Error::NeedsUser`] with how to switch, as before.
+pub fn through_webconfig<T>(
+    env: &Env,
+    stay: bool,
+    progress: &mut dyn Progress,
+    work: impl FnOnce(&Client) -> Result<T>,
+    done: impl FnOnce(&T) -> String,
+) -> Result<(T, Option<Trip>)> {
+    let pad = pick(env.scan.scan())?;
+    if pad.mode == Some(InputMode::Webconfig) {
+        let client = (env.open)()?;
+        return work(&client).map(|r| (r, None));
+    }
+    let probed = if in_gamepad_mode(&pad) {
+        channel(env, &pad)
+    } else {
+        Probed::default()
+    };
+    let Some(ch) = probed.ch.as_ref().filter(|c| c.caps().has(Caps::REBOOT)) else {
+        return Err(not_in_webconfig(&pad, probed.hint));
+    };
+    let before = match &probed.status {
+        Some(st) => confirmed(&pad, running(st)),
+        None => (&pad).into(),
+    };
+    let mut trip = Trip {
+        via: Route::Control,
+        host: ch.node(),
+        before,
+        profile: probed.profile(),
+        stayed: stay,
+        back_via: None,
+        after: None,
+        verified: false,
+        note: None,
+    };
+    progress.step(Step::Rebooting(BootMode::Webconfig));
+    ch.reboot(BootMode::Webconfig)?;
+    commands::remember_restart(env.cache_dir.as_deref(), &probed.firmware);
+    let wc = wait_reenumerated(
+        env,
+        &pad,
+        env.timeouts.reboot,
+        Awaiting::Reboot(BootMode::Webconfig),
+        progress,
+        |d| d.mode == Some(InputMode::Webconfig),
+    )
+    .ok_or_else(|| {
+        suffixed(
+            not_back(env.timeouts.reboot, "asked for web-config"),
+            "; nothing was read. If it shows up in web-config later, \
+             `gamepadii reboot gamepad` sends it back",
+        )
+    })?;
+    let client = match connect_ready(env, progress) {
+        Ok(c) => c,
+        Err(e) => {
+            let e = prefixed(
+                e,
+                "the pad is in web-config, but its web configurator didn't answer",
+            );
+            return Err(back_after(
+                env,
+                &wc,
+                None,
+                &probed.firmware,
+                &mut trip,
+                e,
+                progress,
+            ));
+        }
+    };
+    let result = match work(&client) {
+        Ok(r) => r,
+        Err(e) => {
+            let e = prefixed(e, "in web-config");
+            return Err(back_after(
+                env,
+                &wc,
+                Some(&client),
+                &probed.firmware,
+                &mut trip,
+                e,
+                progress,
+            ));
+        }
+    };
+    if stay {
+        trip.note = Some(format!(
+            "left in web-config at {}; leave it with: gamepadii webconfig --exit",
+            env.url
+        ));
+        return Ok((result, Some(trip)));
+    }
+    match go_back(
+        env,
+        &wc,
+        Some(&client),
+        &probed.firmware,
+        &mut trip,
+        progress,
+    ) {
+        Ok(()) => Ok((result, Some(trip))),
+        Err(e) => Err(prefixed(
+            e,
+            &format!("{}, but on the way back", done(&result)),
+        )),
+    }
+}
+
+/// After `e` in web-config: sends the pad back and returns `e`, saying
+/// whether that worked.
+fn back_after(
+    env: &Env,
+    wc: &Device,
+    client: Option<&Client>,
+    fw: &Firmware,
+    trip: &mut Trip,
+    e: Error,
+    progress: &mut dyn Progress,
+) -> Error {
+    let was = trip.before.label();
+    match go_back(env, wc, client, fw, trip, progress) {
+        Ok(()) => suffixed(
+            e,
+            &format!("; the pad was sent back and is in {was} mode again"),
+        ),
+        Err(back) => suffixed(
+            e,
+            &format!(
+                "; sending the pad back to {was} failed too ({back}); \
+                 `gamepadii reboot gamepad` tries again"
+            ),
+        ),
+    }
+}
+
+/// Reboots the pad in web-config (`wc`) back into gamepad mode: over HTTP,
+/// or over the channel (which answers in web-config too) when HTTP fails.
+/// Then checks it came back as `trip.before`.
+fn go_back(
+    env: &Env,
+    wc: &Device,
+    client: Option<&Client>,
+    fw: &Firmware,
+    trip: &mut Trip,
+    progress: &mut dyn Progress,
+) -> Result<()> {
+    let options = client.and_then(|c| api::gamepad_options(c.transport()).ok());
+    progress.step(Step::Rebooting(BootMode::Gamepad));
+    let http = client.map(|c| api::reboot(c.transport(), BootMode::Gamepad));
+    let via = match http {
+        Some(Ok(_)) => Route::WebConfig,
+        failed => {
+            let http_err = failed.and_then(Result::err);
+            match channel_after_reboot(env, wc).filter(|c| c.caps().has(Caps::REBOOT)) {
+                Some(ch) => {
+                    ch.reboot(BootMode::Gamepad)?;
+                    Route::Control
+                }
+                None => {
+                    return Err(http_err.unwrap_or_else(|| {
+                        Error::Protocol(
+                            "neither the web configurator nor the control channel answers \
+                             in web-config"
+                                .into(),
+                        )
+                    }));
+                }
+            }
+        }
+    };
+    trip.back_via = Some(via);
+    commands::remember_restart(env.cache_dir.as_deref(), fw);
+    let was = trip.before.mode;
+    let custom = options
+        .or_else(|| cached_options(env))
+        .zip(was)
+        .and_then(|(o, m)| custom_ids(&o, m));
+    if let Some(ids) = custom {
+        trip.note = Some(format!(
+            "usbOverrideID is on, so it comes back as {ids}, which gamepadii can't \
+             recognise; not verified"
+        ));
+        return Ok(());
+    }
+    let label = trip.before.label();
+    let got = wait_reenumerated(
+        env,
+        wc,
+        env.timeouts.reboot,
+        Awaiting::Reboot(BootMode::Gamepad),
+        progress,
+        in_gamepad_mode,
+    )
+    .ok_or_else(|| not_back(env.timeouts.reboot, &format!("asked for {label}")))?;
+    trip.after = Some((&got).into());
+    if let Some(m) = was
+        && !shows(m, &got)
+    {
+        return Err(Error::CheckFailed(format!(
+            "the pad came back as {} ({}), not {label}",
+            Seen::from(&got).label(),
+            got.usb_id()
+        )));
+    }
+    if let Some(ch) = channel_after_reboot(env, &got) {
+        let st = ch.status()?;
+        let dir = env.cache_dir.as_deref();
+        let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+        let now = running(&st);
+        if was.is_some() && now != was {
+            return Err(Error::CheckFailed(format!(
+                "the pad came back, but says it runs {}, not {label}",
+                now.map_or("an unknown mode", InputMode::label)
+            )));
+        }
+        trip.after = Some(confirmed(&got, now));
+        if let Some(p) = trip.profile.filter(|p| *p != st.profile) {
+            trip.note = Some(format!(
+                "it ran profile {p} before, not saved; the restart put it back on its \
+                 saved profile {} (`gamepadii profile switch {p}` switches again)",
+                st.profile
+            ));
+        }
+    } else {
+        trip.note = got.note.clone();
+    }
+    trip.verified = was.is_some();
+    Ok(())
 }
 
 /// Which profile `profile switch` goes to.
