@@ -81,9 +81,10 @@ which writes `inputMode`. Live tests that reboot or write skip unless
 
 ## Git
 
-The MVP (through milestone 3) lands on `main`. After that: feature branches
-(`feat/…`, `fix/…`, `docs/…`), an open PR per change, Conventional Commits
-with scopes, `main` protected — never commit to `main` directly.
+Until TUI work starts, commit straight to `main` (the MVP and the firmware
+spikes). From the first TUI change on: feature branches (`feat/…`, `fix/…`,
+`docs/…`), an open PR per change, Conventional Commits with scopes, and `main`
+protected by a ruleset. Never commit to `main` directly after that point.
 
 ## References
 
