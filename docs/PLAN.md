@@ -169,6 +169,21 @@ crates/gamepadii/src/
 7. **PICOBOOT transport**: offline backup/restore and mode change with no
    web-config.
 8. **Host remapper**: evdev → uinput, with per-app profiles.
+8b. **Firmware fork: fixes and a control channel.** Build the Haute42COSMOX
+   UF2 from `~/Projects/GP2040-CE` (pico-sdk 2.1.1, arm-none-eabi-gcc from
+   pacman).
+   - First, the two freeze fixes from branch `gamepadii/freeze-investigation`.
+   - Then a gamepadii control channel: USB vendor control requests on EP0,
+     caught in `tud_vendor_control_xfer_cb` (`src/usbdriver.cpp:66`) before
+     the active driver sees them. That needs no descriptor change, so consoles
+     don't notice. It provides status, live profile switching, setting the
+     input mode with a reboot, rebooting into web-config or BOOTSEL, and later
+     reading and writing config sections as protobuf.
+   - It is off unless enabled in config. gamepadii detects it and otherwise
+     falls back to stock web-config.
+   - Upstream gets it first: open the freeze issues, then a design discussion
+     for the channel. If upstream declines, we keep our own fork; the firmware
+     changes slowly, so carrying a fork is cheap.
 9. **Site and release**: the Hugo + Hextra docs site, release binaries, AUR.
 10. **Tauri GUI** on top of `gamepadii-core`.
 
