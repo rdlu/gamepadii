@@ -86,6 +86,28 @@ channel       control channel v1.0 on /dev/bus/usb/003/007
           4,
           5
         ],
+        "profiles": [
+          {
+            "number": 1,
+            "label": "Default"
+          },
+          {
+            "number": 2,
+            "label": "SilkSong"
+          },
+          {
+            "number": 3,
+            "label": "Celeste"
+          },
+          {
+            "number": 4,
+            "label": "DKC"
+          },
+          {
+            "number": 5,
+            "label": "TGX"
+          }
+        ],
         "profile_pending": false,
         "forced_setup": 0,
         "uptime_ms": 1002

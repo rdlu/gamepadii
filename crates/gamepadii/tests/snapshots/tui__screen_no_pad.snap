@@ -1,0 +1,34 @@
+---
+source: crates/gamepadii/tests/tui.rs
+expression: "render(&mut no_pad(), 100, 30)"
+---
+ gamepadii GP2040-CE pads                                                              watching USB
+┌ Pad ─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ not found: no GP2040-CE device on USB (is it plugged in?)                                        │
+│ watching USB: plug the pad in and it shows up here                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Input mode ────────────────────────────────────┐┌ Profile ───────────────────────────────────────┐
+│▶ XInput                                        ││                                                │
+│  Nintendo Switch                               ││                                                │
+│  PS3                                           ││                                                │
+│  Keyboard                                      ││                                                │
+│  PS4                                           ││                                                │
+│  Xbox One                                      ││                                                │
+│  Sega Genesis/MegaDrive Mini                   ││                                                │
+│  NEOGEO mini                                   ││                                                │
+│  PC Engine/Turbografx 16 Mini                  ││                                                │
+│  EGRET II mini                                 ││                                                │
+│  ASTROCITY Mini                                ││                                                │
+│  Playstation Classic                           ││                                                │
+│  Original Xbox                                 ││                                                │
+│  PS5                                           ││                                                │
+│  Generic HID                                   ││                                                │
+│  Nintendo Switch Pro                           ││                                                │
+│  P5General                                     ││                                                │
+│  SInput                                        ││                                                │
+│  Nintendo Switch 2 Pro                         ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Last result ─────────────────────────────────────────────────────────────────────────────────────┐
+│ nothing done yet                                                                                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                 ⏎ switch  S save  w web-config  b backup  r refresh  ? help  q quit

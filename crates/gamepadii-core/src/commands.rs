@@ -14,6 +14,7 @@ use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
 use crate::discovery::{Device, Scan};
+use crate::display;
 use crate::error::{Error, Result};
 use crate::mode::Confidence;
 use crate::mode::{BootMode, InputMode};
@@ -194,6 +195,9 @@ pub struct ChannelReport {
     pub input_mode: ModeSetting,
     pub active_profile: ProfileName,
     pub enabled_profiles: Vec<u8>,
+    /// The enabled profiles with their labels (`null` labels without the
+    /// STRING capability), for a profile picker.
+    pub profiles: Vec<ProfileName>,
     /// A profile switch the main loop hasn't applied yet.
     pub profile_pending: bool,
     /// `forcedSetupOptions.mode`: 1 locks mode switching, 2 web-config, 3
@@ -209,6 +213,20 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
     let string =
         |id| -> Result<Option<String>> { if has_strings { ch.string(id) } else { Ok(None) } };
     let h = ch.hello();
+    let mut profiles = Vec::new();
+    for number in st.enabled() {
+        profiles.push(ProfileName {
+            number,
+            label: string(proto::string::profile_label(number))?,
+        });
+    }
+    let active_profile = match profiles.iter().find(|p| p.number == st.profile) {
+        Some(p) => p.clone(),
+        None => ProfileName {
+            number: st.profile,
+            label: string(proto::string::profile_label(st.profile))?,
+        },
+    };
     Ok(ChannelReport {
         node: ch.node(),
         protocol: format!("{}.{}", h.major, h.minor),
@@ -224,11 +242,9 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
             file_name: None,
         },
         input_mode: ModeSetting::new(Some(i64::from(st.input_mode))),
-        active_profile: ProfileName {
-            number: st.profile,
-            label: string(proto::string::profile_label(st.profile))?,
-        },
+        active_profile,
         enabled_profiles: st.enabled(),
+        profiles,
         profile_pending: st.pending(),
         forced_setup: st.forced_setup,
         uptime_ms: st.uptime_ms,
@@ -361,6 +377,11 @@ pub struct Info {
     pub running_profile: Option<u8>,
     pub profiles: Vec<Profile>,
     pub boot_buttons: Vec<BootButton>,
+    /// The OLED's button layout; `null` when the firmware has no
+    /// `getDisplayOptions`.
+    pub display_layout: Option<display::Current>,
+    /// Suggestions for the user (the OLED layout, for now).
+    pub hints: Vec<String>,
 }
 
 impl Info {
@@ -374,7 +395,7 @@ impl Info {
     }
 }
 
-/// [`Info`] for the pad behind `client` (five reads).
+/// [`Info`] for the pad behind `client` (six reads).
 pub fn info(client: &Client) -> Result<Info> {
     info_with_cache(client, SystemTime::now()).map(|(i, _)| i)
 }
@@ -418,9 +439,21 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
             setting: ModeSetting::new(value),
         })
         .collect();
+    let firmware: Firmware = client.firmware().into();
+    let board = firmware.board.as_deref();
+    let display_options = api::try_read_raw(t, Endpoint::GetDisplayOptions)?
+        .map(|v| typed::<api::DisplayOptions>(Endpoint::GetDisplayOptions, &v))
+        .transpose()?;
+    let display_layout = display_options
+        .as_ref()
+        .map(|d| display::Current::new(board, d));
+    let hints = display_options
+        .as_ref()
+        .and_then(|d| display::generic_layout_hint(board, d, &base))
+        .into_iter()
+        .collect();
     let info = Info {
         host: client.host(),
-        firmware: client.firmware().into(),
         memory: memory.as_ref().map(Memory::from),
         input_mode: ModeSetting::new(options.input_mode),
         active_profile: active,
@@ -428,6 +461,9 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
         running_profile: None,
         profiles,
         boot_buttons,
+        display_layout,
+        hints,
+        firmware,
     };
     let cache = DeviceCache::new(
         info.firmware.clone(),
@@ -498,12 +534,32 @@ pub fn backup_with_cache(
     output: Option<&Path>,
     now: SystemTime,
 ) -> Result<(BackupReport, Option<DeviceCache>)> {
+    backup_to(client, now, |bundle| match output {
+        Some(p) => Ok(p.to_path_buf()),
+        None => default_backup_path(bundle, now),
+    })
+}
+
+/// [`backup_with_cache`] into `dir`, under its [`backup_file_name`] (the
+/// TUI's backups, and tests that keep them out of `$XDG_DATA_HOME`).
+pub fn backup_in_dir(
+    client: &Client,
+    dir: &Path,
+    now: SystemTime,
+) -> Result<(BackupReport, Option<DeviceCache>)> {
+    backup_to(client, now, |bundle| {
+        Ok(dir.join(backup_file_name(bundle, now)))
+    })
+}
+
+fn backup_to(
+    client: &Client,
+    now: SystemTime,
+    path: impl FnOnce(&Bundle) -> Result<PathBuf>,
+) -> Result<(BackupReport, Option<DeviceCache>)> {
     let bundle = backup_bundle(client, now)?;
     let cache = DeviceCache::from_bundle(&bundle);
-    let path = match output {
-        Some(p) => p.to_path_buf(),
-        None => default_backup_path(&bundle, now)?,
-    };
+    let path = path(&bundle)?;
     let bytes = write_json(&bundle, &path)?;
     let (endpoints, unavailable): (Vec<_>, Vec<_>) =
         bundle.endpoints.iter().partition(|(_, v)| !v.is_null());

@@ -1,7 +1,9 @@
 //! Command line: `gamepadii status [--format human|json|waybar] [--json]`,
 //! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
-//! [--save]`, `setup udev [--print|--install]`, `--host HOST` for the
+//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `tui` (also
+//! no command on a terminal), `setup udev [--print|--install]`, `--host HOST`
+//! for the
 //! web-config ones and `--no-channel` to leave the control channel alone.
 //! Hidden, for packagers: `gamepadii completions <shell>` and `gamepadii
 //! manpages <dir>`; for tests: `--sysroot <dir>`, `--mock-api <dir>` and
@@ -14,13 +16,15 @@ use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
+use gamepadii_core::display::LayoutArg;
 use gamepadii_core::flow::{self, ProfileArg};
 use gamepadii_core::mode::{BootMode, InputMode};
 
 use crate::output::Format;
 
 /// GP2040-CE gamepads from the command line: status, input modes, profiles.
-#[derive(Debug, Parser)]
+/// With no command on a terminal, it opens the TUI.
+#[derive(Debug, Clone, Parser)]
 #[command(name = "gamepadii", version, about, long_about = None)]
 pub struct Cli {
     /// Output format.
@@ -171,6 +175,14 @@ pub enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// The terminal UI: the pad, its input modes and profiles, web-config
+    /// and backups. `gamepadii` with no command opens it on a terminal.
+    Tui,
+    /// The pad's OLED display.
+    Display {
+        #[command(subcommand)]
+        command: DisplayCommand,
+    },
     /// One-time setup of this machine.
     Setup {
         #[command(subcommand)]
@@ -212,6 +224,52 @@ pub enum ProfileCommand {
         #[arg(long)]
         save: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DisplayCommand {
+    /// Pick the drawing of the buttons on the OLED, or with no LAYOUT show
+    /// the current one and the choices. Haute42 pads take their model
+    /// (s16, g16, s13, m16, ...) or the layout (default, alt0..alt5); any
+    /// board takes the raw values. Needs web-config; in a gamepad mode the
+    /// control channel takes the pad there and back, and the restart shows
+    /// the new drawing.
+    Layout {
+        /// The model or layout name, any case.
+        #[arg(conflicts_with_all = ["left", "right"])]
+        layout: Option<String>,
+        /// The `buttonLayout` value (the left half), with --right.
+        #[arg(long, value_name = "N", requires = "right")]
+        left: Option<i64>,
+        /// The `buttonLayoutRight` value (the right half), with --left.
+        #[arg(long, value_name = "N", requires = "left")]
+        right: Option<i64>,
+        /// Don't back up the settings before writing.
+        #[arg(long)]
+        no_backup: bool,
+        #[command(flatten)]
+        trip: TripArgs,
+    },
+}
+
+impl DisplayCommand {
+    /// The layout asked for; `None` to show the current one.
+    pub fn layout_arg(&self) -> Option<LayoutArg> {
+        let DisplayCommand::Layout {
+            layout,
+            left,
+            right,
+            ..
+        } = self;
+        match (layout, left, right) {
+            (Some(name), _, _) => Some(LayoutArg::Named(name.clone())),
+            (None, Some(left), Some(right)) => Some(LayoutArg::Raw {
+                left: *left,
+                right: *right,
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

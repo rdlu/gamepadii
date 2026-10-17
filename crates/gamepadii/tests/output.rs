@@ -616,4 +616,68 @@ mod flows {
     fn udev_rule_file() {
         insta::assert_snapshot!(gamepadii_core::udev::rule());
     }
+
+    /// `display layout`: the choices, a write in web-config, one that was
+    /// set already, and one from XInput through web-config; then the JSON.
+    #[test]
+    fn display_layout_outputs() {
+        use gamepadii_core::display::{self, LayoutArg};
+        let s16 = || LayoutArg::Named("s16".into());
+        let backups = PathBuf::from("/backups");
+        let set = |rig: &Rig, stay: bool| {
+            rig.run(|env| {
+                let dir = rig.dirs.path().join("backups");
+                flow::through_webconfig(
+                    env,
+                    stay,
+                    &mut Silent,
+                    |c| display::set_layout(c, &s16(), Some(&dir), env.clock.wall()),
+                    |_| String::new(),
+                )
+            })
+            .map(|(mut r, t)| {
+                if let Some(b) = &mut r.backup {
+                    *b = backups.join(b.file_name().unwrap());
+                }
+                (r, t)
+            })
+            .unwrap()
+        };
+        let rig = Rig::s16(InputMode::Webconfig);
+        let (status, _) = rig
+            .run(|env| {
+                flow::through_webconfig(env, false, &mut Silent, display::layout_status, |_| {
+                    String::new()
+                })
+            })
+            .unwrap();
+        let (written, _) = set(&rig, false);
+        let (already, _) = set(&rig, false);
+        let (after_status, _) = rig
+            .run(|env| {
+                flow::through_webconfig(env, false, &mut Silent, display::layout_status, |_| {
+                    String::new()
+                })
+            })
+            .unwrap();
+        let rig = cc(InputMode::Xinput);
+        let (tripped, trip) = set(&rig, false);
+        insta::assert_snapshot!(format!(
+            "--- choices\n{}--- set in web-config\n{}--- already\n{}--- choices after\n{}\
+             --- from XInput\n{}--- json\n{}",
+            output::display_layout_status(human(), &status, None),
+            output::display_layout(human(), &written, None),
+            output::display_layout(human(), &already, None),
+            output::display_layout_status(human(), &after_status, None),
+            output::display_layout(human(), &tripped, trip.as_ref()),
+            output::display_layout(json(), &written, None),
+        ));
+        let v: Value =
+            serde_json::from_str(&output::display_layout_status(json(), &status, None)).unwrap();
+        assert_eq!(v["schema"], 1);
+        assert_eq!(v["current"]["layout"]["key"], "default");
+        assert_eq!(v["choices"][3]["key"], "alt2");
+        assert_eq!(v["choices"][3]["models"], serde_json::json!(["G16", "S16"]));
+        assert!(v["trip"].is_null());
+    }
 }

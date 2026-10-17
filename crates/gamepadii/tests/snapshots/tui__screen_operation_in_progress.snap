@@ -1,0 +1,34 @@
+---
+source: crates/gamepadii/tests/tui.rs
+expression: "render(&mut app, 100, 30)"
+---
+ gamepadii GP2040-CE pads
+┌ Pad ─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ XInput (likely)                                                                                  │
+│ usb id   045e:028e                                                                               │
+│ port     bus 3, port 3-1, device 7                                                               │
+│ note     045e:028e is also used by the Xbox 360 controller and its clones                        │
+│ channel  none: stock GP2040-CE (no answer to HELLO)                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Input mode ────────────────────────────────────┐┌ Profile ───────────────────────────────────────┐
+│  XInput               current                  ││ Profiles switch over the control channel of    │
+│  Nintendo Switch                               ││ the gamepadii firmware. On stock GP2040-CE,    │
+│  PS3                                           ││ use the pad's profile hotkeys.                 │
+│▶ Keyboard                                      ││                                                │
+│  PS4                                           ││                                                │
+│  Xbox One                                      ││                                                │
+│  Sega Genesis/MegaDrive Mini                   ││                                                │
+│  NEOGEO mini                                   ││                                                │
+│  PC Engine/Turbografx 16 Mini                  ││                                                │
+│  EGRET II mini                                 ││                                                │
+│  ASTROCITY Mini                                ││                                                │
+│  Playstation Classic                           ││                                                │
+│  Original Xbox                                 ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Do this on the pad ──────────────────────────────────────────────────────────────────────────────┐
+│ First switch it to web-config: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4       │
+│ (Start+X+Y) for 4 seconds while it runs (only those buttons).                                    │
+│ These are logical buttons, so on a remapped profile they may be other keys; once the pad is in   │
+│ web-config, gamepadii remembers its profiles and names the keys next time.                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+⠋ switching to Keyboard: waiting for the pad to show up in web-config or Keyboard, 60 s left  q quit

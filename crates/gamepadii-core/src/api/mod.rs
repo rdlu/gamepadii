@@ -9,8 +9,8 @@
 //! - `getHeldPins`: blocks until a button is pressed (it will come later,
 //!   behind its own function, for the button test).
 //! - every `set*`: the server ignores the method, so a GET would replay the
-//!   previous POST body. The only write, [`set_gamepad_options`], lives in
-//!   `write` and is only ever POSTed.
+//!   previous POST body. The writes, [`set_gamepad_options`] and
+//!   [`set_display_options`], live in `write` and are only ever POSTed.
 //!
 //! ```compile_fail
 //! let _ = gamepadii_core::api::Endpoint::GetConfig;
@@ -29,10 +29,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use model::{
-    FirmwareVersion, GamepadOptions, KeyMappings, MemoryReport, PinMapping, PinMappings,
-    ProfileOptions,
+    DisplayOptions, FirmwareVersion, GamepadOptions, KeyMappings, MemoryReport, PinMapping,
+    PinMappings, ProfileOptions,
 };
-pub use write::{FieldChange, OptionsWrite, set_gamepad_options};
+pub use write::{FieldChange, OptionsWrite, set_display_options, set_gamepad_options};
 
 use crate::error::{Error, Result};
 use crate::mode::BootMode;
@@ -150,6 +150,10 @@ pub fn memory_report(t: &dyn Transport) -> Result<MemoryReport> {
 
 pub fn gamepad_options(t: &dyn Transport) -> Result<GamepadOptions> {
     read(t, Endpoint::GetGamepadOptions)
+}
+
+pub fn display_options(t: &dyn Transport) -> Result<DisplayOptions> {
+    read(t, Endpoint::GetDisplayOptions)
 }
 
 /// The base profile (profile 1): GPIO pin → action.

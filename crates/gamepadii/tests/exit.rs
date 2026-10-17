@@ -68,6 +68,21 @@ fn usage_errors_exit_3() {
 }
 
 #[test]
+fn no_command_off_a_terminal_prints_usage() {
+    let (code, stdout, _) = gamepadii(&[]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Usage: gamepadii"), "{stdout}");
+}
+
+#[test]
+fn tui_off_a_terminal_exits_3() {
+    let (code, stdout, stderr) = gamepadii(&["tui"]);
+    assert_eq!(code, 3);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("needs a terminal"), "{stderr}");
+}
+
+#[test]
 fn help_and_version_exit_0() {
     assert_eq!(gamepadii(&["--help"]).0, 0);
     let (code, stdout, _) = gamepadii(&["--version"]);
@@ -583,6 +598,61 @@ fn setup_udev_prints_explains_and_installs_into_a_root() {
     let (_, stdout, _) = gamepadii(&["--sysroot", r, "setup", "udev", "--install", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(v["action"], "none");
+}
+
+#[test]
+fn display_layout_end_to_end() {
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let mut a = vec!["--mock-api", S16_API, "--sysroot"];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let wc = sysfs("s16-webconfig");
+    // No layout: the current one and the choices, nothing written.
+    let (code, stdout, _) = run(&[&wc, "display", "layout"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Board Defined (27/31)"), "{stdout}");
+    assert!(stdout.contains("alt2"), "{stdout}");
+    // s16: backed up, written, read back.
+    let (code, stdout, stderr) = run(&[&wc, "display", "layout", "s16", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["after"]["left"], 36);
+    assert_eq!(v["after"]["right"], 42);
+    assert_eq!(v["write"]["posted"], true);
+    let backup = v["backup"].as_str().unwrap();
+    assert!(
+        backup.starts_with(home.path().to_str().unwrap()),
+        "{backup}"
+    );
+    assert!(std::path::Path::new(backup).exists());
+    // --no-backup: none taken.
+    let (code, stdout, _) = run(&[&wc, "display", "layout", "g16", "--no-backup", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v["backup"].is_null());
+    // A typo is a usage error before anything is read.
+    let (code, _, stderr) = run(&[
+        &sysfs("s16-xinput"),
+        "--mock-channel",
+        "channel",
+        "display",
+        "layout",
+        "s61",
+    ]);
+    assert_eq!(code, 3);
+    assert!(
+        stderr.contains("no Haute42COSMOX layout called \"s61\""),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("rebooting"), "{stderr}");
+    let (code, _, _) = run(&[&wc, "display", "layout", "--left", "99", "--right", "1"]);
+    assert_eq!(code, 3);
+    // In a gamepad mode without the channel: exit 5, as info.
+    let (code, _, stderr) = run(&[&sysfs("s16-xinput"), "--no-channel", "display", "layout"]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("XInput mode, not web-config"), "{stderr}");
 }
 
 #[test]

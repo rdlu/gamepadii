@@ -113,5 +113,20 @@ expression: "info(Format::Json)"
       "mode": "keyboard"
     }
   ],
+  "display_layout": {
+    "left": 27,
+    "right": 31,
+    "layout": {
+      "key": "default",
+      "label": "Board Defined",
+      "left": 27,
+      "right": 31,
+      "models": [],
+      "drawing": "Stickless, 12 buttons"
+    }
+  },
+  "hints": [
+    "the OLED draws the generic 12-button layout (27/31), but the pins map 16 buttons; on an S16 or G16: gamepadii display layout s16"
+  ],
   "trip": null
 }

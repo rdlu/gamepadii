@@ -409,15 +409,21 @@ impl Guide {
     }
 }
 
-fn pick(devices: Vec<Device>) -> Result<Device> {
-    let webconfig = devices
+/// Which of `devices` the flows act on: the one in web-config, else the
+/// first. Front ends show that one.
+pub fn picked(devices: &[Device]) -> Option<usize> {
+    devices
         .iter()
-        .position(|d| d.mode == Some(InputMode::Webconfig));
-    match webconfig {
-        Some(i) => Ok(devices.into_iter().nth(i).expect("index from position")),
-        None => devices.into_iter().next().ok_or_else(|| {
-            Error::NotFound("no GP2040-CE device on USB (is it plugged in?)".into())
-        }),
+        .position(|d| d.mode == Some(InputMode::Webconfig))
+        .or((!devices.is_empty()).then_some(0))
+}
+
+fn pick(devices: Vec<Device>) -> Result<Device> {
+    match picked(&devices) {
+        Some(i) => Ok(devices.into_iter().nth(i).expect("index from picked")),
+        None => Err(Error::NotFound(
+            "no GP2040-CE device on USB (is it plugged in?)".into(),
+        )),
     }
 }
 
@@ -1679,7 +1685,8 @@ pub fn info(
 }
 
 /// `gamepadii backup` for the pad on USB: [`through_webconfig`] with the
-/// bundle written to `output` (or the default path), and the device cache
+/// bundle written to `output` (else into `env.backups_dir` when it has one,
+/// as the TUI's does, else the default path), and the device cache
 /// refreshed from it, as [`info`] does.
 pub fn backup(
     env: &Env,
@@ -1689,7 +1696,11 @@ pub fn backup(
 ) -> Result<(commands::BackupReport, Option<Trip>)> {
     let mut failed = None;
     let work = |c: &Client, wc: &Device| {
-        let (report, cache) = commands::backup_with_cache(c, output, env.clock.wall())?;
+        let now = env.clock.wall();
+        let (report, cache) = match (output, &env.backups_dir) {
+            (None, Some(dir)) => commands::backup_in_dir(c, dir, now)?,
+            _ => commands::backup_with_cache(c, output, now)?,
+        };
         if let Some(cache) = cache {
             failed = store_read(env, cache, wc);
         }

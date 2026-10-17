@@ -3,9 +3,12 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
-use gamepadii::cli::{self, Cli, Command, MockChannel, ProfileCommand, SetupCommand, TripArgs};
+use gamepadii::cli::{
+    self, Cli, Command, DisplayCommand, MockChannel, ProfileCommand, SetupCommand, TripArgs,
+};
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
+use gamepadii::tui::worker::WithEnv;
 use gamepadii_core::cache::{self, DeviceCache};
 use gamepadii_core::channel::sim::{SimChannel, Standalone};
 use gamepadii_core::channel::{ControlTransport, OpenControl, UsbError};
@@ -18,7 +21,7 @@ use gamepadii_core::sysfs::Root;
 use gamepadii_core::transport::http::{self, Http};
 use gamepadii_core::transport::mock::Mock;
 use gamepadii_core::wait::{Poll, SystemClock};
-use gamepadii_core::{Error, commands, udev};
+use gamepadii_core::{Error, commands, display, udev};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -49,11 +52,13 @@ fn main() -> ExitCode {
     let control = control_opener(&cli, &root);
     let control = control.as_deref();
     match cli.command.clone() {
+        None if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() => tui(&cli),
         None => {
-            // No subcommand: usage for now (the TUI will open here on a TTY).
+            // Not a terminal (a pipe, a script): usage, as before the TUI.
             let _ = Cli::command().print_help();
             ExitCode::from(exit::OK)
         }
+        Some(Command::Tui) => tui(&cli),
         Some(Command::Status) => finish(
             format,
             commands::status_with(&root, control, cache::cache_dir().as_deref())
@@ -197,6 +202,45 @@ fn main() -> ExitCode {
             drop(progress);
             finish(format, result)
         }
+        Some(Command::Display { command }) => {
+            let arg = command.layout_arg();
+            let DisplayCommand::Layout {
+                no_backup, trip, ..
+            } = command;
+            let result = match arg {
+                None => with_webconfig(
+                    &cli,
+                    &root,
+                    control,
+                    format,
+                    &trip,
+                    display::layout_status,
+                    |_| "the layout was read".to_string(),
+                )
+                .map(|(s, t)| output::display_layout_status(style, &s, t.as_ref())),
+                // A typo or an out-of-range value fails here, before any
+                // trip into web-config; so does a missing backups dir.
+                Some(arg) => display::precheck(&arg)
+                    .and_then(|()| match no_backup {
+                        true => Ok(None),
+                        false => commands::backups_dir().map(Some),
+                    })
+                    .and_then(|backups| {
+                        let work = |c: &Client| {
+                            display::set_layout(c, &arg, backups.as_deref(), SystemTime::now())
+                        };
+                        with_webconfig(&cli, &root, control, format, &trip, work, |r| {
+                            if r.write.is_some() {
+                                "the layout is saved".to_string()
+                            } else {
+                                "the layout was already set".to_string()
+                            }
+                        })
+                    })
+                    .map(|(r, t)| output::display_layout(style, &r, t.as_ref())),
+            };
+            finish(format, result)
+        }
         Some(Command::Setup {
             command: SetupCommand::Udev { print, install },
         }) => {
@@ -222,6 +266,61 @@ fn main() -> ExitCode {
                 .map_err(|e| Error::io(format!("writing man pages into {}", dir.display()), e)),
         ),
     }
+}
+
+/// The TUI, with the flows' environment built on its worker thread from
+/// the same flags as every other command.
+fn tui(cli: &Cli) -> ExitCode {
+    if !(std::io::stdout().is_terminal() && std::io::stdin().is_terminal()) {
+        eprintln!(
+            "gamepadii: the TUI needs a terminal; the commands work anywhere (gamepadii --help)"
+        );
+        return ExitCode::from(exit::USAGE);
+    }
+    let cli = cli.clone();
+    let with_env: WithEnv = Box::new(move |backup, f| {
+        let root = cli.sysroot.clone().map_or_else(Root::live, Root::new);
+        let control = control_opener(&cli, &root);
+        let clock = SystemClock::new();
+        let open = || open(&cli);
+        let env = env(
+            &cli,
+            &root,
+            &clock,
+            &open,
+            control.as_deref(),
+            Timeouts::default(),
+            backup,
+        );
+        f(&env);
+    });
+    match gamepadii::tui::run(with_env) {
+        Ok(()) => ExitCode::from(exit::OK),
+        Err(e) => {
+            eprintln!("gamepadii: the terminal UI failed: {e}");
+            ExitCode::from(exit::TRANSPORT)
+        }
+    }
+}
+
+/// Runs `work` against the web configurator: at `--host` as it is;
+/// otherwise the pad on USB, which the control channel takes into
+/// web-config and back when it is in a gamepad mode.
+fn with_webconfig<T>(
+    cli: &Cli,
+    root: &Root,
+    control: Option<&OpenControl<'_>>,
+    format: Format,
+    trip: &TripArgs,
+    work: impl FnOnce(&Client) -> gamepadii_core::Result<T>,
+    done: impl FnOnce(&T) -> String,
+) -> gamepadii_core::Result<(T, Option<flow::Trip>)> {
+    if cli.host.is_some() {
+        return connect(cli, root).and_then(|c| work(&c)).map(|r| (r, None));
+    }
+    on_usb(cli, root, control, format, trip, |env, progress| {
+        flow::through_webconfig(env, trip.stay, progress, work, done)
+    })
 }
 
 /// Runs a trip through web-config (`info`, `backup`) against the pad on
