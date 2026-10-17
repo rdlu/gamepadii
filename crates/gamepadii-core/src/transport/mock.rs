@@ -6,9 +6,11 @@
 //! catch a partial body: every key the getter has is overwritten from the
 //! body, a missing number becomes 0, a missing USB string becomes junk (the
 //! firmware `strncpy`s from a NULL pointer), and a string sent for a USB id
-//! is parsed as a decimal number, as ArduinoJson does (`"10C4"` is 0). The
-//! result is what later GETs return. Every request is logged so tests can
-//! check what was asked for.
+//! is parsed as a decimal number, as ArduinoJson does (`"10C4"` is 0).
+//! `POST /api/setDisplayOptions` likewise: every key is read again, a
+//! missing one (nested `buttonLayoutCustomOptions` ones included) is 0, and
+//! the `bool` fields come back as 1/0. The result is what later GETs
+//! return. Every request is logged so tests can check what was asked for.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -116,11 +118,18 @@ impl Mock {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn set_gamepad_options(&self, body: Option<&[u8]>) -> Result<Reply> {
+    /// A simulated setter: `getter`'s state run through `firmware` with the
+    /// posted body, then the fault, if any.
+    fn set(
+        &self,
+        getter: &str,
+        firmware: fn(&Map<String, Value>, &Value) -> Map<String, Value>,
+        body: Option<&[u8]>,
+    ) -> Result<Reply> {
         let doc: Value = body
             .and_then(|b| serde_json::from_slice(b).ok())
             .unwrap_or(Value::Null);
-        let Some(Value::Object(current)) = self.current("getGamepadOptions") else {
+        let Some(Value::Object(current)) = self.current(getter) else {
             return Ok(Reply {
                 status: 404,
                 body: Vec::new(),
@@ -128,13 +137,13 @@ impl Mock {
         };
         let mut stored = match &self.set_fault {
             Some(SetFault::Ignore) => current,
-            _ => firmware_set_gamepad_options(&current, &doc),
+            _ => firmware(&current, &doc),
         };
         if let Some(SetFault::Clobber(key, value)) = &self.set_fault {
             stored.insert((*key).to_string(), value.clone());
         }
         self.lock_state()
-            .insert("getGamepadOptions".into(), Value::Object(stored));
+            .insert(getter.to_string(), Value::Object(stored));
         // The firmware echoes the document it parsed.
         Ok(json_reply(doc.to_string().into_bytes()))
     }
@@ -203,6 +212,43 @@ pub fn firmware_set_gamepad_options(
     out
 }
 
+/// What the v0.7.12 `setDisplayOptions` + `getDisplayOptions` pair turns
+/// `current` into for the posted `doc`: every key read again with
+/// `readDoc` (missing is 0), `bool` fields printed back as 1/0, and
+/// `buttonLayoutCustomOptions` rebuilt from its ten nested numbers.
+pub fn firmware_set_display_options(
+    current: &Map<String, Value>,
+    doc: &Value,
+) -> Map<String, Value> {
+    use crate::api::write::{
+        CUSTOM_LAYOUT_KEY, CUSTOM_LAYOUT_KEYS, CUSTOM_LAYOUT_SIDES, DISPLAY_BOOL_KEYS,
+    };
+    let mut out = Map::new();
+    for key in current.keys() {
+        let sent = doc.get(key);
+        let new = if key == CUSTOM_LAYOUT_KEY {
+            let mut custom = Map::new();
+            for side in CUSTOM_LAYOUT_SIDES {
+                let half: Map<String, Value> = CUSTOM_LAYOUT_KEYS
+                    .iter()
+                    .map(|k| {
+                        let v = as_int(sent.and_then(|c| c.get(*side)).and_then(|h| h.get(*k)));
+                        ((*k).to_string(), Value::from(v))
+                    })
+                    .collect();
+                custom.insert((*side).to_string(), Value::Object(half));
+            }
+            Value::Object(custom)
+        } else if DISPLAY_BOOL_KEYS.contains(&key.as_str()) {
+            Value::from(i64::from(as_int(sent) != 0))
+        } else {
+            Value::from(as_int(sent))
+        };
+        out.insert(key.clone(), new);
+    }
+    out
+}
+
 impl Transport for Mock {
     fn request(&self, method: Method, path: ApiPath, body: Option<&[u8]>) -> Result<Reply> {
         let path = path.as_str();
@@ -235,7 +281,12 @@ impl Transport for Mock {
                 }
                 return Ok(json_reply(doc.to_string().into_bytes()));
             }
-            (Method::Post, "setGamepadOptions") => return self.set_gamepad_options(body),
+            (Method::Post, "setGamepadOptions") => {
+                return self.set("getGamepadOptions", firmware_set_gamepad_options, body);
+            }
+            (Method::Post, "setDisplayOptions") => {
+                return self.set("getDisplayOptions", firmware_set_display_options, body);
+            }
             (Method::Post, _) => {
                 return Ok(Reply {
                     status: 404,

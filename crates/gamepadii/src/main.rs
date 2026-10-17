@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
-use gamepadii::cli::{self, Cli, Command, MockChannel, ProfileCommand, SetupCommand, TripArgs};
+use gamepadii::cli::{
+    self, Cli, Command, DisplayCommand, MockChannel, ProfileCommand, SetupCommand, TripArgs,
+};
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
 use gamepadii_core::cache::{self, DeviceCache};
@@ -18,7 +20,7 @@ use gamepadii_core::sysfs::Root;
 use gamepadii_core::transport::http::{self, Http};
 use gamepadii_core::transport::mock::Mock;
 use gamepadii_core::wait::{Poll, SystemClock};
-use gamepadii_core::{Error, commands, udev};
+use gamepadii_core::{Error, commands, display, udev};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -189,6 +191,45 @@ fn main() -> ExitCode {
             let result = flow::profile_switch(&env, &profile, save, &mut progress)
                 .map(|r| output::profile_switch(style, &r));
             drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Display { command }) => {
+            let arg = command.layout_arg();
+            let DisplayCommand::Layout {
+                no_backup, trip, ..
+            } = command;
+            let result = match arg {
+                None => with_webconfig(
+                    &cli,
+                    &root,
+                    control,
+                    format,
+                    &trip,
+                    display::layout_status,
+                    |_| "the layout was read".to_string(),
+                )
+                .map(|(s, t)| output::display_layout_status(style, &s, t.as_ref())),
+                // A typo or an out-of-range value fails here, before any
+                // trip into web-config; so does a missing backups dir.
+                Some(arg) => display::precheck(&arg)
+                    .and_then(|()| match no_backup {
+                        true => Ok(None),
+                        false => commands::backups_dir().map(Some),
+                    })
+                    .and_then(|backups| {
+                        let work = |c: &Client| {
+                            display::set_layout(c, &arg, backups.as_deref(), SystemTime::now())
+                        };
+                        with_webconfig(&cli, &root, control, format, &trip, work, |r| {
+                            if r.write.is_some() {
+                                "the layout is saved".to_string()
+                            } else {
+                                "the layout was already set".to_string()
+                            }
+                        })
+                    })
+                    .map(|(r, t)| output::display_layout(style, &r, t.as_ref())),
+            };
             finish(format, result)
         }
         Some(Command::Setup {

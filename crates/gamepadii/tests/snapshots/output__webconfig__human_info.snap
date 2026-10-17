@@ -21,4 +21,6 @@ boot buttons  B1 Nintendo Switch
               L2 -
               R1 Xbox One
               R2 Keyboard
+oled layout   Board Defined (27/31): Stickless, 12 buttons
 web-config    mock:s16-v0.7.12
+hint          the OLED draws the generic 12-button layout (27/31), but the pins map 16 buttons; on an S16 or G16: gamepadii display layout s16
