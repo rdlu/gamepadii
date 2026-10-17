@@ -1,6 +1,7 @@
 //! Finds GP2040-CE devices on USB by reading `sys/bus/usb/devices` under a
 //! [`Root`]: the same attributes udev reports, but testable against fixture
-//! trees. Hotplug watching (udev monitor) comes with the guided mode flow.
+//! trees. The guided flows watch for re-enumeration by polling this (see
+//! `wait`): simpler than a udev monitor, and testable with fixtures.
 
 use std::path::PathBuf;
 
@@ -48,6 +49,19 @@ impl Device {
 
 fn hex4<S: Serializer>(v: &u16, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&format!("{v:04x}"))
+}
+
+/// Something that lists the GP2040-CE devices on USB: a [`Root`] (sysfs),
+/// or a simulated pad in tests. The guided flows poll it to see the pad
+/// re-enumerate.
+pub trait Scan {
+    fn scan(&self) -> Vec<Device>;
+}
+
+impl Scan for Root {
+    fn scan(&self) -> Vec<Device> {
+        scan(self)
+    }
 }
 
 /// Every USB device under `root` whose id GP2040-CE uses, sorted by bus and

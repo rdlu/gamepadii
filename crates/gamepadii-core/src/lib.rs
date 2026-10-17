@@ -14,5 +14,6 @@ pub mod mode;
 pub mod sysfs;
 pub mod timestamp;
 pub mod transport;
+pub mod wait;
 
 pub use error::{Error, Result};
