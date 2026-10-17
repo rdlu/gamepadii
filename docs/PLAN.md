@@ -95,8 +95,8 @@ reboots as possible.
 ## Profiles live in gamepadii, not on the pad
 
 gamepadii keeps a host-side **profile library** with no size limit, stored
-in `~/.config/gamepadii/profiles/`. The file format is still open: the user
-prefers KDL over TOML, to be decided before milestone 4. The pad is only a target that
+in `~/.config/gamepadii/profiles/`. Profiles are
+written in **KDL 2.0** (the `kdl` crate), decided 2026-10-17. The pad is only a target that
 gamepadii writes profiles into. The library is the source of truth, so the
 device's 6 slots and its single keymap don't limit how many profiles you
 have.
@@ -159,7 +159,7 @@ crates/gamepadii/src/
    web-config, read-modify-write `inputMode`, reboot, wait, verify), and
    `reboot <gamepad|webconfig|bootsel>`. This is the MVP; then switch to the
    PR workflow and protect `main`.
-4. **Profile library**: KDL (or TOML) bundles with `profile
+4. **Profile library**: KDL bundles with `profile
    list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
    sidekick.
 5. **TUI**: status, mode switcher, profile browser with diffs, live
