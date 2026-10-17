@@ -480,12 +480,32 @@ pub fn backup_with_cache(
     output: Option<&Path>,
     now: SystemTime,
 ) -> Result<(BackupReport, Option<DeviceCache>)> {
+    backup_to(client, now, |bundle| match output {
+        Some(p) => Ok(p.to_path_buf()),
+        None => default_backup_path(bundle, now),
+    })
+}
+
+/// [`backup_with_cache`] into `dir`, under its [`backup_file_name`] (the
+/// TUI's backups, and tests that keep them out of `$XDG_DATA_HOME`).
+pub fn backup_in_dir(
+    client: &Client,
+    dir: &Path,
+    now: SystemTime,
+) -> Result<(BackupReport, Option<DeviceCache>)> {
+    backup_to(client, now, |bundle| {
+        Ok(dir.join(backup_file_name(bundle, now)))
+    })
+}
+
+fn backup_to(
+    client: &Client,
+    now: SystemTime,
+    path: impl FnOnce(&Bundle) -> Result<PathBuf>,
+) -> Result<(BackupReport, Option<DeviceCache>)> {
     let bundle = backup_bundle(client, now)?;
     let cache = DeviceCache::from_bundle(&bundle);
-    let path = match output {
-        Some(p) => p.to_path_buf(),
-        None => default_backup_path(&bundle, now)?,
-    };
+    let path = path(&bundle)?;
     let bytes = write_json(&bundle, &path)?;
     let (endpoints, unavailable): (Vec<_>, Vec<_>) =
         bundle.endpoints.iter().partition(|(_, v)| !v.is_null());
