@@ -112,6 +112,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The device cache is kept per pad, by the serial XInput and Xbox One
+  build from the board's unique id (#11): two pads with the same board
+  config no longer share `<board>.json`, and the hints in a gamepad mode
+  come from that pad's cache rather than the newest. Web-config can't say
+  which pad it is (every pad is `123456`), so gamepadii records the serial
+  it saw just before the pad went into web-config (the `info`/`backup`
+  trip, `webconfig`, `reboot webconfig`, the guided `mode`) against that
+  web-config enumeration (`webconfig-sessions.json`). A read it can't
+  attribute stays in `<board>.json` until it sees that pad leave
+  web-config with a serial. Existing `<board>.json` files still load, and
+  the first read attributed to a pad of that board replaces them. The
+  cache file gains `pad` and `read_in` (additive).
 - Backups and the device cache keep each endpoint's keys in the pad's order
   (serde_json `preserve_order`).
 - Exit code 1 is now used: a verify that fails after a reboot or a write.

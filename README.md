@@ -127,7 +127,8 @@ other keys. `--host HOST` skips the USB check and talks to HOST instead of
 
 Whenever the pad is in web-config, `info`, `backup`, `mode` and `webconfig`
 save its options and pin-mapping profiles in
-`~/.cache/gamepadii/<board>.json` (`$XDG_CACHE_HOME` is honoured). In a
+`~/.cache/gamepadii/<board>-<serial>.json` (`$XDG_CACHE_HOME` is
+honoured). In a
 gamepad mode, gamepadii can then name the boot buttons and say which keys
 the hotkey is on in the active profile, by the names profile 1 (Default)
 gives them, with Xbox labels:
@@ -143,8 +144,15 @@ control channel has said otherwise since: whenever it answers (`status`,
 pad runs. A RAM-only `profile switch` changes only that, `--save` the saved
 one too, and a restart gamepadii makes puts it back on the saved one.
 
-Web-config mode has no unique serial (every pad says `123456`), so the cache
-goes by board config, and with several boards the newest one is used.
+Web-config mode has no unique serial (every pad says `123456`), but XInput
+and Xbox One have one, made from the board's unique id. The cache goes by
+that serial: when gamepadii takes the pad into web-config itself (or sees
+it go there, during `mode` or `webconfig`), it knows which pad it is, so
+two pads with the same board config keep separate caches, and each gets
+its own hints. A pad put into web-config by hand is kept by board config
+(`<board>.json`) until gamepadii sees it leave web-config as a pad with a
+serial; in modes with no serial (Keyboard, HID, Switch, PS4, ...) the
+newest cache that could be this pad is used, as before.
 
 `backup` writes to `~/.local/share/gamepadii/backups/<time>-<board>.json`
 (`$XDG_DATA_HOME` is honoured) unless given `-o FILE`. The bundle holds each
