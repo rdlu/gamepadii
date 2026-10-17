@@ -3,11 +3,14 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
-use gamepadii::cli::{self, Cli, Command};
+use gamepadii::cli::{self, Cli, Command, MockChannel, ProfileCommand, SetupCommand};
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
 use gamepadii_core::cache::{self, DeviceCache};
+use gamepadii_core::channel::sim::{SimChannel, Standalone};
+use gamepadii_core::channel::{ControlTransport, OpenControl, UsbError};
 use gamepadii_core::client::{self, Client};
+use gamepadii_core::discovery::Device;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Env, Timeouts};
 use gamepadii_core::mode::BootMode;
@@ -15,7 +18,7 @@ use gamepadii_core::sysfs::Root;
 use gamepadii_core::transport::http::{self, Http};
 use gamepadii_core::transport::mock::Mock;
 use gamepadii_core::wait::{Poll, SystemClock};
-use gamepadii_core::{Error, commands};
+use gamepadii_core::{Error, commands, udev};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -43,6 +46,8 @@ fn main() -> ExitCode {
     };
     let root = cli.sysroot.clone().map_or_else(Root::live, Root::new);
     let style = Style::detect(format);
+    let control = control_opener(&cli, &root);
+    let control = control.as_deref();
     match cli.command.clone() {
         None => {
             // No subcommand: usage for now (the TUI will open here on a TTY).
@@ -51,7 +56,8 @@ fn main() -> ExitCode {
         }
         Some(Command::Status) => finish(
             format,
-            commands::status(&root).map(|s| output::status(style, &s)),
+            commands::status_with(&root, control, cache::cache_dir().as_deref())
+                .map(|s| output::status(style, &s)),
         ),
         Some(Command::Info) => finish(
             format,
@@ -84,15 +90,18 @@ fn main() -> ExitCode {
             };
             let clock = SystemClock::new();
             let open = || open(&cli);
-            let env = env(&cli, &root, &clock, &open, timeouts, false);
-            finish(
-                format,
-                connect(&cli, &root)
-                    .and_then(|c| {
-                        flow::reboot(&env, &c, mode.into(), !no_wait, &mut reporter(format))
-                    })
-                    .map(|r| output::reboot(style, &r)),
-            )
+            let env = env(&cli, &root, &clock, &open, control, timeouts, false);
+            let mut progress = reporter(format);
+            // --host: the web configurator, wherever it is; otherwise the
+            // pad on USB, over HTTP or the control channel.
+            let result = match &cli.host {
+                Some(_) => connect(&cli, &root)
+                    .and_then(|c| flow::reboot(&env, &c, mode.into(), !no_wait, &mut progress)),
+                None => flow::reboot_pad(&env, mode.into(), !no_wait, &mut progress),
+            }
+            .map(|r| output::reboot(style, &r));
+            drop(progress);
+            finish(format, result)
         }
         Some(Command::Mode {
             mode,
@@ -108,7 +117,7 @@ fn main() -> ExitCode {
             };
             let clock = SystemClock::new();
             let open = || open(&cli);
-            let env = env(&cli, &root, &clock, &open, timeouts, !no_backup);
+            let env = env(&cli, &root, &clock, &open, control, timeouts, !no_backup);
             let mut progress = reporter(format);
             let result =
                 match mode {
@@ -136,7 +145,7 @@ fn main() -> ExitCode {
             }
             let clock = SystemClock::new();
             let open = || open(&cli);
-            let env = env(&cli, &root, &clock, &open, timeouts, false);
+            let env = env(&cli, &root, &clock, &open, control, timeouts, false);
             let mut progress = reporter(format);
             let result = if leave {
                 connect(&cli, &root)
@@ -154,6 +163,40 @@ fn main() -> ExitCode {
             };
             drop(progress);
             finish(format, result)
+        }
+        Some(Command::Profile {
+            command: ProfileCommand::Switch { profile, save },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let mut progress = reporter(format);
+            let result = flow::profile_switch(&env, &profile, save, &mut progress)
+                .map(|r| output::profile_switch(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Setup {
+            command: SetupCommand::Udev { print, install },
+        }) => {
+            if print {
+                print!("{}", udev::rule());
+                return ExitCode::from(exit::OK);
+            }
+            let result = if install {
+                install_udev_rule(&cli, &root)
+            } else {
+                Ok(udev::report(&root))
+            };
+            finish(format, result.map(|r| output::udev(style, &r)))
         }
         Some(Command::Completions { shell }) => {
             cli::completions(shell, &mut std::io::stdout().lock());
@@ -191,12 +234,119 @@ fn open(cli: &Cli) -> gamepadii_core::Result<Client> {
     }
 }
 
+/// How to reach a pad's control channel: usbfs under the root (a fixture
+/// root has no `dev/`, so tests never reach a real pad), a simulated
+/// firmware with `--mock-channel`, or nothing with `--no-channel`.
+fn control_opener<'a>(cli: &Cli, root: &'a Root) -> Option<Box<OpenControl<'a>>> {
+    if cli.no_channel {
+        return None;
+    }
+    if let Some(kind) = cli.mock_channel {
+        let api = cli.mock_api.clone();
+        return Some(Box::new(move |d: &Device| {
+            mock_control(kind, api.as_deref(), d)
+        }));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use gamepadii_core::channel::usbfs::Usbfs;
+        Some(Box::new(move |d: &Device| {
+            Usbfs::open(root, d).map(|u| Box::new(u) as Box<dyn ControlTransport>)
+        }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = root;
+        None
+    }
+}
+
+/// `--mock-channel`: the firmware for `d`, in the mode its ids say.
+fn mock_control(
+    kind: MockChannel,
+    api: Option<&std::path::Path>,
+    d: &Device,
+) -> Result<Box<dyn ControlTransport>, UsbError> {
+    let running = d.mode.or_else(|| d.candidates.first().copied());
+    let sim = match kind {
+        MockChannel::NoAccess => return Err(UsbError::NoAccess),
+        MockChannel::Stock => SimChannel::stock(running),
+        MockChannel::Channel => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        },
+    };
+    let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
+    Ok(Box::new(Standalone::new(sim, node)))
+}
+
+/// `setup udev --install`: through pkexec on a live system; straight into
+/// the tree under `--sysroot` (tests).
+fn install_udev_rule(cli: &Cli, root: &Root) -> gamepadii_core::Result<udev::Report> {
+    let mut report = udev::report(root);
+    if report.installed == udev::Installed::Current {
+        report.action = Some(udev::Action::None);
+        return Ok(report);
+    }
+    let rule = udev::rule();
+    if cli.sysroot.is_some() {
+        let path = root.path(udev::RULE_PATH);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
+        }
+        std::fs::write(&path, &rule)
+            .map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
+    } else {
+        let tmp = std::env::temp_dir().join(format!("gamepadii-udev-{}.rules", std::process::id()));
+        std::fs::write(&tmp, &rule)
+            .map_err(|e| Error::io(format!("writing {}", tmp.display()), e))?;
+        eprintln!(
+            "gamepadii: installing {} (pkexec asks for your password)",
+            udev::RULE_PATH
+        );
+        let status = std::process::Command::new("pkexec")
+            .args([
+                "/bin/sh",
+                "-c",
+                "install -m 0644 -- \"$1\" \"$2\" && udevadm control --reload-rules \
+                 && udevadm trigger --subsystem-match=usb --action=change",
+                "gamepadii-setup-udev",
+            ])
+            .arg(&tmp)
+            .arg(udev::RULE_PATH)
+            .status();
+        let _ = std::fs::remove_file(&tmp);
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                return Err(Error::NeedsUser(format!(
+                    "pkexec didn't install the rule ({s}); `gamepadii setup udev --print` \
+                     prints it, to install by hand as {}",
+                    udev::RULE_PATH
+                )));
+            }
+            Err(e) => return Err(Error::io("running pkexec", e)),
+        }
+    }
+    report.installed = udev::installed(root);
+    if report.installed != udev::Installed::Current {
+        return Err(Error::CheckFailed(format!(
+            "{} doesn't hold the rule after installing it",
+            udev::RULE_PATH
+        )));
+    }
+    report.action = Some(udev::Action::Installed);
+    Ok(report)
+}
+
 /// What the guided flows run against on this machine.
 fn env<'a>(
     cli: &Cli,
     root: &'a Root,
     clock: &'a SystemClock,
     open: &'a dyn Fn() -> gamepadii_core::Result<Client>,
+    control: Option<&'a OpenControl<'a>>,
     timeouts: Timeouts,
     backup: bool,
 ) -> Env<'a> {
@@ -208,7 +358,7 @@ fn env<'a>(
         scan: root,
         clock,
         open,
-        control: None,
+        control,
         cache_dir: cache::cache_dir(),
         backups_dir: if backup {
             commands::backups_dir().ok()

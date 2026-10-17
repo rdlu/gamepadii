@@ -1,0 +1,97 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\", output::status(human(), &s), output::status(json(), &s),\noutput::status(Style::plain(Format::Waybar), &s))"
+---
+XInput (confirmed)
+usb id        045e:028e
+product       -
+manufacturer  -
+serial        -
+port          bus 3, port 3-1, device 7
+firmware      v0.7.12 (Haute42 COSMOX, Release)
+board         Haute42COSMOX
+input mode    XInput
+profile       2 SilkSong
+channel       control channel v1.0 on /dev/bus/usb/003/007
+
+{
+  "schema": 1,
+  "devices": [
+    {
+      "mode": "xinput",
+      "candidates": [
+        "xinput"
+      ],
+      "confidence": "confirmed",
+      "note": null,
+      "vid": "045e",
+      "pid": "028e",
+      "manufacturer": null,
+      "product": null,
+      "serial": null,
+      "bus": 3,
+      "devnum": 7,
+      "port": "3-1",
+      "sysfs_path": null,
+      "netdev": null,
+      "control_channel": {
+        "node": "/dev/bus/usb/003/007",
+        "protocol": "1.0",
+        "capabilities": [
+          "status",
+          "string",
+          "set_profile",
+          "reboot",
+          "set_input_mode"
+        ],
+        "input_modes": [
+          "xinput",
+          "switch",
+          "ps3",
+          "keyboard",
+          "ps4",
+          "xbone",
+          "mdmini",
+          "neogeo",
+          "pcemini",
+          "egret",
+          "astro",
+          "psclassic",
+          "xboxoriginal",
+          "ps5",
+          "generic",
+          "switch_pro"
+        ],
+        "firmware": {
+          "version": "v0.7.12",
+          "board": "Haute42COSMOX",
+          "board_label": "Haute42 COSMOX",
+          "architecture": null,
+          "build": null,
+          "build_type": "Release",
+          "file_name": null
+        },
+        "input_mode": {
+          "value": 0,
+          "mode": "xinput"
+        },
+        "active_profile": {
+          "number": 2,
+          "label": "SilkSong"
+        },
+        "enabled_profiles": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "profile_pending": false,
+        "forced_setup": 0,
+        "uptime_ms": 1002
+      },
+      "channel_note": null
+    }
+  ]
+}
+{"text":"󰊗 XInput","tooltip":"XInput (confirmed)\nusb id: 045e:028e\nproduct: -\nmanufacturer: -\nserial: -\nport: bus 3, port 3-1, device 7\nfirmware: v0.7.12 (Haute42 COSMOX, Release)\nboard: Haute42COSMOX\ninput mode: XInput\nprofile: 2 SilkSong\nchannel: control channel v1.0 on /dev/bus/usb/003/007","class":"xinput","alt":"xinput"}

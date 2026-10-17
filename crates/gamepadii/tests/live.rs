@@ -2,7 +2,9 @@
 //! reads when the pad is in web-config. `mise run test-live` runs them;
 //! they need a GP2040-CE pad plugged in. The two that change the pad (a
 //! reboot, a settings write) also skip unless GAMEPADII_LIVE_REBOOT=1 or
-//! GAMEPADII_LIVE_WRITE=1 is set, so by default the run is read-only.
+//! GAMEPADII_LIVE_WRITE=1 is set, so by default the run is read-only. The
+//! control channel tests need the gamepadii firmware, the udev rule
+//! (`gamepadii setup udev`) and GAMEPADII_LIVE_CHANNEL=1 on top.
 
 use gamepadii::output::{self, Format, Style};
 use gamepadii_core::client::Client;
@@ -132,4 +134,149 @@ fn set_gamepad_options_round_trip() {
     assert_eq!(w.changed[0].key, "debounceDelay");
     set(delay).expect("restore");
     assert_eq!(api::gamepad_options(t).unwrap(), before);
+}
+
+// ---- the control channel (GAMEPADII_LIVE_CHANNEL=1) -------------------------
+
+mod channel {
+    use super::opted_in;
+    use gamepadii::output::{self, Format, Style};
+    use gamepadii_core::channel::usbfs::Usbfs;
+    use gamepadii_core::channel::{self, ControlTransport, Probe};
+    use gamepadii_core::client::Client;
+    use gamepadii_core::discovery::{self, Device};
+    use gamepadii_core::flow::{self, Env, ProfileArg, Silent, Timeouts};
+    use gamepadii_core::mode::BootMode;
+    use gamepadii_core::sysfs::Root;
+    use gamepadii_core::transport::http::{self, Http};
+    use gamepadii_core::wait::{Poll, SystemClock};
+    use gamepadii_core::{commands, mode::InputMode};
+
+    fn open(d: &Device) -> Result<Box<dyn ControlTransport>, channel::UsbError> {
+        Usbfs::open(&Root::live(), d).map(|u| Box::new(u) as Box<dyn ControlTransport>)
+    }
+
+    /// Runs `f` against the live machine, with the channel.
+    fn live<T>(f: impl FnOnce(&Env) -> T) -> T {
+        let root = Root::live();
+        let clock = SystemClock::new();
+        let web = || Client::open(Box::new(Http::new(http::DEFAULT_HOST)?));
+        let env = Env {
+            scan: &root,
+            clock: &clock,
+            open: &web,
+            control: Some(&open),
+            cache_dir: None,
+            backups_dir: None,
+            url: "http://192.168.7.1/".into(),
+            timeouts: Timeouts::default(),
+            poll: Poll::INTERVAL,
+        };
+        f(&env)
+    }
+
+    fn on() -> bool {
+        opted_in("GAMEPADII_LIVE_CHANNEL")
+    }
+
+    /// HELLO, STATUS and every STRING: read-only.
+    #[test]
+    #[ignore = "needs the gamepadii firmware, the udev rule and GAMEPADII_LIVE_CHANNEL=1"]
+    fn hello_status_and_strings() {
+        if !on() {
+            return;
+        }
+        let pad = discovery::scan(&Root::live())
+            .into_iter()
+            .next()
+            .expect("a pad");
+        let ch = match channel::probe(&open, &pad) {
+            Probe::Found(c) => c,
+            other => panic!("no channel: {other:?}"),
+        };
+        eprintln!("{:?}", ch.hello());
+        let report = commands::channel_report(&ch).expect("STATUS and strings");
+        assert_eq!(report.protocol, "1.0");
+        assert!(!ch.caps().has(channel::Caps::REBOOT_BOOTSEL));
+        let status = commands::status_with(&Root::live(), Some(&open), None).unwrap();
+        print!("{}", output::status(Style::plain(Format::Human), &status));
+        assert!(status.devices[0].control_channel.is_some());
+    }
+
+    /// REBOOT into web-config over the channel, then back over HTTP.
+    #[test]
+    #[ignore = "reboots the pad; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_REBOOT=1"]
+    fn reboot_into_web_config_and_back() {
+        if !on() || !opted_in("GAMEPADII_LIVE_REBOOT") {
+            return;
+        }
+        let r = live(|env| flow::reboot_pad(env, BootMode::Webconfig, true, &mut Silent))
+            .expect("reboot into web-config");
+        print!("{}", output::reboot(Style::plain(Format::Human), &r));
+        assert_eq!(r.verified, Some(true));
+        let r = live(|env| flow::reboot_pad(env, BootMode::Gamepad, true, &mut Silent))
+            .expect("back to gamepad mode");
+        assert_eq!(r.verified, Some(true));
+    }
+
+    /// A RAM-only profile switch and back: no flash write, but it changes
+    /// the live mapping, so it is gated like a write.
+    #[test]
+    #[ignore = "changes the active profile; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_WRITE=1"]
+    fn ram_profile_switch_and_back() {
+        if !on() || !opted_in("GAMEPADII_LIVE_WRITE") {
+            return;
+        }
+        let pad = discovery::scan(&Root::live())
+            .into_iter()
+            .next()
+            .expect("a pad");
+        let ch = channel::probe(&open, &pad).found().expect("the channel");
+        let st = ch.status().unwrap();
+        let other = st
+            .enabled()
+            .into_iter()
+            .find(|n| *n != st.profile)
+            .expect("a second enabled profile");
+        drop(ch);
+        let r =
+            live(|env| flow::profile_switch(env, &ProfileArg::Number(other), false, &mut Silent))
+                .expect("switch");
+        print!(
+            "{}",
+            output::profile_switch(Style::plain(Format::Human), &r)
+        );
+        assert!(r.applied && !r.saved);
+        let back = live(|env| {
+            flow::profile_switch(env, &ProfileArg::Number(st.profile), false, &mut Silent)
+        })
+        .expect("switch back");
+        assert_eq!(back.profile.number, st.profile);
+    }
+
+    /// SET_INPUT_MODE to Keyboard and back to the mode it was in: writes
+    /// flash twice (take a backup first).
+    #[test]
+    #[ignore = "writes inputMode; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_WRITE=1"]
+    fn input_mode_round_trip() {
+        if !on() || !opted_in("GAMEPADII_LIVE_WRITE") {
+            return;
+        }
+        let pad = discovery::scan(&Root::live())
+            .into_iter()
+            .next()
+            .expect("a pad");
+        let was = pad.mode.expect("a known mode");
+        let target = if was == InputMode::Keyboard {
+            InputMode::Xinput
+        } else {
+            InputMode::Keyboard
+        };
+        let r = live(|env| flow::mode(env, target, false, &mut Silent)).expect("switch");
+        print!("{}", output::mode(Style::plain(Format::Human), &r));
+        assert_eq!(r.via, flow::Via::Control);
+        assert!(r.verified);
+        let back = live(|env| flow::mode(env, was, false, &mut Silent)).expect("switch back");
+        assert!(back.verified);
+    }
 }

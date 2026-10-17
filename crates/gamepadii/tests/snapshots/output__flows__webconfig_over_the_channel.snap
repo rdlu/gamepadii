@@ -1,0 +1,6 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::webconfig(human(), &r)"
+---
+Web-config at http://192.168.7.1/
+the pad rebooted into web-config over the control channel; leave it with: gamepadii webconfig --exit

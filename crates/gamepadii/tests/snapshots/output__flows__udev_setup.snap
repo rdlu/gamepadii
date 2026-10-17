@@ -1,0 +1,43 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::udev(human(), &r)"
+---
+udev rule for the control channel: not installed
+file          /etc/udev/rules.d/70-gamepadii.rules
+grants        read-write access to the USB device node (/dev/bus/usb/BBB/DDD)
+              of the ids below, for the user at the seat (uaccess); gamepadii
+              sends the control channel's requests there. Input devices
+              (evdev, hidraw) are untouched.
+ids           cafe:*     Keyboard, web-config; also other hobby devices that kept TinyUSB's example vendor id
+              045e:028e  XInput; also the Xbox 360 controller and its clones
+              10c4:82c0  Generic HID; also Silicon Labs' example HID id
+              0f0d:0092  Nintendo Switch; also HORI's Pokkén Tournament Pro Pad
+              054c:0268  PS3; also the DualShock 3
+              046d:c294  PS3; also Logitech Driving Force wheels
+              12ba:0200  PS3; also PS3 Guitar Hero guitars
+              12ba:0210  PS3; also PS3 Rock Band drums
+              1532:0401  PS4, PS5; also the Razer Panthera arcade stick
+              054c:09cc  PS4, PS5; also the DualShock 4
+              046d:c260  PS4, PS5; also the Logitech G29 wheel
+              0e6f:02a4  Xbox One; also PDP's Xbox One controller
+              0ca3:0024  Sega Genesis/MegaDrive Mini; also the Sega Genesis/MegaDrive Mini pad
+              20bc:5500  NEOGEO mini; also the NEOGEO mini pad
+              0f0d:0138  PC Engine/Turbografx 16 Mini; also HORI's PC Engine Mini pad
+              0ae4:0702  EGRET II mini; also the Egret II Mini panel
+              0ca3:0027  ASTROCITY Mini; also the Astro City Mini panel
+              054c:0cda  Playstation Classic; also the PlayStation Classic pad
+              045e:0289  Original Xbox; also the original Xbox controller
+              057e:2009  Nintendo Switch Pro; also the Switch Pro Controller
+              057e:2069  Nintendo Switch 2 Pro; also the Switch 2 Pro Controller
+              057e:2073  Nintendo Switch 2 Pro; also the Switch 2 GameCube controller
+              057e:2066  Nintendo Switch 2 Pro; also the right Joy-Con 2
+              057e:2067  Nintendo Switch 2 Pro; also the left Joy-Con 2
+              2b81:0101  P5General; also P5General adapters
+              2e8a:10c6  SInput; also other SInput controllers
+              2e8a:0003  BOOTSEL; also every RP2040 board in BOOTSEL
+              2e8a:000f  BOOTSEL; also every RP2350 board in BOOTSEL
+caution       GP2040-CE borrows these ids from real controllers, so a real
+              Xbox 360, HORI, DualShock or Switch pad plugged in here gets the
+              same access.
+install       gamepadii setup udev --install (asks for your password
+              through pkexec), or gamepadii setup udev --print

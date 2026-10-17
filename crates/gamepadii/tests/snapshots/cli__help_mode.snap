@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"mode\"])"
 ---
-Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it says which buttons to press and waits
+Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
 
 Usage: gamepadii mode [OPTIONS] [MODE]
 
@@ -63,6 +63,9 @@ Options:
 
       --no-backup
           Don't back up the settings before writing
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
 
   -h, --help
           Print help (see a summary with '-h')

@@ -10,10 +10,16 @@ use std::io::IsTerminal;
 
 use gamepadii_core::Error;
 use gamepadii_core::api::RebootAck;
-use gamepadii_core::commands::{BackupReport, Firmware, Info, ModeSetting, Status};
+use gamepadii_core::commands::{
+    BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
+};
 use gamepadii_core::discovery::Device;
-use gamepadii_core::flow::{ModeReport, ModeStatus, RebootReport, Seen, Via, WebconfigReport};
+use gamepadii_core::flow::{
+    ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Via, WebconfigReport,
+    WebconfigVia,
+};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
+use gamepadii_core::udev;
 use serde::Serialize;
 
 /// Bumped on any breaking change to the JSON output.
@@ -163,6 +169,48 @@ fn device_rows(d: &Device) -> Vec<(&'static str, String)> {
     rows
 }
 
+/// The control channel's rows: what the firmware itself says.
+fn channel_rows(c: &ChannelReport) -> Vec<(&'static str, String)> {
+    let mut firmware = c.firmware.version.clone().unwrap_or_else(|| "-".into());
+    let board: Vec<String> = [&c.firmware.board_label, &c.firmware.build_type]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+    if !board.is_empty() {
+        firmware.push_str(&format!(" ({})", board.join(", ")));
+    }
+    let mut profile = c.active_profile.display();
+    if c.profile_pending {
+        profile.push_str(" (switching)");
+    }
+    vec![
+        ("firmware", firmware),
+        (
+            "board",
+            c.firmware.board.clone().unwrap_or_else(|| "-".into()),
+        ),
+        ("input mode", setting(&c.input_mode)),
+        ("profile", profile),
+        (
+            "channel",
+            format!("control channel v{} on {}", c.protocol, c.node),
+        ),
+    ]
+}
+
+/// Every row of one device in `status`.
+fn status_rows(d: &StatusDevice) -> Vec<(&'static str, String)> {
+    let mut rows = device_rows(&d.device);
+    if let Some(c) = &d.control_channel {
+        rows.extend(channel_rows(c));
+    }
+    if let Some(n) = &d.channel_note {
+        rows.push(("channel", n.clone()));
+    }
+    rows
+}
+
 pub fn status(style: Style, s: &Status) -> String {
     match style.format {
         Format::Json => return json(s),
@@ -170,7 +218,8 @@ pub fn status(style: Style, s: &Status) -> String {
         Format::Human => {}
     }
     let mut out = String::new();
-    for (i, d) in s.devices.iter().map(|d| &d.device).enumerate() {
+    for (i, sd) in s.devices.iter().enumerate() {
+        let d = &sd.device;
         if i > 0 {
             out.push('\n');
         }
@@ -179,7 +228,7 @@ pub fn status(style: Style, s: &Status) -> String {
             style.bold(&mode_label(d)),
             style.dim(&format!("({})", confidence(d.confidence)))
         ));
-        for (label, value) in device_rows(d) {
+        for (label, value) in status_rows(sd) {
             out.push_str(&format!("{}{value}\n", style.dim(&format!("{label:<14}"))));
         }
     }
@@ -220,9 +269,10 @@ pub fn waybar_status(s: &Status) -> Waybar {
     }
     // waybar renders tooltips in a proportional font: "label: value", no padding.
     let mut parts = Vec::new();
-    for d in s.devices.iter().map(|d| &d.device) {
+    for sd in &s.devices {
+        let d = &sd.device;
         let mut t = format!("{} ({})", mode_label(d), confidence(d.confidence));
-        for (label, value) in device_rows(d) {
+        for (label, value) in status_rows(sd) {
             t.push_str(&format!("\n{label}: {value}"));
         }
         parts.push(t);
@@ -431,6 +481,9 @@ pub fn reboot(style: Style, r: &RebootReport) -> String {
         None => {
             let after = match r.mode {
                 BootMode::Gamepad => "it comes back in its saved input mode".to_string(),
+                BootMode::Webconfig if r.via == Route::Control => {
+                    format!("it comes back at {WEBCONFIG_URL} in a few seconds")
+                }
                 BootMode::Webconfig => format!("it comes back at {}/ in a few seconds", r.host),
                 BootMode::Bootsel => {
                     "it comes back as the RPI-RP2 USB drive, for flashing".to_string()
@@ -445,6 +498,9 @@ pub fn reboot(style: Style, r: &RebootReport) -> String {
         }
     };
     let mut rw: Vec<(&str, String)> = Vec::new();
+    if r.via == Route::Control {
+        rw.push(("via", format!("the control channel ({})", r.host)));
+    }
     if r.ack == RebootAck::Probable {
         rw.push(("request", ack(r.ack).into()));
     }
@@ -598,12 +654,111 @@ pub fn webconfig(style: Style, r: &WebconfigReport) -> String {
         return json(r);
     }
     let mut out = format!("{} {}\n", style.bold("Web-config at"), style.bold(&r.url));
-    let via = if r.waited_for_user {
-        "the pad is in web-config now"
-    } else {
-        "the pad was already in web-config"
+    let via = match r.via {
+        WebconfigVia::User => "the pad is in web-config now",
+        WebconfigVia::Control => "the pad rebooted into web-config over the control channel",
+        WebconfigVia::Already => "the pad was already in web-config",
     };
     out.push_str(&style.dim(&format!("{via}; leave it with: gamepadii webconfig --exit")));
     out.push('\n');
+    out
+}
+
+pub fn profile_switch(style: Style, r: &ProfileReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let name = format!("profile {}", r.profile.display());
+    let headline = match (r.changed, r.saved, r.applied) {
+        (true, _, true) => "Switched to",
+        (true, _, false) => "Switching to",
+        (false, true, _) => "Saved",
+        (false, false, _) => "Already on",
+    };
+    let mut out = format!("{} {}\n", style.bold(headline), style.bold(&name));
+    let mut rw: Vec<(&str, String)> = Vec::new();
+    if r.changed {
+        rw.push(("was", r.before.display()));
+    }
+    if r.changed || r.saved {
+        rw.push((
+            "saved",
+            if r.saved {
+                "yes, in flash".into()
+            } else {
+                "no (RAM only)".into()
+            },
+        ));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn udev(style: Style, r: &udev::Report) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let state = match (r.action, r.installed) {
+        (Some(udev::Action::Installed), _) => "installed now",
+        (Some(udev::Action::None), _) => "already installed, nothing to do",
+        (None, udev::Installed::No) => "not installed",
+        (None, udev::Installed::Current) => "installed, up to date",
+        (None, udev::Installed::Differs) => "installed, but not this gamepadii's rule",
+    };
+    let mut out = format!(
+        "{} {}\n",
+        style.bold("udev rule for the control channel:"),
+        style.bold(state)
+    );
+    let width = r.grants.iter().map(|g| g.usb_id.len()).max().unwrap_or(0) + 2;
+    let ids = r
+        .grants
+        .iter()
+        .map(|g| {
+            let modes = g.modes.iter().map(|m| m.label()).collect::<Vec<_>>();
+            let mut line = format!("{:<width$}{}", g.usb_id, modes.join(", "));
+            if let Some(who) = g.also_matches {
+                line.push_str(&format!("; also {who}"));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut rw: Vec<(&str, String)> = vec![
+        ("file", r.path.to_string()),
+        (
+            "grants",
+            "read-write access to the USB device node (/dev/bus/usb/BBB/DDD)\n\
+             of the ids below, for the user at the seat (uaccess); gamepadii\n\
+             sends the control channel's requests there. Input devices\n\
+             (evdev, hidraw) are untouched."
+                .into(),
+        ),
+        ("ids", ids),
+        (
+            "caution",
+            "GP2040-CE borrows these ids from real controllers, so a real\n\
+             Xbox 360, HORI, DualShock or Switch pad plugged in here gets the\n\
+             same access."
+                .into(),
+        ),
+    ];
+    match (r.action, r.installed) {
+        (Some(_), _) => {}
+        (None, udev::Installed::Current) => {
+            rw.push(("remove", format!("sudo rm {}", r.path)));
+        }
+        (None, _) => rw.push((
+            "install",
+            "gamepadii setup udev --install (asks for your password\n\
+             through pkexec), or gamepadii setup udev --print"
+                .into(),
+        )),
+    }
+    rows(style, &mut out, &rw);
     out
 }

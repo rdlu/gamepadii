@@ -390,3 +390,197 @@ fn reboot_waits_for_usb() {
         "{stderr}"
     );
 }
+
+// ---- the control channel, against --mock-channel ---------------------------
+
+fn cc(args: &[&str]) -> (u8, String, String) {
+    let mut a = vec!["--mock-api", "%s16-v0.7.12"];
+    a.extend_from_slice(args);
+    webconfig(&a)
+}
+
+#[test]
+fn status_with_the_channel_is_confirmed() {
+    let (code, stdout, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "status",
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("XInput (confirmed)\n"), "{stdout}");
+    assert!(stdout.contains("profile       2 SilkSong"), "{stdout}");
+    let (_, stdout, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "status",
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["devices"][0]["confidence"], "confirmed");
+    assert_eq!(
+        v["devices"][0]["control_channel"]["firmware"]["version"],
+        "v0.7.12"
+    );
+    // Stock firmware: as before, with explicit nulls.
+    let (code, stdout, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "stock",
+        "status",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["devices"][0]["confidence"], "likely");
+    assert!(v["devices"][0]["control_channel"].is_null());
+}
+
+#[test]
+fn a_fixture_sysroot_never_reaches_a_real_node() {
+    // No --mock-channel: usbfs under the fixture root finds no dev/.
+    let (code, stdout, _) = gamepadii(&["--sysroot", "@s16-xinput", "status", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v["devices"][0]["control_channel"].is_null());
+}
+
+#[test]
+fn profile_switch_exit_codes() {
+    let (code, stdout, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "profile",
+        "switch",
+        "celeste",
+    ]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("Switched to profile 3 Celeste\n"),
+        "{stdout}"
+    );
+    let (code, _, stderr) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "stock",
+        "profile",
+        "switch",
+        "3",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("LOAD_PROFILE_n"), "{stderr}");
+    let (code, stdout, stderr) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "no-access",
+        "--json",
+        "profile",
+        "switch",
+        "3",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("gamepadii setup udev"), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "needs_user");
+    let (code, _, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "profile",
+        "switch",
+        "Hades",
+    ]);
+    assert_eq!(code, 3);
+    let (code, _, stderr) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--no-channel",
+        "profile",
+        "switch",
+        "2",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("--no-channel"), "{stderr}");
+}
+
+#[test]
+fn reboot_and_mode_over_the_channel() {
+    // A static fixture never re-enumerates, so only --no-wait succeeds.
+    let (code, stdout, _) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "reboot",
+        "webconfig",
+        "--no-wait",
+    ]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("via           the control channel (/dev/bus/usb/"),
+        "{stdout}"
+    );
+    let (code, _, stderr) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "mode",
+        "keyboard",
+        "--reboot-timeout",
+        "0",
+    ]);
+    assert_eq!(
+        code, 4,
+        "the command went out, the pad didn't come back: {stderr}"
+    );
+    assert!(stderr.contains("hasn't come back on USB"), "{stderr}");
+    let (code, _, stderr) = cc(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "channel",
+        "mode",
+        "sinput",
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+}
+
+#[test]
+fn setup_udev_prints_explains_and_installs_into_a_root() {
+    let (code, stdout, _) = gamepadii(&["setup", "udev", "--print"]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, gamepadii_core::udev::rule());
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path().to_str().unwrap();
+    let (code, stdout, _) = gamepadii(&["--sysroot", r, "setup", "udev"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("udev rule for the control channel: not installed\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("045e:028e"), "{stdout}");
+    let (code, stdout, _) = gamepadii(&["--sysroot", r, "setup", "udev", "--install", "--json"]);
+    assert_eq!(code, 0, "{stdout}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["action"], "installed");
+    assert_eq!(v["installed"], "current");
+    let file = root.path().join("etc/udev/rules.d/70-gamepadii.rules");
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        gamepadii_core::udev::rule()
+    );
+    let (_, stdout, _) = gamepadii(&["--sysroot", r, "setup", "udev", "--install", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["action"], "none");
+}

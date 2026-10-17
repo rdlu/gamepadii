@@ -1,0 +1,38 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\", output::mode(human(), &r), output::mode(json(), &r))"
+---
+Switched to Keyboard
+was           XInput (045e:028e, confirmed)
+via           the control channel; no web-config, no button press
+saved         Keyboard (the pad saved it and restarted)
+now           Keyboard (cafe:0001, confirmed)
+
+{
+  "schema": 1,
+  "target": "keyboard",
+  "via": "control",
+  "before": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "045e:028e"
+  },
+  "after": {
+    "mode": "keyboard",
+    "candidates": [
+      "keyboard"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "cafe:0001"
+  },
+  "verified": true,
+  "waited_for_user": false,
+  "saved_before": null,
+  "write": null,
+  "backup": null,
+  "reboot": "confirmed",
+  "note": null
+}

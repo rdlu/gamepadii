@@ -1,0 +1,35 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\", output::profile_switch(human(), &ram),\noutput::profile_switch(human(), &saved),\noutput::profile_switch(human(), &already),\noutput::profile_switch(json(), &ram))"
+---
+Switched to profile 3 Celeste
+was           2 SilkSong
+saved         no (RAM only)
+via           the control channel (/dev/bus/usb/003/007)
+note          not saved: the pad goes back to its saved profile when it restarts, unless something saves its settings first (any hotkey, turbo or LED change does); --save keeps it
+
+Switched to profile 4 DKC
+was           3 Celeste
+saved         yes, in flash
+via           the control channel (/dev/bus/usb/003/007)
+
+Already on profile 4 DKC
+via           the control channel (/dev/bus/usb/003/007)
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "before": {
+    "number": 2,
+    "label": "SilkSong"
+  },
+  "profile": {
+    "number": 3,
+    "label": "Celeste"
+  },
+  "changed": true,
+  "saved": false,
+  "applied": true,
+  "note": "not saved: the pad goes back to its saved profile when it restarts, unless something saves its settings first (any hotkey, turbo or LED change does); --save keeps it"
+}

@@ -23,5 +23,8 @@ Options:
       --host <HOST>
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
   -h, --help
           Print help (see a summary with '-h')

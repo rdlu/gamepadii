@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"webconfig\"])"
 ---
-Get the pad into web-config and print its URL; in a gamepad mode it says which buttons to press and waits
+Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
 
 Usage: gamepadii webconfig [OPTIONS]
 
@@ -34,6 +34,9 @@ Options:
 
       --timeout <SECS>
           How long to wait for the button press (or, with --exit, for the pad to come back)
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
 
   -h, --help
           Print help (see a summary with '-h')

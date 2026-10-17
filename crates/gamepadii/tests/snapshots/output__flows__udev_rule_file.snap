@@ -1,0 +1,99 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "gamepadii_core::udev::rule()"
+---
+# gamepadii: read-write access for the logged-in user to the USB device nodes
+# (/dev/bus/usb/BBB/DDD) of GP2040-CE pads, for gamepadii's control channel
+# (status, mode, profile switch and reboot with no button press).
+# Written by `gamepadii setup udev`; delete this file to revoke it.
+#
+# GP2040-CE borrows most of its USB ids from real controllers, so this also
+# covers a real Xbox 360 pad, a HORI pad, a DualShock, ... plugged into this
+# machine: their device nodes become writable for the seat user too (as
+# Steam's rules do for hidraw). Input devices (evdev, hidraw) are untouched.
+#
+# Custom USB ids (usbOverrideID): copy a line and put your VID:PID in it.
+
+# Keyboard, web-config; also other hobby devices that kept TinyUSB's example vendor id
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="cafe", TAG+="uaccess"
+
+# XInput; also the Xbox 360 controller and its clones
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="045e", ATTR{idProduct}=="028e", TAG+="uaccess"
+
+# Generic HID; also Silicon Labs' example HID id
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="10c4", ATTR{idProduct}=="82c0", TAG+="uaccess"
+
+# Nintendo Switch; also HORI's Pokkén Tournament Pro Pad
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0f0d", ATTR{idProduct}=="0092", TAG+="uaccess"
+
+# PS3; also the DualShock 3
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="054c", ATTR{idProduct}=="0268", TAG+="uaccess"
+
+# PS3; also Logitech Driving Force wheels
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{idProduct}=="c294", TAG+="uaccess"
+
+# PS3; also PS3 Guitar Hero guitars
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="12ba", ATTR{idProduct}=="0200", TAG+="uaccess"
+
+# PS3; also PS3 Rock Band drums
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="12ba", ATTR{idProduct}=="0210", TAG+="uaccess"
+
+# PS4, PS5; also the Razer Panthera arcade stick
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1532", ATTR{idProduct}=="0401", TAG+="uaccess"
+
+# PS4, PS5; also the DualShock 4
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="054c", ATTR{idProduct}=="09cc", TAG+="uaccess"
+
+# PS4, PS5; also the Logitech G29 wheel
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{idProduct}=="c260", TAG+="uaccess"
+
+# Xbox One; also PDP's Xbox One controller
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0e6f", ATTR{idProduct}=="02a4", TAG+="uaccess"
+
+# Sega Genesis/MegaDrive Mini; also the Sega Genesis/MegaDrive Mini pad
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0ca3", ATTR{idProduct}=="0024", TAG+="uaccess"
+
+# NEOGEO mini; also the NEOGEO mini pad
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="20bc", ATTR{idProduct}=="5500", TAG+="uaccess"
+
+# PC Engine/Turbografx 16 Mini; also HORI's PC Engine Mini pad
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0f0d", ATTR{idProduct}=="0138", TAG+="uaccess"
+
+# EGRET II mini; also the Egret II Mini panel
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0ae4", ATTR{idProduct}=="0702", TAG+="uaccess"
+
+# ASTROCITY Mini; also the Astro City Mini panel
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0ca3", ATTR{idProduct}=="0027", TAG+="uaccess"
+
+# Playstation Classic; also the PlayStation Classic pad
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="054c", ATTR{idProduct}=="0cda", TAG+="uaccess"
+
+# Original Xbox; also the original Xbox controller
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="045e", ATTR{idProduct}=="0289", TAG+="uaccess"
+
+# Nintendo Switch Pro; also the Switch Pro Controller
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="057e", ATTR{idProduct}=="2009", TAG+="uaccess"
+
+# Nintendo Switch 2 Pro; also the Switch 2 Pro Controller
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="057e", ATTR{idProduct}=="2069", TAG+="uaccess"
+
+# Nintendo Switch 2 Pro; also the Switch 2 GameCube controller
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="057e", ATTR{idProduct}=="2073", TAG+="uaccess"
+
+# Nintendo Switch 2 Pro; also the right Joy-Con 2
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="057e", ATTR{idProduct}=="2066", TAG+="uaccess"
+
+# Nintendo Switch 2 Pro; also the left Joy-Con 2
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="057e", ATTR{idProduct}=="2067", TAG+="uaccess"
+
+# P5General; also P5General adapters
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2b81", ATTR{idProduct}=="0101", TAG+="uaccess"
+
+# SInput; also other SInput controllers
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="10c6", TAG+="uaccess"
+
+# BOOTSEL; also every RP2040 board in BOOTSEL
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="0003", TAG+="uaccess"
+
+# BOOTSEL; also every RP2350 board in BOOTSEL
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000f", TAG+="uaccess"

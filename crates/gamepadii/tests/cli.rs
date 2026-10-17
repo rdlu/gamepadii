@@ -176,3 +176,47 @@ fn help_mode() {
 fn help_webconfig() {
     insta::assert_snapshot!(help(&["webconfig"]));
 }
+
+#[test]
+fn help_profile_switch() {
+    insta::assert_snapshot!(help(&["profile", "switch"]));
+}
+
+#[test]
+fn help_setup_udev() {
+    insta::assert_snapshot!(help(&["setup", "udev"]));
+}
+
+#[test]
+fn parses_profile_and_setup() {
+    use gamepadii::cli::{ProfileCommand, SetupCommand};
+    use gamepadii_core::flow::ProfileArg;
+    let switch = |args: &[&str]| match parse(args).unwrap().command {
+        Some(Command::Profile {
+            command: ProfileCommand::Switch { profile, save },
+        }) => (profile, save),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        switch(&["profile", "switch", "3"]),
+        (ProfileArg::Number(3), false)
+    );
+    assert_eq!(
+        switch(&["profile", "switch", "SilkSong", "--save"]),
+        (ProfileArg::Label("SilkSong".into()), true)
+    );
+    assert!(parse(&["profile", "switch", "7"]).is_err());
+    assert!(parse(&["profile", "switch"]).is_err());
+    assert_eq!(
+        parse(&["setup", "udev", "--print"]).unwrap().command,
+        Some(Command::Setup {
+            command: SetupCommand::Udev {
+                print: true,
+                install: false
+            }
+        })
+    );
+    assert!(parse(&["setup", "udev", "--print", "--install"]).is_err());
+    assert!(parse(&["--no-channel", "status"]).unwrap().no_channel);
+    assert!(parse(&["--no-channel", "--mock-channel", "stock", "status"]).is_err());
+}

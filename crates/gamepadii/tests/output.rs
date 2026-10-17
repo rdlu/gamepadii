@@ -229,14 +229,22 @@ mod flows {
             self
         }
 
+        fn status(&self) -> gamepadii_core::commands::Status {
+            let pad = self.pad.clone();
+            let control = move |d: &gamepadii_core::discovery::Device| pad.open_control(d);
+            gamepadii_core::commands::status_with(&*self.pad, Some(&control), None).unwrap()
+        }
+
         fn run<T>(&self, f: impl FnOnce(&Env) -> T) -> T {
             let pad = self.pad.clone();
             let open = move || pad.open();
+            let pad = self.pad.clone();
+            let control = move |d: &gamepadii_core::discovery::Device| pad.open_control(d);
             let env = Env {
                 scan: &*self.pad,
                 clock: &self.clock,
                 open: &open,
-                control: None,
+                control: Some(&control),
                 cache_dir: Some(self.dirs.path().join("cache")),
                 backups_dir: Some(self.dirs.path().join("backups")),
                 url: "http://192.168.7.1/".into(),
@@ -410,5 +418,86 @@ mod flows {
             output::reboot(human(), &r),
             output::reboot(json(), &r)
         ));
+    }
+
+    // ---- the control channel ----------------------------------------------
+
+    fn cc(mode: InputMode) -> Rig {
+        Rig::new(SimPad::new(s16_dir(), mode).with_channel())
+    }
+
+    #[test]
+    fn status_with_the_channel() {
+        let rig = cc(InputMode::Xinput);
+        let s = rig.status();
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}",
+            output::status(human(), &s),
+            output::status(json(), &s),
+            output::status(Style::plain(Format::Waybar), &s)
+        ));
+    }
+
+    #[test]
+    fn mode_over_the_channel() {
+        let r = cc(InputMode::Xinput).mode(InputMode::Keyboard, &mut Silent);
+        insta::assert_snapshot!(format!(
+            "{}\n{}",
+            output::mode(human(), &r),
+            output::mode(json(), &r)
+        ));
+    }
+
+    #[test]
+    fn webconfig_over_the_channel() {
+        let r = cc(InputMode::Xinput)
+            .run(|env| flow::webconfig(env, true, &mut Silent))
+            .unwrap();
+        insta::assert_snapshot!(output::webconfig(human(), &r));
+    }
+
+    #[test]
+    fn reboot_over_the_channel() {
+        let rig = cc(InputMode::Xinput);
+        let r = rig
+            .run(|env| flow::reboot_pad(env, BootMode::Webconfig, true, &mut Silent))
+            .unwrap();
+        insta::assert_snapshot!(format!(
+            "{}\n{}",
+            output::reboot(human(), &r),
+            output::reboot(json(), &r)
+        ));
+    }
+
+    #[test]
+    fn profile_switch_outputs() {
+        let rig = cc(InputMode::Xinput);
+        let switch = |which: &str, save| {
+            let which: flow::ProfileArg = which.parse().unwrap();
+            rig.run(|env| flow::profile_switch(env, &which, save, &mut Silent))
+                .unwrap()
+        };
+        let ram = switch("3", false);
+        let saved = switch("dkc", true);
+        let already = switch("4", false);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}",
+            output::profile_switch(human(), &ram),
+            output::profile_switch(human(), &saved),
+            output::profile_switch(human(), &already),
+            output::profile_switch(json(), &ram)
+        ));
+    }
+
+    #[test]
+    fn udev_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = gamepadii_core::udev::report(&gamepadii_core::sysfs::Root::new(dir.path()));
+        insta::assert_snapshot!(output::udev(human(), &r));
+    }
+
+    #[test]
+    fn udev_rule_file() {
+        insta::assert_snapshot!(gamepadii_core::udev::rule());
     }
 }

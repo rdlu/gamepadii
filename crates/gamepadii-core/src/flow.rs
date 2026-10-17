@@ -1429,7 +1429,6 @@ pub fn profile_switch(
         note: None,
     };
     if !report.changed && !save {
-        report.note = Some("already the active profile".into());
         return Ok(report);
     }
     ch.set_profile(n, save)?;

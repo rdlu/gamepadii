@@ -1,0 +1,27 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\", output::reboot(human(), &r), output::reboot(json(), &r))"
+---
+Rebooted into web-config
+via           the control channel (/dev/bus/usb/003/007)
+came back as  web-config (cafe:4028, confirmed), as expected
+
+{
+  "schema": 1,
+  "host": "/dev/bus/usb/003/007",
+  "mode": "webconfig",
+  "via": "control",
+  "ack": "confirmed",
+  "waited": true,
+  "after": {
+    "mode": "webconfig",
+    "candidates": [
+      "webconfig"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "cafe:4028"
+  },
+  "expected": "webconfig",
+  "verified": true,
+  "note": null
+}
