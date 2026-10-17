@@ -1,0 +1,41 @@
+---
+source: crates/gamepadii-core/tests/api.rs
+expression: v
+---
+{
+  "captured_at": "2026-10-17T16:57:03Z",
+  "endpoints": {
+    "getAddonsOptions": "object, 143 keys",
+    "getButtonLayoutDefs": "object, 2 keys",
+    "getButtonLayouts": "object, 2 keys",
+    "getCustomTheme": "object, 20 keys",
+    "getDisplayOptions": "object, 23 keys",
+    "getExpansionPins": "object, 1 keys",
+    "getFirmwareVersion": "object, 7 keys",
+    "getGamepadOptions": "object, 47 keys",
+    "getHETriggerCalibration": "object, 1 keys",
+    "getHETriggerOptions": "object, 1 keys",
+    "getKeyMappings": "object, 32 keys",
+    "getLedOptions": "object, 21 keys",
+    "getMacroAddonOptions": "object, 2 keys",
+    "getMemoryReport": "object, 6 keys",
+    "getPeripheralOptions": "object, 1 keys",
+    "getPinMappings": "object, 32 keys",
+    "getProfileOptions": "object, 1 keys",
+    "getReactiveLEDs": "object, 1 keys",
+    "getSplashImage": "object, 1 keys",
+    "getUsedPins": "object, 1 keys",
+    "getWiiControls": "object, 66 keys"
+  },
+  "firmware": {
+    "architecture": "rp2040",
+    "board": "Haute42COSMOX",
+    "board_label": "Haute42 COSMOX",
+    "build": "0014e4a",
+    "build_type": "Release",
+    "file_name": "GP2040-CE_0.7.12_Haute42COSMOX",
+    "version": "v0.7.12"
+  },
+  "gamepadii_version": "[version]",
+  "schema": 1
+}

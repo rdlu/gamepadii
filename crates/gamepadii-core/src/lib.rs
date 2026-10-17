@@ -12,6 +12,7 @@ pub mod discovery;
 pub mod error;
 pub mod mode;
 pub mod sysfs;
+pub mod timestamp;
 pub mod transport;
 
 pub use error::{Error, Result};
