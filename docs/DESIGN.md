@@ -180,7 +180,11 @@ Host side (`gamepadii-core/src/channel/`):
   never touched. A failed restore is a warning (stderr and the note), not
   an error: the read worked. With `--stay` nothing is switched (the pad
   stays in web-config); the note says the profile was dropped. Decided in
-  #2 (follow-up 3; the restore decided later).
+  #2 (follow-up 3; the restore decided later). `info` labels its profile
+  rows `saved` (`profileNumber`, all web-config knows) and `running` (the
+  STATUS taken after the trip, `trip.running_profile`); without a trip, or
+  when STATUS doesn't answer, running is unknown (`null`), never the saved
+  one (#14).
 - The device cache (`cache.rs`) records the profile STATUS reports
   (`running_profile`) beside the saved `profileNumber`: `profile switch`
   sets it (and the saved one with `--save`), any STATUS refreshes it

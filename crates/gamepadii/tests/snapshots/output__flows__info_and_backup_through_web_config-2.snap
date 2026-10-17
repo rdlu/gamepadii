@@ -15,6 +15,7 @@ expression: "serde_json::to_string_pretty(&v[\"trip\"]).unwrap()"
   },
   "profile": 2,
   "restored_profile": null,
+  "running_profile": 2,
   "stayed": false,
   "back_via": "web_config",
   "after": {

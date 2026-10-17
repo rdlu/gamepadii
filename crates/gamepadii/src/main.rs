@@ -60,14 +60,18 @@ fn main() -> ExitCode {
                 .map(|s| output::status(style, &s)),
         ),
         Some(Command::Info { trip }) => {
-            let work = |c: &Client| {
-                let (info, cache) = commands::info_with_cache(c, SystemTime::now())?;
-                save_cache(&cache);
-                Ok(info)
-            };
-            let result = with_webconfig(&cli, &root, control, format, &trip, work, |_| {
-                "the pad was read".to_string()
-            })
+            // --host: the web configurator as it is; otherwise the pad on
+            // USB, through web-config and back when it is in a gamepad mode.
+            let result = match &cli.host {
+                Some(_) => connect(&cli, &root).and_then(|c| {
+                    let (info, cache) = commands::info_with_cache(&c, SystemTime::now())?;
+                    save_cache(&cache);
+                    Ok((info, None))
+                }),
+                None => on_usb(&cli, &root, control, format, &trip, |env, progress| {
+                    flow::info(env, trip.stay, progress)
+                }),
+            }
             .map(|(i, t)| output::info(style, &i, t.as_ref()));
             finish(format, result)
         }
@@ -233,6 +237,21 @@ fn with_webconfig<T>(
     if cli.host.is_some() {
         return connect(cli, root).and_then(|c| work(&c)).map(|r| (r, None));
     }
+    on_usb(cli, root, control, format, trip, |env, progress| {
+        flow::through_webconfig(env, trip.stay, progress, work, done)
+    })
+}
+
+/// Runs a trip through web-config (`info`, `backup`) against the pad on
+/// USB, with the progress on stderr.
+fn on_usb<T>(
+    cli: &Cli,
+    root: &Root,
+    control: Option<&OpenControl<'_>>,
+    format: Format,
+    trip: &TripArgs,
+    f: impl FnOnce(&Env, &mut dyn flow::Progress) -> gamepadii_core::Result<T>,
+) -> gamepadii_core::Result<T> {
     let timeouts = Timeouts {
         reboot: Duration::from_secs(trip.timeout),
         ..Timeouts::default()
@@ -241,7 +260,7 @@ fn with_webconfig<T>(
     let open = || open(cli);
     let env = env(cli, root, &clock, &open, control, timeouts, false);
     let mut progress = reporter(format);
-    flow::through_webconfig(&env, trip.stay, &mut progress, work, done)
+    f(&env, &mut progress)
 }
 
 /// The web-config client: `--host` skips the USB check; otherwise the pad

@@ -1438,6 +1438,10 @@ pub struct Trip {
     /// restart had dropped it: it ran a profile it hadn't saved. `null`
     /// when nothing needed restoring, restoring failed, or with `--stay`.
     pub restored_profile: Option<u8>,
+    /// The profile STATUS shows once the trip is over: back in the gamepad
+    /// mode (after any restore), or in web-config with `--stay`. `null`
+    /// when the channel didn't answer then.
+    pub running_profile: Option<u8>,
     /// `--stay`: it was left in web-config.
     pub stayed: bool,
     /// How it was sent back: `web_config` (`/api/reboot {"bootMode":0}`), or
@@ -1518,6 +1522,7 @@ pub fn through_webconfig<T>(
         before,
         profile: probed.profile(),
         restored_profile: None,
+        running_profile: None,
         stayed: stay,
         back_via: None,
         after: None,
@@ -1580,7 +1585,7 @@ pub fn through_webconfig<T>(
             "left in web-config at {}; leave it with: gamepadii webconfig --exit",
             env.url
         );
-        if let Some(dropped) = dropped_in_webconfig(env, &wc, &probed.firmware, trip.profile) {
+        if let Some(dropped) = dropped_in_webconfig(env, &wc, &probed.firmware, &mut trip) {
             note.push_str(&format!("; {dropped}"));
         }
         trip.note = Some(note);
@@ -1602,18 +1607,40 @@ pub fn through_webconfig<T>(
     }
 }
 
-/// With `--stay`: what the restart did to a RAM-only profile `before`, as
-/// STATUS reports it in web-config (the channel answers there too).
-fn dropped_in_webconfig(
+/// `gamepadii info` for the pad on USB: [`through_webconfig`] with the
+/// reads, the device cache refreshed from them (before the way back, which
+/// records the running profile in it), and the profile rows labelled with
+/// the one STATUS shows once the trip is over (`null` without a trip: the
+/// channel isn't asked in web-config).
+pub fn info(
     env: &Env,
-    wc: &Device,
-    fw: &Firmware,
-    before: Option<u8>,
-) -> Option<String> {
-    let p = before?;
+    stay: bool,
+    progress: &mut dyn Progress,
+) -> Result<(commands::Info, Option<Trip>)> {
+    let mut failed = None;
+    let work = |c: &Client| {
+        let (info, cache) = commands::info_with_cache(c, env.clock.wall())?;
+        failed = cache::store_quietly(env.cache_dir.as_deref(), &cache);
+        Ok(info)
+    };
+    let (mut info, trip) =
+        through_webconfig(env, stay, progress, work, |_| "the pad was read".into())?;
+    if let Some(e) = &failed {
+        progress.step(Step::CacheFailed(e));
+    }
+    info.set_running(trip.as_ref().and_then(|t| t.running_profile));
+    Ok((info, trip))
+}
+
+/// With `--stay`: the profile STATUS reports in web-config (the channel
+/// answers there too) goes into `trip.running_profile`; what the restart
+/// did to a RAM-only profile it ran before, if anything.
+fn dropped_in_webconfig(env: &Env, wc: &Device, fw: &Firmware, trip: &mut Trip) -> Option<String> {
     let st = channel_after_reboot(env, wc)?.status().ok()?;
+    trip.running_profile = Some(st.profile);
     let dir = env.cache_dir.as_deref();
     let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+    let p = trip.profile?;
     (st.profile != p).then(|| {
         format!(
             "it ran profile {p} before, not saved; the restart put it back on its saved \
@@ -1720,11 +1747,12 @@ fn go_back(
             got.usb_id()
         )));
     }
-    if let Some(ch) = channel_after_reboot(env, &got) {
-        let st = ch.status()?;
+    let back = channel_after_reboot(env, &got);
+    let status = back.as_ref().map(Channel::status);
+    if let (Some(ch), Some(Ok(st))) = (&back, status.as_ref()) {
         let dir = env.cache_dir.as_deref();
         let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
-        let now = running(&st);
+        let now = running(st);
         if was.is_some() && now != was {
             return Err(Error::CheckFailed(format!(
                 "the pad came back, but says it runs {}, not {label}",
@@ -1732,9 +1760,16 @@ fn go_back(
             )));
         }
         trip.after = Some(confirmed(&got, now));
+        trip.running_profile = Some(st.profile);
         if let Some(p) = trip.profile.filter(|p| *p != st.profile) {
-            trip.note = Some(restore_profile(env, &ch, fw, p, st.profile, trip, progress));
+            trip.note = Some(restore_profile(env, ch, fw, p, st.profile, trip, progress));
         }
+    } else if let Some(Err(e)) = status {
+        // The VID:PID checked out; which profile it runs is unknown.
+        trip.note = Some(format!(
+            "the control channel didn't answer STATUS once the pad was back ({e}), so \
+             which profile it runs is unknown"
+        ));
     } else {
         trip.note = got.note.clone();
     }
@@ -1763,15 +1798,19 @@ fn restore_profile(
         .and_then(|()| match applied(env, ch, p) {
             Some(st) if st.profile == p => Ok(()),
             Some(st) => {
+                trip.running_profile = Some(st.profile);
                 let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
                 Err(Error::CheckFailed(format!(
                     "the pad accepted profile {p}, but STATUS shows profile {}",
                     st.profile
                 )))
             }
-            None => Err(Error::Protocol(format!(
-                "the pad took profile {p} but hasn't applied it after 1 s"
-            ))),
+            None => {
+                trip.running_profile = None;
+                Err(Error::Protocol(format!(
+                    "the pad took profile {p} but hasn't applied it after 1 s"
+                )))
+            }
         });
     match result {
         Ok(()) => {
@@ -1779,6 +1818,7 @@ fn restore_profile(
                 progress.step(Step::CacheFailed(&e));
             }
             trip.restored_profile = Some(p);
+            trip.running_profile = Some(p);
             let name = ProfileName {
                 number: p,
                 label: ch.string(proto::string::profile_label(p)).ok().flatten(),

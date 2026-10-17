@@ -1,6 +1,6 @@
 ---
 source: crates/gamepadii/tests/output.rs
-expression: "format!(\"{}{}\", run(channel().channel(|c| c.active = 3)),\nrun(channel().channel(|c| { c.active = 3; c.enabled_profiles &= !0b100; })))"
+expression: "format!(\"{}{}{}\", run(channel().channel(|c| c.active = 3)),\nrun(channel().channel(|c| { c.active = 3; c.enabled_profiles &= !0b100; })),\nrun(channel().channel(|c|\n{\n    c.caps =\n    gamepadii_core::channel::Caps(gamepadii_core::channel::sim::V1_CAPS &\n    !gamepadii_core::channel::Caps::STATUS,);\n})))"
 ---
 --- stderr
 rebooting into web-config
@@ -9,12 +9,29 @@ rebooting into gamepad mode
 waiting for the pad to come back (up to 10 s)
 switching back to profile 3 (RAM only)
 --- rows
+profiles      1 Default
+              2 SilkSong (saved)
+              3 Celeste (running)
+              4 DKC
+              5 TGX
+boot buttons  B1 Nintendo Switch
+              B2 XInput
+              B3 PS3
+              B4 PS5
+              L1 -
+              L2 -
+              R1 Xbox One
+              R2 Keyboard
+web-config    mock:s16-v0.7.12
 via           the control channel: web-config and back (/dev/bus/usb/003/007)
 was           XInput (045e:028e, confirmed)
 now           XInput (045e:028e, confirmed), as before
 note          restored profile 3 Celeste (RAM only) after the restart
 --- json
 restored_profile: 3
+saved_profile: 2
+running_profile: 3
+running: false false true false false
 --- stderr
 rebooting into web-config
 waiting for the pad to come back in web-config (up to 10 s)
@@ -23,9 +40,56 @@ waiting for the pad to come back (up to 10 s)
 switching back to profile 3 (RAM only)
 warning: profile 3 not restored after the restart: usage: the pad refused profile 3: that profile is disabled
 --- rows
+profiles      1 Default
+              2 SilkSong (saved, running)
+              3 Celeste
+              4 DKC
+              5 TGX
+boot buttons  B1 Nintendo Switch
+              B2 XInput
+              B3 PS3
+              B4 PS5
+              L1 -
+              L2 -
+              R1 Xbox One
+              R2 Keyboard
+web-config    mock:s16-v0.7.12
 via           the control channel: web-config and back (/dev/bus/usb/003/007)
 was           XInput (045e:028e, confirmed)
 now           XInput (045e:028e, confirmed), as before
 note          it ran profile 3 before, not saved; the restart put it back on its saved profile 2, and switching back failed (usage: the pad refused profile 3: that profile is disabled); `gamepadii profile switch 3` tries again
 --- json
 restored_profile: null
+saved_profile: 2
+running_profile: 2
+running: false true false false false
+--- stderr
+rebooting into web-config
+waiting for the pad to come back in web-config (up to 10 s)
+rebooting into gamepad mode
+waiting for the pad to come back (up to 10 s)
+--- rows
+profiles      1 Default
+              2 SilkSong (saved)
+              3 Celeste
+              4 DKC
+              5 TGX
+boot buttons  B1 Nintendo Switch
+              B2 XInput
+              B3 PS3
+              B4 PS5
+              L1 -
+              L2 -
+              R1 Xbox One
+              R2 Keyboard
+web-config    mock:s16-v0.7.12
+via           the control channel: web-config and back (/dev/bus/usb/003/007)
+was           XInput (045e:028e, likely)
+now           XInput (045e:028e, likely), as before
+note          the control channel didn't answer STATUS once the pad was back (usage: this firmware's control channel has no STATUS), so which profile it runs is unknown
+running       unknown: the control channel didn't report the profile after the trip
+--- json
+restored_profile: null
+saved_profile: 2
+running_profile: null
+running: null null null null null

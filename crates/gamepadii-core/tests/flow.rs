@@ -1688,3 +1688,126 @@ fn stay_drops_a_ram_only_profile_and_says_so() {
     assert_eq!(rig.pad.firmware().active, 2);
     assert_eq!(cached(&rig).active_profile(), Some(2));
 }
+
+// ---- info labels the saved and the running profile (#14) -------------------
+
+fn info_read(rig: &Rig, stay: bool) -> gamepadii_core::Result<Read> {
+    rig.run(|env| flow::info(env, stay, &mut Log::default()))
+}
+
+/// `(number, saved, running)` for each profile row.
+fn labels(info: &gamepadii_core::commands::Info) -> Vec<(u32, bool, Option<bool>)> {
+    info.profiles
+        .iter()
+        .map(|p| (p.number, p.saved, p.running))
+        .collect()
+}
+
+#[test]
+fn info_labels_the_running_profile_when_it_is_the_saved_one() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip.unwrap().running_profile, Some(2));
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(2))
+    );
+    assert_eq!(info.active_profile, Some(2), "kept for older readers");
+    let l = labels(&info);
+    assert_eq!(l[1], (2, true, Some(true)));
+    assert!(
+        l.iter()
+            .filter(|(n, ..)| *n != 2)
+            .all(|(_, saved, running)| !saved && *running == Some(false)),
+        "{l:?}"
+    );
+}
+
+#[test]
+fn info_after_a_ram_only_switch_labels_both() {
+    // The pad runs 3 (RAM only), saved 2: web-config lists 2 as saved; the
+    // trip restores 3, and STATUS says so.
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "3", false).unwrap();
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip.unwrap().restored_profile, Some(3));
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(3))
+    );
+    let l = labels(&info);
+    assert_eq!(l[1], (2, true, Some(false)));
+    assert_eq!(l[2], (3, false, Some(true)));
+    // The cache keeps both too.
+    let c = cached(&rig);
+    assert_eq!((c.saved_profile(), c.active_profile()), (Some(2), Some(3)));
+}
+
+#[test]
+fn info_after_a_failed_restore_labels_what_the_pad_runs() {
+    // Profile 3 can't be switched back to: the pad runs its saved 2.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.active = 3;
+                c.enabled_profiles &= !0b100;
+            }),
+    );
+    let (info, _) = info_read(&rig, false).unwrap();
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(2))
+    );
+}
+
+#[test]
+fn info_with_stay_labels_what_web_config_runs() {
+    let rig = Rig::cc(InputMode::Xinput);
+    switch(&rig, "3", false).unwrap();
+    let (info, trip) = info_read(&rig, true).unwrap();
+    assert!(trip.unwrap().stayed);
+    // The restart dropped 3; STATUS in web-config says 2.
+    assert_eq!(info.running_profile, Some(2));
+    assert_eq!(labels(&info)[1], (2, true, Some(true)));
+}
+
+#[test]
+fn info_without_status_after_the_trip_says_unknown() {
+    // A channel with no STATUS: the trip works, the running profile is
+    // unknown, and nothing stands in for it.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.caps = gamepadii_core::channel::Caps(
+                    gamepadii_core::channel::sim::V1_CAPS & !gamepadii_core::channel::Caps::STATUS,
+                );
+            }),
+    );
+    let (info, trip) = info_read(&rig, false).unwrap();
+    let t = trip.unwrap();
+    assert!(t.verified, "the VID:PID checked out");
+    assert_eq!(t.running_profile, None);
+    assert!(
+        t.note.as_deref().unwrap().contains("didn't answer STATUS"),
+        "{:?}",
+        t.note
+    );
+    assert_eq!(info.saved_profile, Some(2));
+    assert_eq!(info.running_profile, None);
+    assert!(
+        labels(&info)
+            .iter()
+            .all(|(_, _, running)| running.is_none())
+    );
+}
+
+#[test]
+fn info_in_web_config_does_not_guess_the_running_profile() {
+    let rig = Rig::cc(InputMode::Webconfig);
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip, None);
+    assert_eq!((info.saved_profile, info.running_profile), (Some(2), None));
+    assert!(rig.pad.control_log().is_empty(), "no probe in web-config");
+}
