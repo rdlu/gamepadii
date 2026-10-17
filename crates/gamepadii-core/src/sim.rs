@@ -60,6 +60,9 @@ struct State {
     channel: SimChannel,
     /// Opening the device node fails with `EACCES` (no udev rule).
     no_access: bool,
+    /// The RP2040's unique board id, which some modes put in their USB
+    /// serial; `None` shows no serial at all.
+    unique_id: Option<[u8; 8]>,
 }
 
 impl State {
@@ -101,6 +104,7 @@ impl SimPad {
                 scans: 0,
                 channel: SimChannel::stock(Some(mode)),
                 no_access: false,
+                unique_id: None,
             }),
         }
     }
@@ -145,6 +149,13 @@ impl SimPad {
     /// Changes the simulated firmware (locks, capabilities, garbage).
     pub fn channel(self, f: impl FnOnce(&mut SimChannel)) -> Self {
         f(&mut self.lock().channel);
+        self
+    }
+
+    /// The board's unique id: its USB serial is the firmware's in each mode
+    /// ([`serial`]), where without one it has none.
+    pub fn unique_id(self, id: [u8; 8]) -> Self {
+        self.lock().unique_id = Some(id);
         self
     }
 
@@ -283,8 +294,30 @@ impl SimPad {
     }
 }
 
+/// The USB serial GP2040-CE v0.7.12 reports in `mode` on a board with
+/// unique id `id`: XInput `"0"` and bytes 5 to 7 in hex, Xbox One a letter
+/// per byte and `8ABCDEFGH`, web-config `123456`, Switch Pro
+/// `000000000001`; the other modes have none.
+pub fn serial(mode: InputMode, id: [u8; 8]) -> Option<String> {
+    match mode {
+        InputMode::Xinput => Some(format!("0{:02X}{:02X}{:02X}", id[5], id[6], id[7])),
+        InputMode::Xbone => {
+            let letters: String = id.iter().map(|b| char::from(b'A' + b % 25)).collect();
+            Some(format!("{letters}8ABCDEFGH"))
+        }
+        InputMode::Webconfig => Some("123456".into()),
+        InputMode::SwitchPro => Some("000000000001".into()),
+        _ => None,
+    }
+}
+
 /// A [`Device`] as sysfs would show the pad in `mode`.
 pub fn device(mode: InputMode, devnum: u16) -> Device {
+    device_with_id(mode, devnum, None)
+}
+
+/// [`device`] on a board with unique id `id`, which gives it a serial.
+pub fn device_with_id(mode: InputMode, devnum: u16, id: Option<[u8; 8]>) -> Device {
     let known = mode::KNOWN
         .iter()
         .find(|k| k.modes.contains(&mode))
@@ -299,7 +332,7 @@ pub fn device(mode: InputMode, devnum: u16) -> Device {
         pid: known.pid,
         manufacturer: None,
         product: None,
-        serial: None,
+        serial: id.and_then(|id| serial(mode, id)),
         bus: Some(3),
         devnum: Some(devnum),
         port: "3-1".into(),
@@ -312,7 +345,10 @@ impl Scan for SimPad {
     fn scan(&self) -> Vec<Device> {
         self.step();
         let s = self.lock();
-        s.mode.map(|m| device(m, s.devnum)).into_iter().collect()
+        s.mode
+            .map(|m| device_with_id(m, s.devnum, s.unique_id))
+            .into_iter()
+            .collect()
     }
 }
 
