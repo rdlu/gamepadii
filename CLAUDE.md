@@ -100,10 +100,18 @@ pkexec and is theirs to approve.
 
 ## Git
 
-Until TUI work starts, commit straight to `main` (the MVP and the firmware
-spikes). From the first TUI change on: feature branches (`feat/…`, `fix/…`,
-`docs/…`), an open PR per change, Conventional Commits with scopes, and `main`
-protected by a ruleset. Never commit to `main` directly after that point.
+`main` is protected by a ruleset: no direct pushes, no force-pushes, and no
+deletion. Every change goes through a PR, and CI must pass (clippy, rustfmt,
+test, MSRV).
+
+- One branch per change: `feat/…`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`.
+  Parallel agents each work in their own git worktree under
+  `.claude/worktrees/`.
+- Conventional Commits with scopes (`feat(cli): …`, `fix(core): …`).
+- Keep the PR description current as the branch changes, and link the issue
+  it closes (`Closes #N`).
+- Merge once CI is green. Squash-merge small PRs; use a merge commit when the
+  individual commits matter.
 
 ## References
 
