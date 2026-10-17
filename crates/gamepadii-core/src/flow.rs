@@ -10,6 +10,9 @@
 //! GP2040-CE has no channel: the flows tell the user which buttons to hold
 //! (with key-by-key hints from the [`DeviceCache`] when there is one), wait
 //! for the pad to re-enumerate, and carry on from there.
+//!
+//! Whenever the channel answers STATUS, the profile it reports goes into the
+//! device cache, so the key hints stay right after a `profile switch`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,7 +23,7 @@ use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
 use crate::buttons::{Button, Combo};
 use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
-use crate::client::{Client, WEBCONFIG_HINT};
+use crate::client::{self, Client};
 use crate::commands::{self, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
@@ -203,25 +206,61 @@ pub struct Guide {
     pub hotkey: Option<Hold>,
     /// When the cache the key hints come from was taken.
     pub cached_at: Option<String>,
+    /// Where the active profile the key hints are in came from; `null`
+    /// without a cache.
+    pub profile_from: Option<ProfileFrom>,
+    /// When the pad was seen running it, for [`ProfileFrom::Recorded`].
+    pub profile_seen_at: Option<String>,
     /// Why the control channel, which would have made this unnecessary,
     /// couldn't be used (no udev rule); `null` for stock firmware.
     pub channel_hint: Option<String>,
+}
+
+/// Where the active profile behind the key hints came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileFrom {
+    /// The control channel's STATUS, just now.
+    Channel,
+    /// What the channel last reported, kept in the cache.
+    Recorded,
+    /// The saved profile, as read in web-config (or saved with `--save`).
+    Saved,
 }
 
 /// The parts of a cache the guide uses.
 struct Cached {
     profiles: crate::buttons::Profiles,
     active: i64,
+    from: ProfileFrom,
+    seen_at: Option<String>,
     options: api::GamepadOptions,
     captured_at: String,
 }
 
 impl Cached {
-    fn from(c: &DeviceCache) -> Option<Self> {
+    /// `live`: the profile the control channel says the pad runs now.
+    fn from(c: &DeviceCache, live: Option<u8>) -> Option<Self> {
         let options = c.options()?;
+        let recorded = c.running_profile.as_ref();
+        let (active, from, seen_at) = match (live, recorded) {
+            (Some(n), _) => (i64::from(n), ProfileFrom::Channel, None),
+            (None, Some(r)) => (
+                i64::from(r.number),
+                ProfileFrom::Recorded,
+                Some(r.seen_at.clone()),
+            ),
+            (None, None) => (
+                options.profile_number.unwrap_or(1),
+                ProfileFrom::Saved,
+                None,
+            ),
+        };
         Some(Self {
             profiles: c.profiles()?,
-            active: options.profile_number.unwrap_or(1),
+            active,
+            from,
+            seen_at,
             options,
             captured_at: c.captured_at.clone(),
         })
@@ -249,7 +288,18 @@ fn boot_button_selects(mode: InputMode) -> bool {
 
 impl Guide {
     pub fn new(current: &Device, target: Option<InputMode>, cache: Option<&DeviceCache>) -> Self {
-        let cached = cache.and_then(Cached::from);
+        Self::in_profile(current, target, cache, None)
+    }
+
+    /// [`Guide::new`], with the key hints in profile `live` when the control
+    /// channel said which one the pad runs (else the cache's).
+    pub fn in_profile(
+        current: &Device,
+        target: Option<InputMode>,
+        cache: Option<&DeviceCache>,
+        live: Option<u8>,
+    ) -> Self {
+        let cached = cache.and_then(|c| Cached::from(c, live));
         let c = cached.as_ref();
         let locks = c.map_or(0, Cached::forced_setup);
         let boot_button = target
@@ -272,6 +322,8 @@ impl Guide {
                 .then(|| Hold::new(&[Button::S2], c)),
             hotkey: (!in_bootsel).then(|| Hold::new(&[Button::S2, Button::B3, Button::B4], c)),
             cached_at: c.map(|c| c.captured_at.clone()),
+            profile_from: c.map(|c| c.from),
+            profile_seen_at: c.and_then(|c| c.seen_at.clone()),
             channel_hint: None,
         }
     }
@@ -320,12 +372,21 @@ impl Guide {
         for h in [&self.plug_in, &self.hotkey].into_iter().flatten() {
             out.extend(h.physical());
         }
-        out.push(match &self.cached_at {
-            Some(t) => format!(
+        out.push(match (&self.cached_at, self.profile_from) {
+            (Some(t), Some(ProfileFrom::Channel)) => format!(
+                "Key names come from the profiles gamepadii read on {t}, in the profile \
+                 the pad reports running now."
+            ),
+            (Some(t), Some(ProfileFrom::Recorded)) => format!(
+                "Key names come from what gamepadii read on {t}, in the profile the pad \
+                 last reported running (on {}); if it changed since, they may be off.",
+                self.profile_seen_at.as_deref().unwrap_or("an unknown date")
+            ),
+            (Some(t), _) => format!(
                 "Key names come from what gamepadii read on {t}; if the active profile \
                  changed since, they may be off."
             ),
-            None => "These are logical buttons, so on a remapped profile they may be \
+            (None, _) => "These are logical buttons, so on a remapped profile they may be \
                      other keys; once the pad is in web-config, gamepadii remembers its \
                      profiles and names the keys next time."
                 .to_string(),
@@ -354,36 +415,85 @@ fn in_gamepad_mode(d: &Device) -> bool {
     !matches!(d.mode, Some(InputMode::Webconfig | InputMode::Bootsel))
 }
 
+/// What a HELLO to the pad found.
+#[derive(Default)]
+struct Probed {
+    ch: Option<Channel>,
+    /// Why the channel couldn't be used, when that is worth saying in the
+    /// guide.
+    hint: Option<String>,
+    /// The board config from the channel's strings (for the cache).
+    firmware: Firmware,
+    /// STATUS, when the channel answered it.
+    status: Option<channel::Status>,
+}
+
+impl Probed {
+    /// The board's cache file name, when the channel said.
+    fn board(&self) -> Option<String> {
+        self.firmware
+            .board
+            .as_ref()
+            .map(|_| commands::board_slug(&self.firmware))
+    }
+
+    /// The profile the pad runs, from STATUS.
+    fn profile(&self) -> Option<u8> {
+        self.status.as_ref().map(|s| s.profile)
+    }
+}
+
 /// The pad's control channel, or (when it couldn't be used and that is
 /// worth saying) a sentence for the guide. Pads seen with the channel are
-/// recorded in the cache dir, so a later `EACCES` gets the udev hint.
-fn channel(env: &Env, d: &Device) -> (Option<Channel>, Option<String>) {
+/// recorded in the cache dir, so a later `EACCES` gets the udev hint, and
+/// the profile STATUS reports is kept in the device cache.
+fn channel(env: &Env, d: &Device) -> Probed {
     let Some(open) = env.control else {
-        return (None, None);
+        return Probed::default();
     };
     if d.mode == Some(InputMode::Bootsel) {
-        return (None, None);
+        return Probed::default();
     }
-    match channel::probe(open, d) {
+    let hint = match channel::probe(open, d) {
         Probe::Found(ch) => {
             let board = ch.string(proto::string::BOARD).ok().flatten();
-            let fw = Firmware {
+            let firmware = Firmware {
                 board,
                 ..Firmware::default()
             };
-            commands::remember(env.cache_dir.as_deref(), &ch, &fw);
-            (Some(ch), None)
+            commands::remember(env.cache_dir.as_deref(), &ch, &firmware);
+            let status = ch.status().ok();
+            if let Some(st) = &status {
+                let dir = env.cache_dir.as_deref();
+                let _ =
+                    commands::remember_profile(dir, &firmware, st.profile, false, env.clock.wall());
+            }
+            return Probed {
+                ch: Some(ch),
+                hint: None,
+                firmware,
+                status,
+            };
         }
-        Probe::NoAccess { node } if cache::channel_known(env.cache_dir.as_deref()) => (
-            None,
+        Probe::NoAccess { node } if cache::channel_known(env.cache_dir.as_deref()) => {
             Some(format!(
                 "gamepadii could do this over the pad's control channel, but has no \
                  permission to use {node}: run `gamepadii setup udev` once, then replug the pad."
-            )),
-        ),
-        Probe::Newer { major, .. } => (None, Some(format!("{}.", commands::newer_protocol(major)))),
-        Probe::NoAccess { .. } | Probe::Absent(_) => (None, None),
+            ))
+        }
+        Probe::Newer { major, .. } => Some(format!("{}.", commands::newer_protocol(major))),
+        Probe::NoAccess { .. } | Probe::Absent(_) => None,
+    };
+    Probed {
+        hint,
+        ..Probed::default()
     }
+}
+
+/// The cache for the guide: the board's when the channel named it, else
+/// the newest.
+fn guide_cache(env: &Env, p: &Probed) -> Option<DeviceCache> {
+    cache::load_for(env.cache_dir.as_deref()?, p.board().as_deref())
 }
 
 /// The channel on a pad that has just re-enumerated. udev may need a
@@ -633,19 +743,23 @@ pub fn mode(
             note: pad.note.clone(),
         });
     }
-    let mut hint = None;
+    let mut probed = Probed::default();
     if in_gamepad_mode(&pad) {
-        let (ch, h) = channel(env, &pad);
-        hint = h;
-        if let Some(ch) = ch.filter(|c| c.caps().has(Caps::SET_INPUT_MODE)) {
-            return via_control(env, target, &pad, &ch, progress);
+        probed = channel(env, &pad);
+        if let Some(ch) = probed
+            .ch
+            .as_ref()
+            .filter(|c| c.caps().has(Caps::SET_INPUT_MODE))
+        {
+            return via_control(env, target, &pad, ch, &probed.firmware, progress);
         }
     }
     if pad.mode == Some(InputMode::Webconfig) {
         return via_webconfig(env, target, &pad, (&pad).into(), false, progress);
     }
-    let cache = env.cache_dir.as_deref().and_then(cache::load_latest);
-    let guide = Guide::new(&pad, Some(target), cache.as_ref()).with_hint(hint);
+    let cache = guide_cache(env, &probed);
+    let guide = Guide::in_profile(&pad, Some(target), cache.as_ref(), probed.profile())
+        .with_hint(probed.hint);
     if !wait {
         return Err(Error::NeedsUser(format!(
             "the pad is in {} mode. {}",
@@ -699,6 +813,7 @@ fn via_control(
     target: InputMode,
     pad: &Device,
     ch: &Channel,
+    fw: &Firmware,
     progress: &mut dyn Progress,
 ) -> Result<ModeReport> {
     if !ch.hello().boots(target) {
@@ -729,6 +844,7 @@ fn via_control(
     }
     progress.step(Step::Writing(target));
     let ack = ch.set_input_mode(target)?;
+    commands::remember_restart(env.cache_dir.as_deref(), fw);
     progress.step(Step::Rebooting(BootMode::Gamepad));
     report.via = Via::Control;
     report.after = None;
@@ -761,7 +877,10 @@ fn via_control(
     }
     let after = match channel_after_reboot(env, &got) {
         Some(ch) => {
-            let now = running(&ch.status()?);
+            let st = ch.status()?;
+            let dir = env.cache_dir.as_deref();
+            let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+            let now = running(&st);
             if now != Some(target) {
                 return Err(Error::CheckFailed(format!(
                     "{what}, but the pad says it runs {}",
@@ -917,19 +1036,21 @@ pub fn mode_status(env: &Env, progress: &mut dyn Progress) -> Result<ModeStatus>
     let pad = pick(env.scan.scan())?;
     let mut current: Seen = (&pad).into();
     let mut boots = None;
-    if in_gamepad_mode(&pad)
-        && let (Some(ch), _) = channel(env, &pad)
-    {
-        if let Ok(st) = ch.status() {
-            current = confirmed(&pad, running(&st));
+    let mut probed = Probed::default();
+    if in_gamepad_mode(&pad) {
+        probed = channel(env, &pad);
+        if let Some(ch) = &probed.ch {
+            if let Some(st) = &probed.status {
+                current = confirmed(&pad, running(st));
+            }
+            boots = Some(*ch.hello());
         }
-        boots = Some(*ch.hello());
     }
     let (cache, from) = if pad.mode == Some(InputMode::Webconfig) {
         let client = connect_ready(env, progress)?;
         (Some(refresh_cache(env, &client, progress)?), Some("pad"))
     } else {
-        let c = env.cache_dir.as_deref().and_then(cache::load_latest);
+        let c = guide_cache(env, &probed);
         let from = c.as_ref().map(|_| "cache");
         (c, from)
     };
@@ -994,16 +1115,17 @@ pub enum WebconfigVia {
 /// the URL. Refreshes the cache when the server answers.
 pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<WebconfigReport> {
     let pad = pick(env.scan.scan())?;
-    let (ch, hint) = if in_gamepad_mode(&pad) {
+    let probed = if in_gamepad_mode(&pad) {
         channel(env, &pad)
     } else {
-        (None, None)
+        Probed::default()
     };
     let (pad, via) = if pad.mode == Some(InputMode::Webconfig) {
         (pad, WebconfigVia::Already)
-    } else if let Some(ch) = ch.filter(|c| c.caps().has(Caps::REBOOT)) {
+    } else if let Some(ch) = probed.ch.as_ref().filter(|c| c.caps().has(Caps::REBOOT)) {
         progress.step(Step::Rebooting(BootMode::Webconfig));
         ch.reboot(BootMode::Webconfig)?;
+        commands::remember_restart(env.cache_dir.as_deref(), &probed.firmware);
         let got = wait_reenumerated(
             env,
             &pad,
@@ -1015,8 +1137,9 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
         .ok_or_else(|| not_back(env.timeouts.reboot, "asked for web-config"))?;
         (got, WebconfigVia::Control)
     } else {
-        let cache = env.cache_dir.as_deref().and_then(cache::load_latest);
-        let guide = Guide::new(&pad, None, cache.as_ref()).with_hint(hint);
+        let cache = guide_cache(env, &probed);
+        let guide =
+            Guide::in_profile(&pad, None, cache.as_ref(), probed.profile()).with_hint(probed.hint);
         if !wait {
             return Err(Error::NeedsUser(format!(
                 "the pad is in {} mode. {}",
@@ -1086,31 +1209,32 @@ pub fn reboot_pad(
         let client = connect_ready(env, progress)?;
         return reboot(env, &client, mode, wait, progress);
     }
-    let (ch, hint) = if in_gamepad_mode(&pad) {
+    let probed = if in_gamepad_mode(&pad) {
         channel(env, &pad)
     } else {
-        (None, None)
+        Probed::default()
     };
-    match ch.filter(|c| c.caps().has(Caps::REBOOT)) {
-        Some(ch) => reboot_via_control(env, &pad, &ch, mode, wait, progress),
-        None => {
-            let mut msg = format!(
-                "the pad is in {} mode, not web-config. To switch: {WEBCONFIG_HINT}. \
-                 Then run this again",
-                Seen::from(&pad).label()
-            );
-            if let Some(h) = hint {
-                msg = format!("{h} Or: {msg}");
-            }
-            Err(Error::NeedsUser(msg))
-        }
+    match probed.ch.as_ref().filter(|c| c.caps().has(Caps::REBOOT)) {
+        Some(ch) => reboot_via_control(env, &pad, ch, &probed.firmware, mode, wait, progress),
+        None => Err(not_in_webconfig(&pad, probed.hint)),
     }
+}
+
+/// A pad in a gamepad mode (or BOOTSEL) with no way into web-config but the
+/// user's: how to switch, after why the channel couldn't do it.
+fn not_in_webconfig(pad: &Device, hint: Option<String>) -> Error {
+    let msg = client::not_in_webconfig(pad);
+    Error::NeedsUser(match hint {
+        Some(h) => format!("{h} Or: {msg}"),
+        None => msg,
+    })
 }
 
 fn reboot_via_control(
     env: &Env,
     pad: &Device,
     ch: &Channel,
+    fw: &Firmware,
     mode: BootMode,
     wait: bool,
     progress: &mut dyn Progress,
@@ -1118,6 +1242,7 @@ fn reboot_via_control(
     if mode == BootMode::Bootsel && !ch.caps().has(Caps::REBOOT_BOOTSEL) {
         progress.step(Step::Rebooting(BootMode::Webconfig));
         ch.reboot(BootMode::Webconfig)?;
+        commands::remember_restart(env.cache_dir.as_deref(), fw);
         wait_reenumerated(
             env,
             pad,
@@ -1153,6 +1278,7 @@ fn reboot_via_control(
     };
     progress.step(Step::Rebooting(mode));
     let ack = ch.reboot(mode)?;
+    commands::remember_restart(env.cache_dir.as_deref(), fw);
     let report = RebootReport {
         host: ch.node(),
         mode,
@@ -1202,6 +1328,7 @@ pub fn reboot(
     };
     progress.step(Step::Rebooting(mode));
     let ack = api::reboot(client.transport(), mode)?;
+    commands::remember_restart(env.cache_dir.as_deref(), &client.firmware().into());
     let mut report = RebootReport {
         host: client.host(),
         mode,
@@ -1351,7 +1478,7 @@ pub fn profile_switch(
     env: &Env,
     which: &ProfileArg,
     save: bool,
-    _progress: &mut dyn Progress,
+    progress: &mut dyn Progress,
 ) -> Result<ProfileReport> {
     let pad = pick(env.scan.scan())?;
     if pad.mode == Some(InputMode::Bootsel) {
@@ -1383,6 +1510,17 @@ pub fn profile_switch(
         Probe::Absent(_) => return Err(no_channel_for_profiles(&pad, None)),
     };
     let st = ch.status()?;
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    let remember = |n: u8, saved: bool, progress: &mut dyn Progress| {
+        let dir = env.cache_dir.as_deref();
+        if let Some(e) = commands::remember_profile(dir, &firmware, n, saved, env.clock.wall()) {
+            progress.step(Step::CacheFailed(&e));
+        }
+    };
+    remember(st.profile, false, progress);
     let mut labels = std::collections::BTreeMap::new();
     for n in st.enabled() {
         labels.insert(n, ch.string(proto::string::profile_label(n))?);
@@ -1433,6 +1571,9 @@ pub fn profile_switch(
     }
     ch.set_profile(n, save)?;
     report.saved = save;
+    // The hints follow the switch: RAM-only changes the running profile,
+    // --save the saved one too.
+    remember(n, save, progress);
     // The main loop remaps the pins on its next pass (well under 1 ms).
     let done = wait_for(
         env.clock,
@@ -1449,6 +1590,7 @@ pub fn profile_switch(
         return Ok(report);
     };
     if after.profile != n {
+        remember(after.profile, false, progress);
         return Err(Error::CheckFailed(format!(
             "the pad accepted profile {}, but STATUS shows profile {}",
             n, after.profile

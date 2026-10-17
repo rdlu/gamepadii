@@ -69,12 +69,18 @@ pub fn require_webconfig(root: &Root) -> Result<Device> {
         None => Err(Error::NotFound(
             "no GP2040-CE device on USB (is it plugged in?)".into(),
         )),
-        Some(d) => Err(Error::NeedsUser(format!(
-            "the pad is in {} mode, not web-config. To switch: {WEBCONFIG_HINT}. \
-             Then run this again",
-            mode_name(d)
-        ))),
+        Some(d) => Err(Error::NeedsUser(not_in_webconfig(d))),
     }
+}
+
+/// What to tell someone whose pad `d` isn't in web-config, for a command
+/// that needs it.
+pub fn not_in_webconfig(d: &Device) -> String {
+    format!(
+        "the pad is in {} mode, not web-config. To switch: {WEBCONFIG_HINT}. \
+         Then run this again",
+        mode_name(d)
+    )
 }
 
 fn mode_name(d: &Device) -> String {

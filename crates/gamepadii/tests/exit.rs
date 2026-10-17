@@ -584,3 +584,43 @@ fn setup_udev_prints_explains_and_installs_into_a_root() {
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(v["action"], "none");
 }
+
+#[test]
+fn profile_switch_keeps_the_cache_and_the_hints_current() {
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let mut a = vec!["--mock-api", S16_API];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let xinput = sysfs("s16-xinput");
+    assert_eq!(run(&["--sysroot", &sysfs("s16-webconfig"), "info"]).0, 0);
+    let (code, _, stderr) = run(&[
+        "--sysroot",
+        &xinput,
+        "--mock-channel",
+        "channel",
+        "profile",
+        "switch",
+        "default",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let cache = home.path().join("cache/gamepadii/Haute42COSMOX.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+    assert_eq!(v["running_profile"]["number"], 1);
+    assert_eq!(v["gamepad_options"]["profileNumber"], 2, "RAM only");
+    // Later, without the channel, the hints are in Default, where nothing
+    // is moved (SilkSong, the saved profile, puts B4 on R1).
+    let (code, _, stderr) = run(&[
+        "--sysroot",
+        &xinput,
+        "--no-channel",
+        "mode",
+        "keyboard",
+        "--no-wait",
+    ]);
+    assert_eq!(code, 5);
+    assert!(!stderr.contains("R1 (RB)"), "{stderr}");
+    assert!(stderr.contains("last reported running"), "{stderr}");
+}

@@ -1158,3 +1158,147 @@ fn status_without_the_channel() {
     assert!(status(&rig).devices[0].control_channel.is_none());
     assert!(rig.pad.control_log().is_empty(), "no HELLO to the boot ROM");
 }
+
+// ---- the cache follows the running profile --------------------------------
+
+fn cached(rig: &Rig) -> DeviceCache {
+    cache::load(&rig.cache_dir(), "Haute42COSMOX").unwrap()
+}
+
+#[test]
+fn a_ram_switch_moves_only_the_running_profile() {
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "3", false).unwrap();
+    let c = cached(&rig);
+    let running = c.running_profile.as_ref().unwrap();
+    assert_eq!(running.number, 3);
+    assert_eq!(running.seen_at, "2026-10-17T16:57:03Z");
+    assert_eq!(c.saved_profile(), Some(2), "the saved profile is unchanged");
+    assert_eq!(c.active_profile(), Some(3));
+    // --save moves both.
+    switch(&rig, "dkc", true).unwrap();
+    let c = cached(&rig);
+    assert_eq!(c.running_profile.as_ref().unwrap().number, 4);
+    assert_eq!(c.saved_profile(), Some(4));
+    assert_eq!(c.gamepad_options["profileNumber"], 4);
+    // Nothing else in the options moved.
+    let mut want = s16_cache().gamepad_options;
+    want["profileNumber"] = 4.into();
+    assert_eq!(c.gamepad_options, want);
+}
+
+#[test]
+fn no_cache_for_the_board_is_left_alone() {
+    let rig = Rig::cc(InputMode::Xinput);
+    switch(&rig, "3", false).unwrap();
+    assert!(files(&rig.cache_dir()).is_empty(), "no cache made up");
+}
+
+#[test]
+fn status_refreshes_the_running_profile() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| c.active = 5),
+    )
+    .with_cache();
+    status(&rig);
+    assert_eq!(cached(&rig).active_profile(), Some(5));
+    // Written only on a change: the timestamp stays.
+    let before = cached(&rig);
+    rig.clock.advance(Duration::from_secs(60));
+    status(&rig);
+    assert_eq!(cached(&rig), before);
+}
+
+#[test]
+fn a_reboot_puts_the_cache_back_on_the_saved_profile() {
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "5", false).unwrap();
+    assert_eq!(cached(&rig).active_profile(), Some(5));
+    reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    assert_eq!(cached(&rig).running_profile, None);
+    assert_eq!(cached(&rig).active_profile(), Some(2));
+}
+
+#[test]
+fn an_old_cache_file_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = cache::store(dir.path(), &s16_cache()).unwrap();
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(v["running_profile"].is_null(), "written as null");
+    v.as_object_mut().unwrap().remove("running_profile");
+    std::fs::write(&path, v.to_string()).unwrap();
+    let c = cache::load_latest(dir.path()).unwrap();
+    assert_eq!(c.running_profile, None);
+    assert_eq!(c.active_profile(), Some(2));
+}
+
+#[test]
+fn hints_use_the_profile_the_channel_reports() {
+    // A channel with no SET_INPUT_MODE: `mode` falls back to the guide,
+    // but STATUS still says the pad runs profile 1 (Default), not the
+    // cached 2 (SilkSong), so no key is moved.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.caps = gamepadii_core::channel::Caps(
+                    gamepadii_core::channel::sim::V1_CAPS
+                        & !gamepadii_core::channel::Caps::SET_INPUT_MODE,
+                );
+                c.active = 1;
+            }),
+    )
+    .with_cache();
+    let err = rig
+        .mode(InputMode::Switch, false, &mut Log::default())
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(!msg.contains("Default calls"), "{msg}");
+    assert!(
+        msg.contains("in the profile the pad reports running now"),
+        "{msg}"
+    );
+    // On profile 3 (Celeste) the hint names it.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.caps = gamepadii_core::channel::Caps(gamepadii_core::channel::Caps::STATUS);
+                c.active = 3;
+            }),
+    )
+    .with_cache();
+    let msg = rig
+        .mode(InputMode::Switch, false, &mut Log::default())
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("In profile 3 (Celeste)"), "{msg}");
+}
+
+#[test]
+fn without_the_channel_hints_use_the_recorded_profile() {
+    let rig = Rig::s16(InputMode::Xinput).with_cache();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(CAPTURED + 3600);
+    cache::record_profile(&rig.cache_dir(), "Haute42COSMOX", 1, false, now).unwrap();
+    let msg = rig
+        .mode(InputMode::Switch, false, &mut Log::default())
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains("Default calls"), "{msg}");
+    assert!(
+        msg.contains("in the profile the pad last reported running (on 2026-10-17T17:57:03Z)"),
+        "{msg}"
+    );
+    // The saved profile, with no record: SilkSong's moved key.
+    let rig = Rig::s16(InputMode::Xinput).with_cache();
+    let msg = rig
+        .mode(InputMode::Switch, false, &mut Log::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        msg.contains("Default calls S2 (Start), B3 (X) and R1 (RB)"),
+        "{msg}"
+    );
+}

@@ -88,6 +88,13 @@ fn probe_status(
             Ok(r) => {
                 confirm(&mut device, &r);
                 remember(cache_dir, &ch, &r.firmware);
+                let _ = remember_profile(
+                    cache_dir,
+                    &r.firmware,
+                    r.active_profile.number,
+                    false,
+                    SystemTime::now(),
+                );
                 report = Some(r);
             }
             Err(e) => note = Some(format!("the control channel answered HELLO, then: {e}")),
@@ -128,6 +135,27 @@ pub fn remember(cache_dir: Option<&Path>, ch: &Channel, fw: &Firmware) {
     if let Some(dir) = cache_dir {
         let _ = fs::create_dir_all(dir);
         let _ = cache::record_channel(dir, &board_slug(fw), ch.hello());
+    }
+}
+
+/// Keeps the device cache's running profile current: the channel says the
+/// pad runs profile `n` (saved too, with `saved`). The cache is a
+/// convenience, so a failure is returned for a warning at most.
+pub fn remember_profile(
+    cache_dir: Option<&Path>,
+    fw: &Firmware,
+    n: u8,
+    saved: bool,
+    now: SystemTime,
+) -> Option<Error> {
+    cache::record_profile(cache_dir?, &board_slug(fw), n, saved, now).err()
+}
+
+/// The pad was restarted by gamepadii: the cache's running profile is the
+/// saved one again (best effort).
+pub fn remember_restart(cache_dir: Option<&Path>, fw: &Firmware) {
+    if let Some(dir) = cache_dir {
+        let _ = cache::record_restart(dir, &board_slug(fw));
     }
 }
 

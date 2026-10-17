@@ -8,6 +8,13 @@
 //! unique serial (every pad says `123456`), so two pads with the same
 //! board config share a file, and in a gamepad mode, where the board isn't
 //! known at all, the newest file is used. The hints say how old they are.
+//!
+//! The control channel can't read the settings, but its STATUS says which
+//! profile the pad runs. Whenever it answers (`status`, the flows, `profile
+//! switch`), that is recorded here as the running profile, next to the
+//! saved one (`profileNumber` in the options): a RAM-only `profile switch`
+//! changes only the running one, `--save` both, and a restart puts the
+//! running one back on the saved one.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -39,6 +46,20 @@ pub struct DeviceCache {
     pub gamepad_options: Value,
     pub pin_mappings: Value,
     pub profile_options: Value,
+    /// The profile the control channel last reported running, when it
+    /// answered after this was captured; `null` means the saved one
+    /// (`profileNumber` in `gamepad_options`). Absent in older files.
+    #[serde(default)]
+    pub running_profile: Option<RunningProfile>,
+}
+
+/// A profile the pad was seen running, from the control channel's STATUS.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunningProfile {
+    /// 1 to 6.
+    pub number: u8,
+    /// When gamepadii first saw it running this profile (RFC 3339, UTC).
+    pub seen_at: String,
 }
 
 impl DeviceCache {
@@ -68,6 +89,7 @@ impl DeviceCache {
             gamepad_options,
             pin_mappings,
             profile_options,
+            running_profile: None,
         }
     }
 
@@ -81,7 +103,51 @@ impl DeviceCache {
             gamepad_options: get("getGamepadOptions")?,
             pin_mappings: get("getPinMappings")?,
             profile_options: get("getProfileOptions")?,
+            running_profile: None,
         })
+    }
+
+    /// The saved profile (`profileNumber`), as last read or saved.
+    pub fn saved_profile(&self) -> Option<i64> {
+        self.gamepad_options
+            .get("profileNumber")
+            .and_then(Value::as_i64)
+    }
+
+    /// The profile the pad runs, as far as the cache knows: the one the
+    /// control channel last reported, else the saved one.
+    pub fn active_profile(&self) -> Option<i64> {
+        self.running_profile
+            .as_ref()
+            .map(|r| i64::from(r.number))
+            .or_else(|| self.saved_profile())
+    }
+
+    /// Records that the pad runs profile `n` (and, with `saved`, that it is
+    /// the saved one too); whether anything changed.
+    pub fn set_profile(&mut self, n: u8, saved: bool, now: SystemTime) -> bool {
+        let mut changed = false;
+        if self.running_profile.as_ref().map(|r| r.number) != Some(n) {
+            self.running_profile = Some(RunningProfile {
+                number: n,
+                seen_at: Utc::from_system(now).rfc3339(),
+            });
+            changed = true;
+        }
+        if saved
+            && self.saved_profile() != Some(i64::from(n))
+            && let Value::Object(o) = &mut self.gamepad_options
+        {
+            o.insert("profileNumber".into(), n.into());
+            changed = true;
+        }
+        changed
+    }
+
+    /// The pad restarted: whatever ran from RAM is gone, it runs the saved
+    /// profile again. Whether anything changed.
+    pub fn restarted(&mut self) -> bool {
+        self.running_profile.take().is_some()
     }
 
     pub fn options(&self) -> Option<GamepadOptions> {
@@ -117,6 +183,45 @@ pub fn store(dir: &Path, cache: &DeviceCache) -> Result<PathBuf> {
     let path = dir.join(cache.file_name());
     commands::write_json(cache, &path)?;
     Ok(path)
+}
+
+/// `board`'s cache (by [`commands::board_slug`]), if there is one.
+pub fn load(dir: &Path, board: &str) -> Option<DeviceCache> {
+    let b = fs::read(dir.join(format!("{board}.json"))).ok()?;
+    serde_json::from_slice::<DeviceCache>(&b)
+        .ok()
+        .filter(|c| c.schema == CACHE_SCHEMA)
+}
+
+/// `board`'s cache when the board is known, else the newest.
+pub fn load_for(dir: &Path, board: Option<&str>) -> Option<DeviceCache> {
+    board
+        .and_then(|b| load(dir, b))
+        .or_else(|| load_latest(dir))
+}
+
+/// Applies `f` to `board`'s cache and writes it back when `f` changed it.
+/// No cache for that board (it was never seen in web-config) is not an
+/// error: there is nothing to keep current.
+pub fn update(dir: &Path, board: &str, f: impl FnOnce(&mut DeviceCache) -> bool) -> Result<()> {
+    let Some(mut c) = load(dir, board) else {
+        return Ok(());
+    };
+    if f(&mut c) {
+        store(dir, &c)?;
+    }
+    Ok(())
+}
+
+/// Records what the control channel said: the pad runs profile `n`
+/// (saved too with `saved`, after `profile switch --save`).
+pub fn record_profile(dir: &Path, board: &str, n: u8, saved: bool, now: SystemTime) -> Result<()> {
+    update(dir, board, |c| c.set_profile(n, saved, now))
+}
+
+/// Records that gamepadii restarted the pad (it runs its saved profile).
+pub fn record_restart(dir: &Path, board: &str) -> Result<()> {
+    update(dir, board, DeviceCache::restarted)
 }
 
 /// The newest readable cache in `dir` (by `captured_at`), if any.
