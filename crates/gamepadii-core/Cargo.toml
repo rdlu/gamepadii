@@ -16,6 +16,9 @@ readme = "../../README.md"
 serde.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 insta.workspace = true
 tempfile.workspace = true

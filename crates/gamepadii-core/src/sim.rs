@@ -7,14 +7,24 @@
 //! web-config, or in BOOTSEL. A scripted "user" can switch it from a gamepad
 //! mode into web-config, or to a mode with a boot button, after some scans.
 //! The server only answers while the pad is in web-config.
+//!
+//! On EP0 it runs a [`SimChannel`]: stock firmware by default (XInput
+//! answers vendor requests with 0 bytes, Xbox One with garbage, the rest
+//! STALL), or with [`SimPad::with_channel`] the gamepadii control channel,
+//! whose REBOOT and SET_INPUT_MODE re-enumerate the pad like `/api/reboot`
+//! and save into the same mock state the web-config API reads.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use std::time::Duration;
+
+use crate::channel::sim::{Effect, Seen, SimChannel};
+use crate::channel::{ControlTransport, Setup, UsbError};
 use crate::client::Client;
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
-use crate::mode::{self, InputMode};
+use crate::mode::{self, BootMode, InputMode};
 use crate::transport::mock::Mock;
 use crate::transport::{ApiPath, Method, Reply, Transport};
 
@@ -42,6 +52,10 @@ struct State {
     /// Never comes back after a reboot.
     stays_away: bool,
     scans: usize,
+    /// What answers on EP0.
+    channel: SimChannel,
+    /// Opening the device node fails with `EACCES` (no udev rule).
+    no_access: bool,
 }
 
 /// How many scans a reboot keeps the pad off USB.
@@ -71,6 +85,8 @@ impl SimPad {
                 come_back_as: None,
                 stays_away: false,
                 scans: 0,
+                channel: SimChannel::stock(Some(mode)),
+                no_access: false,
             }),
         }
     }
@@ -90,6 +106,56 @@ impl SimPad {
     pub fn stays_away(self) -> Self {
         self.lock().stays_away = true;
         self
+    }
+
+    /// Runs the gamepadii firmware, with the control channel, set up from
+    /// the mock's fixtures (strings, profiles, saved mode, locks).
+    pub fn with_channel(self) -> Self {
+        let running = self.lock().mode;
+        let ch = SimChannel::from_mock(&self.mock, running);
+        self.lock().channel = ch;
+        self
+    }
+
+    /// Changes the simulated firmware (locks, capabilities, garbage).
+    pub fn channel(self, f: impl FnOnce(&mut SimChannel)) -> Self {
+        f(&mut self.lock().channel);
+        self
+    }
+
+    /// The device node can't be opened (no udev rule).
+    pub fn no_access(self) -> Self {
+        self.lock().no_access = true;
+        self
+    }
+
+    /// Every vendor request the pad has seen on EP0.
+    pub fn control_log(&self) -> Vec<Seen> {
+        self.lock().channel.log.clone()
+    }
+
+    /// The simulated firmware's state now.
+    pub fn firmware(&self) -> SimChannel {
+        self.lock().channel.clone()
+    }
+
+    /// Opens the pad's EP0 as found at `d` (a [`crate::channel::OpenControl`]).
+    /// The handle goes stale when the pad re-enumerates, like a real fd.
+    pub fn open_control(
+        self: &Arc<Self>,
+        d: &Device,
+    ) -> std::result::Result<Box<dyn ControlTransport>, UsbError> {
+        let s = self.lock();
+        if s.no_access {
+            return Err(UsbError::NoAccess);
+        }
+        if s.mode.is_none() || d.devnum != Some(s.devnum) {
+            return Err(UsbError::Gone);
+        }
+        Ok(Box::new(SimControl {
+            pad: self.clone(),
+            devnum: s.devnum,
+        }))
     }
 
     pub fn mock(&self) -> &Mock {
@@ -162,6 +228,9 @@ impl SimPad {
                 s.mode = Some(next);
                 s.devnum += 1;
                 s.scans_in_mode = 0;
+                let token = 0x5eed_0000 ^ u32::from(s.devnum).wrapping_mul(0x9e37_79b9);
+                s.channel.sync_from(&self.mock);
+                s.channel.boot(Some(next), token);
             }
             return;
         }
@@ -225,6 +294,90 @@ impl Scan for SimPad {
 impl Scan for Arc<SimPad> {
     fn scan(&self) -> Vec<Device> {
         (**self).scan()
+    }
+}
+
+/// What a reboot over the channel comes back as.
+fn reboot_target(s: &State, saved: InputMode, mode: BootMode) -> InputMode {
+    match mode {
+        BootMode::Gamepad => s.come_back_as.unwrap_or(saved),
+        BootMode::Webconfig => InputMode::Webconfig,
+        BootMode::Bootsel => InputMode::Bootsel,
+    }
+}
+
+/// EP0 of the pad as it was enumerated at `devnum`.
+struct SimControl {
+    pad: Arc<SimPad>,
+    devnum: u16,
+}
+
+impl SimControl {
+    fn with<T>(
+        &self,
+        f: impl FnOnce(&mut State) -> std::result::Result<T, UsbError>,
+    ) -> std::result::Result<T, UsbError> {
+        let mut s = self.pad.lock();
+        if s.mode.is_none() || s.devnum != self.devnum {
+            return Err(UsbError::Gone);
+        }
+        if s.mode == Some(InputMode::Bootsel) {
+            // The boot ROM STALLs vendor requests it doesn't know.
+            return Err(UsbError::Stall);
+        }
+        s.channel.sync_from(&self.pad.mock);
+        f(&mut s)
+    }
+
+    /// Writes what the channel saved into the mock's options, as the
+    /// firmware's `Storage::save` would.
+    fn save(&self, ch: &SimChannel) {
+        let mock = &self.pad.mock;
+        let Some(serde_json::Value::Object(mut o)) = mock.current("getGamepadOptions") else {
+            return;
+        };
+        let changed = o.get("inputMode").and_then(|v| v.as_u64()) != Some(ch.saved_mode.into())
+            || o.get("profileNumber").and_then(|v| v.as_u64()) != Some(ch.saved_profile.into());
+        if changed {
+            o.insert("inputMode".into(), ch.saved_mode.into());
+            o.insert("profileNumber".into(), ch.saved_profile.into());
+            mock.store("getGamepadOptions", serde_json::Value::Object(o));
+        }
+    }
+}
+
+impl ControlTransport for SimControl {
+    fn control_in(
+        &self,
+        setup: Setup,
+        len: u16,
+        _: Duration,
+    ) -> std::result::Result<Vec<u8>, UsbError> {
+        self.with(|s| s.channel.control_in(setup, len))
+    }
+
+    fn control_out(
+        &self,
+        setup: Setup,
+        data: &[u8],
+        _: Duration,
+    ) -> std::result::Result<(), UsbError> {
+        self.with(|s| {
+            let effect = s.channel.control_out(setup, data)?;
+            self.save(&s.channel);
+            if let Some(Effect::Reboot(mode)) = effect {
+                let saved =
+                    InputMode::from_proto(s.channel.saved_mode.into()).unwrap_or(InputMode::Xinput);
+                let next = reboot_target(s, saved, mode);
+                s.mode = None;
+                s.coming_back = (!s.stays_away).then_some((OFF_USB_SCANS, next));
+            }
+            Ok(())
+        })
+    }
+
+    fn describe(&self) -> String {
+        format!("/dev/bus/usb/003/{:03}", self.devnum)
     }
 }
 

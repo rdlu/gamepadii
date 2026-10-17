@@ -21,6 +21,8 @@ gamepadii-core = { path = "crates/gamepadii-core", version = "0.1.0" }
 clap = { version = "4.6.7", features = ["derive"] }
 clap_complete = "4.6.11"
 clap_mangen = "0.3.3"
+# usbfs ioctls for the control channel (Linux only).
+libc = "0.2.191"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }

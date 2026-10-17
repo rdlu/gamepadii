@@ -106,6 +106,12 @@ impl Mock {
         serde_json::from_slice(&bytes).ok()
     }
 
+    /// Replaces what `GET /api/<name>` returns, as a write on the pad
+    /// would (the simulated control channel saves through this).
+    pub fn store(&self, name: &str, value: Value) {
+        self.lock_state().insert(name.to_string(), value);
+    }
+
     fn lock_state(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Value>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }

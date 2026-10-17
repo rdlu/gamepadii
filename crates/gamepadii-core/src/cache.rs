@@ -9,6 +9,7 @@
 //! board config share a file, and in a gamepad mode, where the board isn't
 //! known at all, the newest file is used. The hints say how old they are.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -18,6 +19,7 @@ use serde_json::Value;
 
 use crate::api::{self, Endpoint, GamepadOptions, PinMappings, ProfileOptions};
 use crate::buttons::Profiles;
+use crate::channel::Hello;
 use crate::client::Client;
 use crate::commands::{self, Bundle, Firmware};
 use crate::error::{Error, Result};
@@ -133,4 +135,60 @@ pub fn load_latest(dir: &Path) -> Option<DeviceCache> {
 /// convenience: failing to write it is reported, never fatal.
 pub fn store_quietly(dir: Option<&Path>, cache: &DeviceCache) -> Option<Error> {
     store(dir?, cache).err()
+}
+
+/// Which boards have been seen answering the control channel, so that a
+/// later `EACCES` on the device node can say "run `gamepadii setup udev`"
+/// for a pad that has the channel, and stay quiet for stock firmware.
+/// `$XDG_CACHE_HOME/gamepadii/control-channel.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelsSeen {
+    pub schema: u32,
+    /// Board config (`Haute42COSMOX`) → what its channel offered.
+    pub boards: BTreeMap<String, ChannelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelRecord {
+    pub major: u8,
+    pub minor: u8,
+    pub capabilities: Vec<String>,
+}
+
+impl ChannelRecord {
+    pub fn new(h: &Hello) -> Self {
+        Self {
+            major: h.major,
+            minor: h.minor,
+            capabilities: h.caps.names().into_iter().map(String::from).collect(),
+        }
+    }
+}
+
+pub const CHANNELS_FILE: &str = "control-channel.json";
+
+pub fn channels_seen(dir: &Path) -> ChannelsSeen {
+    fs::read(dir.join(CHANNELS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ChannelsSeen>(&b).ok())
+        .filter(|c| c.schema == CACHE_SCHEMA)
+        .unwrap_or_default()
+}
+
+/// Whether any pad has been seen with the channel.
+pub fn channel_known(dir: Option<&Path>) -> bool {
+    dir.is_some_and(|d| !channels_seen(d).boards.is_empty())
+}
+
+/// Records `board`'s channel; writes only when something changed, since
+/// `status` (a waybar module, say) probes often.
+pub fn record_channel(dir: &Path, board: &str, hello: &Hello) -> Result<()> {
+    let mut seen = channels_seen(dir);
+    let rec = ChannelRecord::new(hello);
+    if seen.boards.get(board) == Some(&rec) {
+        return Ok(());
+    }
+    seen.schema = CACHE_SCHEMA;
+    seen.boards.insert(board.to_string(), rec);
+    commands::write_json(&seen, &dir.join(CHANNELS_FILE)).map(|_| ())
 }
