@@ -8,7 +8,8 @@ built-in web configurator, with as few button presses and reboots as the
 firmware allows.
 
 **Status: pre-release, in development.** `status`, `info`, `backup`,
-`reboot`, `mode` and `webconfig` work so far. The roadmap is tracked in
+`reboot`, `mode`, `webconfig`, `profile switch` and `setup udev` work so
+far. The roadmap is tracked in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1), and the design
 notes are in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -42,12 +43,52 @@ gamepadii mode <MODE>             switch: xinput, keyboard, hid, switch,
                                   ps4, ps5, ... (gamepadii mode --help)
 gamepadii webconfig [--open]      get the pad into web-config, print the URL
 gamepadii webconfig --exit        back to gamepad mode
+gamepadii profile switch <N|LABEL> [--save]
+                                  switch the active profile, live (needs
+                                  the control channel); RAM only unless
+                                  --save
+gamepadii setup udev [--print|--install]
+                                  the udev rule the control channel needs
 ```
 
-`info`, `backup` and `reboot` talk to the pad's web configurator, so the
-pad has to be in web-config mode. In a gamepad mode (XInput, Keyboard, ...)
-GP2040-CE has no control channel, and they exit with code 5 and say how to
-switch: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 for 4
+`--no-channel` (any command) leaves the control channel alone.
+
+### The control channel
+
+The gamepadii build of GP2040-CE (a fork, on its way upstream; see
+[docs/design/control-channel.md](docs/design/control-channel.md)) answers
+vendor requests on the USB control endpoint in every mode, with no change
+to what consoles see. When gamepadii finds it (a HELLO with a random nonce
+that only that firmware echoes), it needs no web-config and no button
+press:
+
+- `status` is `confirmed`, and shows the firmware version, board, running
+  input mode and active profile;
+- `mode <MODE>` has the pad save the mode and restart into it, then checks
+  the new VID:PID and asks the firmware again;
+- `webconfig` and `reboot gamepad|webconfig` reboot it directly;
+  `reboot bootsel` goes through web-config (BOOTSEL isn't offered on the
+  channel);
+- `profile switch` changes the active pin-mapping profile with no reboot.
+  Without `--save` nothing is written to flash, so the pad goes back to its
+  saved profile when it restarts (unless something else, such as a hotkey,
+  saves the settings first).
+
+The channel needs read-write access to the pad's device node
+(`/dev/bus/usb/BBB/DDD`), which is root-only by default. `gamepadii setup
+udev` explains the rule, and `--install` writes
+`/etc/udev/rules.d/70-gamepadii.rules` (through pkexec) and reloads udev.
+It is opt-in for a reason: GP2040-CE borrows most of its USB ids from real
+controllers, so the rule also grants the logged-in user that access to a
+real Xbox 360, HORI, DualShock or Switch pad. It touches no input device
+(evdev, hidraw).
+
+On stock firmware everything below works as before.
+
+`info` and `backup` talk to the pad's web configurator, so the pad has to
+be in web-config mode (`reboot` too, without the control channel). In a
+gamepad mode (XInput, Keyboard, ...) stock GP2040-CE has no control
+channel, and they exit with code 5 and say how to switch: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 for 4
 seconds. Those are logical buttons, so on a remapped profile they may be
 other keys. `--host HOST` skips the USB check and talks to HOST instead of
 192.168.7.1.
@@ -58,7 +99,10 @@ other keys. `--host HOST` skips the USB check and talks to HOST instead of
 - in web-config: it backs up, writes `inputMode` (the whole options object,
   read back and checked), reboots, waits for the pad on USB and checks its
   VID:PID;
-- in a gamepad mode: it says what to press and waits (60 s,
+- in a gamepad mode, with the control channel: as above, without
+  web-config (no backup is taken: the pad saves only `inputMode`, as a
+  boot button would);
+- in a gamepad mode without it: it says what to press and waits (60 s,
   `--timeout SECS`; Ctrl-C is safe) for the pad to show up in web-config,
   then goes on as above. If the target mode has a boot button, that is the
   quickest route: unplug, hold the button, plug in. No write is needed, and
@@ -92,18 +136,20 @@ on an allowlist verified safe on the S16: some GP2040-CE endpoints
 Exit codes are stable: 0 ok, 1 check failed (the pad came back in another
 mode, or a write didn't read back), 2 no device found, 3 usage,
 4 transport (or the pad didn't come back on USB), 5 needs a button press on
-the pad. With `--json` a failure
+the pad (or the udev rule). With `--json` a failure
 still prints a JSON object (`{"schema": 1, "error": {...}}`), and waybar
 always gets a valid line.
 
 ### How the mode is detected
 
-In gamepad mode GP2040-CE has no control channel, so `status` reads the USB
-vendor and product ids from sysfs and looks them up in a table taken from the
+Without the control channel, `status` reads the USB vendor and product ids
+from sysfs and looks them up in a table taken from the
 firmware's descriptors. Most of those ids are borrowed from real controllers
 (XInput is `045e:028e`, an Xbox 360 pad), so the result carries a
 confidence: `confirmed` when the ids or strings can only be GP2040-CE
-(`cafe:*`, a `GP2040-CE` product string), `likely` otherwise. Web-config
+(`cafe:*`, a `GP2040-CE` product string), `likely` otherwise. With the
+channel, the firmware says which mode it runs, so it is always `confirmed`
+(and PS4 and PS5, which share an id, are told apart). Web-config
 (`cafe:4028`) also reports its network interface.
 
 ## Supported devices

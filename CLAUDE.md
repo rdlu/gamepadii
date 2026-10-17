@@ -26,15 +26,21 @@ every action is pinned to a commit SHA with its version in a comment.
 - Workspace: `crates/gamepadii-core` is the library, `crates/gamepadii` the
   binary (CLI, later TUI). The core never prints: commands return plain
   serde data and the front ends render it (`output.rs`).
-- Layering: `discovery` → `transport` → `client` → `commands` / `flow` →
-  `output`. The guided flows (`flow.rs`) take an `Env`: a `Scan` (sysfs,
-  or `sim::SimPad` in tests), a `Clock` (`wait::ManualClock` in tests, so
-  no real sleeps), an `open` closure for the client, and report through a
-  `Progress` (the CLI's spinner on stderr). Re-enumeration is detected by
+- Layering: `discovery` → `transport` / `channel` → `client` → `commands` /
+  `flow` → `output`. The guided flows (`flow.rs`) take an `Env`: a `Scan`
+  (sysfs, or `sim::SimPad` in tests), a `Clock` (`wait::ManualClock` in
+  tests, so no real sleeps), an `open` closure for the web-config client, a
+  `control` closure for the USB control channel (`SimPad::open_control` in
+  tests, usbfs live), and report through a `Progress` (the CLI's spinner on
+  stderr). In a gamepad mode the flows try the channel first and fall back
+  to the guided button presses. Re-enumeration is detected by
   polling sysfs (devnum change), not a udev monitor.
 - No async runtime: std threads + channels.
 - sysfs readers take a `Root` (`/` or a fixture dir) and never hard-code
-  `/sys`, so tests run against fixture trees under `tests/fixtures/`.
+  `/sys`, so tests run against fixture trees under `tests/fixtures/`. The
+  usbfs transport opens `/dev/bus/usb/...` under the same `Root`, so a
+  fixture `--sysroot` can never reach a real device; end-to-end tests of
+  the channel use the hidden `--mock-channel stock|channel|no-access`.
   Redact serials in captured fixtures.
 - Output contract: `--format human|json|waybar` (`--json` is an alias).
   JSON has `"schema": 1`, snake_case keys, `null` for unknowns (never
@@ -81,7 +87,12 @@ Agents may read from the S16 and reboot it between modes; never write
 settings to the device without the user's explicit OK, and take a backup
 first. That includes `gamepadii mode <MODE>` with the pad in web-config,
 which writes `inputMode`. Live tests that reboot or write skip unless
-`GAMEPADII_LIVE_REBOOT=1` / `GAMEPADII_LIVE_WRITE=1` is set.
+`GAMEPADII_LIVE_REBOOT=1` / `GAMEPADII_LIVE_WRITE=1` is set; the control
+channel ones also need `GAMEPADII_LIVE_CHANNEL=1`. Over the channel,
+SET_INPUT_MODE and `profile switch --save` write flash, and even a RAM-only
+`profile switch` changes the live mapping: treat all three as writes.
+Never run `gamepadii setup udev --install` for the user; it goes through
+pkexec and is theirs to approve.
 
 ## Git
 

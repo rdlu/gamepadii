@@ -52,6 +52,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the endpoints known to hang or wipe the pad (`getConfig`,
   `getI2CPeripheralMap`, `resetSettings`) impossible to request.
 
+- The control channel of the gamepadii firmware (vendor requests on EP0,
+  `docs/design/control-channel.md`): a Linux usbfs transport, HELLO
+  detection that rejects stock firmware's 0-byte (XInput) and garbage
+  (Xbox One) replies, and STATUS, STRING, SET_PROFILE, REBOOT and
+  SET_INPUT_MODE, with refusals explained from STATUS.
+- `status` with the channel: `confirmed`, plus firmware version, board,
+  running mode and active profile. JSON adds `control_channel` and
+  `channel_note` per device (additive; still schema 1).
+- `mode`, `webconfig` and `reboot` use the channel from a gamepad mode: no
+  web-config, no button press. `reboot bootsel` goes through web-config.
+  The JSON of `mode` has `"via": "control"`, and `reboot` and `webconfig`
+  gained a `via` field.
+- `gamepadii profile switch <N|LABEL> [--save]`: live, RAM only unless
+  `--save`.
+- `gamepadii setup udev [--print|--install]`: the opt-in uaccess rule for
+  the pads' device nodes, with what it grants (the borrowed ids include real
+  Xbox 360 and HORI pads); `--install` goes through pkexec.
+- `--no-channel` on every command.
+
 ### Fixed
 
 - Writes (`setGamepadOptions`, so `gamepadii mode` in web-config) failed

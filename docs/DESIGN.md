@@ -35,9 +35,10 @@ reboots as possible.
 
 ## What the firmware allows (GP2040-CE, checked at v0.7.12 and main 8013b41)
 
-- **Gamepad mode has no control channel.** In XInput, HID, Switch and the
-  other modes there is no vendor report and no serial interface. The only ways
-  into web-config are physical:
+- **Stock gamepad mode has no control channel.** In XInput, HID, Switch and
+  the other modes there is no vendor report and no serial interface. (The
+  gamepadii fork adds one on EP0, see below.) On stock firmware the only
+  ways into web-config are physical:
   - S2+B3+B4 while running (this toggles between gamepad and web-config)
   - holding S2 at plug-in
   - the OLED mini-menu
@@ -131,6 +132,42 @@ reboots as possible.
   JSON fields it doesn't know. The S16's exact build is still unknown; it may
   be a Haute42 vendor build.
 
+## The control channel (gamepadii firmware)
+
+Our fork answers vendor requests on EP0 in every mode, web-config
+included, with no descriptor change; the wire protocol and its firmware
+side are in [design/control-channel.md](design/control-channel.md).
+Decided in issue #2: no BOOTSEL over it (gamepadii goes through web-config
+for that), `profile switch` is RAM-only unless `--save`, and the udev rule
+is opt-in through `gamepadii setup udev`.
+
+Host side (`gamepadii-core/src/channel/`):
+
+- `ControlTransport` is one vendor control IN or OUT. On Linux it is an
+  `ioctl(USBDEVFS_CONTROL)` on `/dev/bus/usb/BBB/DDD` opened `O_RDWR`
+  (`usbfs.rs`, through `libc`); vendor requests need no claimed interface,
+  so xpad and usbhid stay bound. Errnos map to STALL, no access (`EACCES`:
+  "run `gamepadii setup udev`", exit 5), gone (`ENODEV`, `ESHUTDOWN`,
+  `EPROTO`: expected after a reboot) and timeout.
+- `probe` sends HELLO (200 ms timeout) with a random non-zero nonce and
+  accepts only a reply with the `GPii` magic, our nonce and major 1. A
+  STALL, a short reply (stock XInput sends 0 bytes) or garbage (stock Xbox
+  One sends uninitialised stack) mean "no channel", and the flows fall back
+  to the guided button presses.
+- `Channel` caches the HELLO (capabilities, token, bootable modes) and
+  sends the commands with the token and a sequence number; a STALL on a
+  command is explained by reading STATUS.
+- Device nodes are opened under the sysfs `Root`, so a fixture root (tests,
+  `--sysroot`) never reaches real hardware.
+- Pads seen with the channel are recorded per board in
+  `~/.cache/gamepadii/control-channel.json`; an `EACCES` on a pad like that
+  adds the udev hint to the guide (stock pads stay quiet).
+- `channel/sim.rs` is the firmware side, simulated (both stock behaviours
+  and the channel, including the §3.6 details), used by `sim::SimPad` and
+  the CLI's hidden `--mock-channel`.
+- Web-config mode keeps the HTTP path for `mode` (with its backup) and
+  `reboot`; the channel there is only probed by `status`.
+
 ## Profiles live in gamepadii, not on the pad
 
 gamepadii keeps a host-side **profile library** with no size limit, stored
@@ -174,12 +211,16 @@ crates/gamepadii-core/src/
   wait.rs        wait_for(predicate, timeout) over a Clock (ManualClock in tests)
   mode.rs        InputMode / BootMode enums, VID:PID table
   transport/     http.rs (own HTTP/1.0 client, serialised), mock.rs (fixtures)
+  channel/       control channel: proto.rs (wire v1), usbfs.rs (Linux),
+                 sim.rs (simulated firmware), mod.rs (probe, Channel)
+  udev.rs        the opt-in uaccess rule (70-gamepadii.rules)
   api/           typed endpoint structs + raw serde_json::Value passthrough
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
   cache.rs       last web-config read per board (~/.cache/gamepadii/<board>.json)
-  flow.rs        guided mode / webconfig / reboot-and-verify over Scan + Clock
-  sim.rs         a simulated pad (Scan + mock Transport) for flow tests
+  flow.rs        mode / webconfig / reboot / profile switch over Scan + Clock,
+                 the control channel first, the guided flows as fallback
+  sim.rs         a simulated pad (Scan + mock Transport + EP0) for flow tests
   profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
   commands.rs    status, info, backup, profile … → plain data
 crates/gamepadii/src/
