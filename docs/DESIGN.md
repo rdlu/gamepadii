@@ -246,8 +246,21 @@ crates/gamepadii-core/src/
   profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
   commands.rs    status, info, backup, profile … → plain data
 crates/gamepadii/src/
-  main.rs cli.rs output.rs tui/{mod,app,ui,keys}.rs
+  main.rs cli.rs output.rs
+  tui/           mod.rs (terminal loop), app.rs (state: keys and replies in,
+                 jobs out, no terminal), ui.rs (drawing), keys.rs (vim-first
+                 BINDINGS), worker.rs (core commands and flows on a std
+                 thread, progress back over a channel)
 ```
+
+The TUI holds no logic of its own about the pad: every job is a
+`gamepadii-core` command or flow (`status_with`, `mode`, `profile_switch`,
+`webconfig`, `reboot_pad`, `through_webconfig` + `backup_in_dir`), and the
+results panel shows `output.rs`'s human rendering of the report. The worker
+builds the flow `Env` per job on its own thread; the UI only sends jobs and
+reads replies. While idle it sends a sysfs-only scan once a second and asks
+for a full `status` (HELLO included) only when the devices or their device
+numbers change, so the control channel isn't polled.
 
 ## Testing
 

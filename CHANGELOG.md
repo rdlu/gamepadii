@@ -93,6 +93,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cache's.
 - `status` JSON: `control_channel.profiles`, the enabled profiles with
   their labels (additive, still schema 1).
+- The TUI (first cut, #4): `gamepadii` with no command on a terminal, or
+  `gamepadii tui`. One screen with the pad's status (mode, confidence,
+  firmware, board, running profile, the control channel), the input modes
+  (⏎ switches after a prompt, through the `mode` flow), the profiles (⏎
+  switches RAM only, `S` saves after a prompt), `w` into web-config and
+  back, `b` backup, `r` refresh and a `?` help overlay. Vim keys and
+  arrows. The flows run on a worker thread, with their progress and
+  button-press guides on screen; USB is watched once a second for
+  hotplug. Off a terminal, `gamepadii` still prints usage and `gamepadii
+  tui` exits 3.
 
 ### Fixed
 
