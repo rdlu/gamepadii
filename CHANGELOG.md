@@ -91,6 +91,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any STATUS refreshes it, and a restart gamepadii makes clears it. The
   key hints use the live STATUS profile when the channel answers, else the
   cache's.
+- `status` JSON: `control_channel.profiles`, the enabled profiles with
+  their labels (additive, still schema 1).
 
 ### Fixed
 

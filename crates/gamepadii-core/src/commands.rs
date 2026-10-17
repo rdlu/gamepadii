@@ -193,6 +193,9 @@ pub struct ChannelReport {
     pub input_mode: ModeSetting,
     pub active_profile: ProfileName,
     pub enabled_profiles: Vec<u8>,
+    /// The enabled profiles with their labels (`null` labels without the
+    /// STRING capability), for a profile picker.
+    pub profiles: Vec<ProfileName>,
     /// A profile switch the main loop hasn't applied yet.
     pub profile_pending: bool,
     /// `forcedSetupOptions.mode`: 1 locks mode switching, 2 web-config, 3
@@ -208,6 +211,20 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
     let string =
         |id| -> Result<Option<String>> { if has_strings { ch.string(id) } else { Ok(None) } };
     let h = ch.hello();
+    let mut profiles = Vec::new();
+    for number in st.enabled() {
+        profiles.push(ProfileName {
+            number,
+            label: string(proto::string::profile_label(number))?,
+        });
+    }
+    let active_profile = match profiles.iter().find(|p| p.number == st.profile) {
+        Some(p) => p.clone(),
+        None => ProfileName {
+            number: st.profile,
+            label: string(proto::string::profile_label(st.profile))?,
+        },
+    };
     Ok(ChannelReport {
         node: ch.node(),
         protocol: format!("{}.{}", h.major, h.minor),
@@ -223,11 +240,9 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
             file_name: None,
         },
         input_mode: ModeSetting::new(Some(i64::from(st.input_mode))),
-        active_profile: ProfileName {
-            number: st.profile,
-            label: string(proto::string::profile_label(st.profile))?,
-        },
+        active_profile,
         enabled_profiles: st.enabled(),
+        profiles,
         profile_pending: st.pending(),
         forced_setup: st.forced_setup,
         uptime_ms: st.uptime_ms,
