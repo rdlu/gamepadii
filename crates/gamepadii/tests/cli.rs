@@ -210,6 +210,46 @@ fn help_setup_udev() {
 }
 
 #[test]
+fn help_display_layout() {
+    insta::assert_snapshot!(help(&["display", "layout"]));
+}
+
+#[test]
+fn parses_display_layout() {
+    use gamepadii::cli::DisplayCommand;
+    use gamepadii_core::display::LayoutArg;
+    let arg = |args: &[&str]| match parse(args).unwrap().command {
+        Some(Command::Display { command }) => command.layout_arg(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(arg(&["display", "layout"]), None);
+    assert_eq!(
+        arg(&["display", "layout", "S16"]),
+        Some(LayoutArg::Named("S16".into()))
+    );
+    assert_eq!(
+        arg(&["display", "layout", "--left", "36", "--right", "42"]),
+        Some(LayoutArg::Raw {
+            left: 36,
+            right: 42
+        })
+    );
+    assert!(parse(&["display", "layout", "--left", "36"]).is_err());
+    assert!(parse(&["display", "layout", "s16", "--left", "36", "--right", "42"]).is_err());
+    let Some(Command::Display {
+        command: DisplayCommand::Layout {
+            no_backup, trip, ..
+        },
+    }) = parse(&["display", "layout", "s16", "--no-backup", "--stay"])
+        .unwrap()
+        .command
+    else {
+        panic!()
+    };
+    assert!(no_backup && trip.stay);
+}
+
+#[test]
 fn parses_profile_and_setup() {
     use gamepadii::cli::{ProfileCommand, SetupCommand};
     use gamepadii_core::flow::ProfileArg;

@@ -13,6 +13,7 @@ via           the control channel: web-config and back (/dev/bus/usb/003/007)
 was           XInput (045e:028e, confirmed)
 now           XInput (045e:028e, confirmed), as before
 note          restored profile 3 Celeste (RAM only) after the restart
+hint          the OLED draws the generic 12-button layout (27/31), but the pins map 16 buttons; on an S16 or G16: gamepadii display layout s16
 --- json
 restored_profile: 3
 --- stderr
@@ -27,5 +28,6 @@ via           the control channel: web-config and back (/dev/bus/usb/003/007)
 was           XInput (045e:028e, confirmed)
 now           XInput (045e:028e, confirmed), as before
 note          it ran profile 3 before, not saved; the restart put it back on its saved profile 2, and switching back failed (usage: the pad refused profile 3: that profile is disabled); `gamepadii profile switch 3` tries again
+hint          the OLED draws the generic 12-button layout (27/31), but the pins map 16 buttons; on an S16 or G16: gamepadii display layout s16
 --- json
 restored_profile: null

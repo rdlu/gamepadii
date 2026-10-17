@@ -14,6 +14,7 @@ use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
 use gamepadii_core::discovery::Device;
+use gamepadii_core::display::{BoardLayout, Current, LayoutReport, LayoutStatus};
 use gamepadii_core::flow::{
     ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via, WebconfigReport,
     WebconfigVia,
@@ -459,9 +460,120 @@ pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     r.push(("boot buttons", boot));
+    if let Some(d) = &i.display_layout {
+        r.push(("oled layout", layout_text(d)));
+    }
     r.push(("web-config", i.host.clone()));
     r.extend(trip.map(trip_rows).unwrap_or_default());
+    for h in &i.hints {
+        r.push(("hint", h.clone()));
+    }
     rows(style, &mut out, &r);
+    out
+}
+
+fn values(left: Option<i64>, right: Option<i64>) -> String {
+    let n = |v: Option<i64>| v.map_or_else(|| "?".into(), |v| v.to_string());
+    format!("{}/{}", n(left), n(right))
+}
+
+/// `Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16`.
+fn board_layout_text(l: &BoardLayout) -> String {
+    let mut s = format!("{} ({}/{}): {}", l.label, l.left, l.right, l.drawing);
+    if !l.models.is_empty() {
+        s.push_str(&format!(", for {}", l.models.join(", ")));
+    }
+    s
+}
+
+/// What the OLED draws: the board's drawing, or the bare values.
+fn layout_text(c: &Current) -> String {
+    match &c.layout {
+        Some(l) => board_layout_text(l),
+        None => format!("{} (left/right)", values(c.left, c.right)),
+    }
+}
+
+pub fn display_layout_status(style: Style, s: &LayoutStatus, trip: Option<&Trip>) -> String {
+    if style.format != Format::Human {
+        return json(&WithTrip { data: s, trip });
+    }
+    let mut out = format!("{}\n", style.bold(&layout_text(&s.current)));
+    let mut rw: Vec<(&str, String)> =
+        vec![("board", s.board.clone().unwrap_or_else(|| "-".into()))];
+    if !s.choices.is_empty() {
+        let width = s
+            .choices
+            .iter()
+            .map(|c| c.layout.key.len())
+            .max()
+            .unwrap_or(0)
+            + 2;
+        let choices = s
+            .choices
+            .iter()
+            .map(|c| {
+                let mut line = format!("{:<width$}{}", c.layout.key, board_layout_text(&c.layout));
+                if c.current {
+                    line.push_str(" (current)");
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        rw.push(("layouts", choices));
+    }
+    rw.extend(trip.map(trip_rows).unwrap_or_default());
+    rows(style, &mut out, &rw);
+    let how = if s.choices.is_empty() {
+        "set with: gamepadii display layout --left N --right N"
+    } else {
+        "set with: gamepadii display layout <model|layout> (s16, alt2, ...) or --left N --right N"
+    };
+    out.push_str(&style.dim(how));
+    out.push('\n');
+    out
+}
+
+pub fn display_layout(style: Style, r: &LayoutReport, trip: Option<&Trip>) -> String {
+    if style.format != Format::Human {
+        return json(&WithTrip { data: r, trip });
+    }
+    let head = if r.write.is_some() {
+        "OLED layout set to"
+    } else {
+        "OLED layout already"
+    };
+    let mut out = format!(
+        "{} {}\n",
+        style.bold(head),
+        style.bold(&layout_text(&r.after))
+    );
+    let mut rw: Vec<(&str, String)> = Vec::new();
+    match &r.write {
+        Some(w) => {
+            rw.push(("before", layout_text(&r.before)));
+            let changes = w.changed.iter().map(change).collect::<Vec<_>>().join(", ");
+            rw.push((
+                "saved",
+                format!("{changes} (read back; nothing else changed)"),
+            ));
+            if let Some(b) = &r.backup {
+                rw.push(("backup", b.display().to_string()));
+            }
+        }
+        None => rw.push(("saved", "nothing written".into())),
+    }
+    rw.extend(trip.map(trip_rows).unwrap_or_default());
+    if r.write.is_some() && (trip.is_none() || trip.is_some_and(|t| t.stayed)) {
+        rw.push((
+            "note",
+            "the OLED shows it once the pad restarts in a gamepad mode \
+             (gamepadii webconfig --exit)"
+                .into(),
+        ));
+    }
+    rows(style, &mut out, &rw);
     out
 }
 

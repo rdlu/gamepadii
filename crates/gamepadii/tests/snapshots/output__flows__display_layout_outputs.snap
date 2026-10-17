@@ -1,0 +1,92 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"--- choices\\n{}--- set in web-config\\n{}--- already\\n{}--- choices after\\n{}\\\n             --- from XInput\\n{}--- json\\n{}\",\noutput::display_layout_status(human(), &status, None),\noutput::display_layout(human(), &written, None),\noutput::display_layout(human(), &already, None),\noutput::display_layout_status(human(), &after_status, None),\noutput::display_layout(human(), &tripped, trip.as_ref()),\noutput::display_layout(json(), &written, None),)"
+---
+--- choices
+Board Defined (27/31): Stickless, 12 buttons
+board         Haute42COSMOX
+layouts       default  Board Defined (27/31): Stickless, 12 buttons (current)
+              alt0     Board Defined Alternate 0 (34/40): Stickless 13 (1), for G13, S13
+              alt1     Board Defined Alternate 1 (35/41): Stickless 13 (2), for T13, M13, M13+
+              alt2     Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16
+              alt3     Board Defined Alternate 3 (37/43): Stickless 16 (2), for T16, M16, M16+
+              alt4     Board Defined Alternate 4 (38/44): Stickless 16 R
+              alt5     Board Defined Alternate 5 (39/45): Stickless 16 Southpaw, for E16
+set with: gamepadii display layout <model|layout> (s16, alt2, ...) or --left N --right N
+--- set in web-config
+OLED layout set to Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16
+before        Board Defined (27/31): Stickless, 12 buttons
+saved         buttonLayout 27 → 36, buttonLayoutRight 31 → 42 (read back; nothing else changed)
+backup        /backups/20261017-165703-Haute42COSMOX.json
+note          the OLED shows it once the pad restarts in a gamepad mode (gamepadii webconfig --exit)
+--- already
+OLED layout already Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16
+saved         nothing written
+--- choices after
+Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16
+board         Haute42COSMOX
+layouts       default  Board Defined (27/31): Stickless, 12 buttons
+              alt0     Board Defined Alternate 0 (34/40): Stickless 13 (1), for G13, S13
+              alt1     Board Defined Alternate 1 (35/41): Stickless 13 (2), for T13, M13, M13+
+              alt2     Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16 (current)
+              alt3     Board Defined Alternate 3 (37/43): Stickless 16 (2), for T16, M16, M16+
+              alt4     Board Defined Alternate 4 (38/44): Stickless 16 R
+              alt5     Board Defined Alternate 5 (39/45): Stickless 16 Southpaw, for E16
+set with: gamepadii display layout <model|layout> (s16, alt2, ...) or --left N --right N
+--- from XInput
+OLED layout set to Board Defined Alternate 2 (36/42): Stickless 16 (1), for G16, S16
+before        Board Defined (27/31): Stickless, 12 buttons
+saved         buttonLayout 27 → 36, buttonLayoutRight 31 → 42 (read back; nothing else changed)
+backup        /backups/20261017-165703-Haute42COSMOX.json
+via           the control channel: web-config and back (/dev/bus/usb/003/007)
+was           XInput (045e:028e, confirmed)
+now           XInput (045e:028e, confirmed), as before
+--- json
+{
+  "schema": 1,
+  "board": "Haute42COSMOX",
+  "before": {
+    "left": 27,
+    "right": 31,
+    "layout": {
+      "key": "default",
+      "label": "Board Defined",
+      "left": 27,
+      "right": 31,
+      "models": [],
+      "drawing": "Stickless, 12 buttons"
+    }
+  },
+  "after": {
+    "left": 36,
+    "right": 42,
+    "layout": {
+      "key": "alt2",
+      "label": "Board Defined Alternate 2",
+      "left": 36,
+      "right": 42,
+      "models": [
+        "G16",
+        "S16"
+      ],
+      "drawing": "Stickless 16 (1)"
+    }
+  },
+  "write": {
+    "changed": [
+      {
+        "key": "buttonLayout",
+        "before": 27,
+        "after": 36
+      },
+      {
+        "key": "buttonLayoutRight",
+        "before": 31,
+        "after": 42
+      }
+    ],
+    "posted": true
+  },
+  "backup": "/backups/20261017-165703-Haute42COSMOX.json",
+  "trip": null
+}
