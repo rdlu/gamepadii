@@ -3,7 +3,18 @@ source: crates/gamepadii-core/tests/api.rs
 expression: v
 ---
 {
+  "schema": 1,
+  "gamepadii_version": "[version]",
   "captured_at": "2026-10-17T16:57:03Z",
+  "firmware": {
+    "version": "v0.7.12",
+    "board": "Haute42COSMOX",
+    "board_label": "Haute42 COSMOX",
+    "architecture": "rp2040",
+    "build": "0014e4a",
+    "build_type": "Release",
+    "file_name": "GP2040-CE_0.7.12_Haute42COSMOX"
+  },
   "endpoints": {
     "getAddonsOptions": "object, 143 keys",
     "getButtonLayoutDefs": "object, 2 keys",
@@ -26,16 +37,5 @@ expression: v
     "getSplashImage": "object, 1 keys",
     "getUsedPins": "object, 1 keys",
     "getWiiControls": "object, 66 keys"
-  },
-  "firmware": {
-    "architecture": "rp2040",
-    "board": "Haute42COSMOX",
-    "board_label": "Haute42 COSMOX",
-    "build": "0014e4a",
-    "build_type": "Release",
-    "file_name": "GP2040-CE_0.7.12_Haute42COSMOX",
-    "version": "v0.7.12"
-  },
-  "gamepadii_version": "[version]",
-  "schema": 1
+  }
 }

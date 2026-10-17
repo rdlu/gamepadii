@@ -277,6 +277,40 @@ fn backup_bundle_structure() {
     insta::assert_json_snapshot!(v);
 }
 
+/// serde_json's `preserve_order`: a backup lists each endpoint's keys in
+/// the order the pad sent them, not sorted.
+#[test]
+fn backup_keeps_the_device_key_order() {
+    let (client, _) = s16();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s16.json");
+    commands::backup(&client, Some(&path), captured()).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    let back: Value = serde_json::from_str(&text).unwrap();
+    let keys: Vec<&str> = back["endpoints"]["getGamepadOptions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .take(4)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["dpadMode", "inputMode", "inputDeviceType", "socdMode"]
+    );
+    let raw = fs::read_to_string(s16_dir().join("getGamepadOptions.json")).unwrap();
+    let raw: Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        raw.as_object()
+            .unwrap()
+            .keys()
+            .eq(back["endpoints"]["getGamepadOptions"]
+                .as_object()
+                .unwrap()
+                .keys())
+    );
+}
+
 #[test]
 fn backup_writes_a_file() {
     let (client, _) = s16();
