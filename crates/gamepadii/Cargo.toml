@@ -1,6 +1,6 @@
 [package]
 name = "gamepadii"
-description = "CLI (and later TUI) for GP2040-CE gamepads: status, input modes, profiles"
+description = "CLI and TUI for GP2040-CE gamepads: status, input modes, profiles"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,8 @@ gamepadii-core.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

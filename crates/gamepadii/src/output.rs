@@ -132,7 +132,7 @@ pub fn mode_label(d: &Device) -> String {
     }
 }
 
-fn confidence(c: Confidence) -> &'static str {
+pub fn confidence(c: Confidence) -> &'static str {
     match c {
         Confidence::Confirmed => "confirmed",
         Confidence::Likely => "likely",
@@ -200,7 +200,7 @@ fn channel_rows(c: &ChannelReport) -> Vec<(&'static str, String)> {
 }
 
 /// Every row of one device in `status`.
-fn status_rows(d: &StatusDevice) -> Vec<(&'static str, String)> {
+pub fn status_rows(d: &StatusDevice) -> Vec<(&'static str, String)> {
     let mut rows = device_rows(&d.device);
     if let Some(c) = &d.control_channel {
         rows.extend(channel_rows(c));
