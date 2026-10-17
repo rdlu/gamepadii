@@ -139,6 +139,43 @@ fn set_gamepad_options_round_trip() {
     assert_eq!(api::gamepad_options(t).unwrap(), before);
 }
 
+/// A real `setDisplayOptions` round trip, the same way: backs up, bumps
+/// `splashDuration` by 1 ms (invisible), checks nothing else changed (the
+/// layout and the nested custom-layout numbers included), and puts it back.
+#[test]
+#[ignore = "writes to the pad; needs it in web-config and GAMEPADII_LIVE_WRITE=1"]
+fn set_display_options_round_trip() {
+    use gamepadii_core::{api, display};
+    if !opted_in("GAMEPADII_LIVE_WRITE") {
+        return;
+    }
+    let Some(client) = webconfig() else { return };
+    let status = display::layout_status(&client).expect("layout");
+    print!(
+        "{}",
+        output::display_layout_status(Style::plain(Format::Human), &status, None)
+    );
+    let backup = commands::backup(&client, None, std::time::SystemTime::now()).expect("backup");
+    eprintln!("backed up to {}", backup.path.display());
+    let t = client.transport();
+    let before = api::display_options(t).unwrap();
+    let splash = before
+        .extra
+        .get("splashDuration")
+        .and_then(serde_json::Value::as_i64)
+        .expect("splashDuration");
+    let set = |v: i64| {
+        api::set_display_options(t, |o| {
+            o.extra.insert("splashDuration".into(), v.into());
+        })
+    };
+    let w = set(splash + 1).expect("write");
+    assert_eq!(w.changed.len(), 1, "{w:?}");
+    assert_eq!(w.changed[0].key, "splashDuration");
+    set(splash).expect("restore");
+    assert_eq!(api::display_options(t).unwrap(), before);
+}
+
 // ---- the control channel (GAMEPADII_LIVE_CHANNEL=1) -------------------------
 
 mod channel {
