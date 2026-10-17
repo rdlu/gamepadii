@@ -20,3 +20,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   error object or a valid waybar line.
 - Stable exit codes: 0 ok, 1 check failed, 2 no device, 3 usage,
   4 transport, 5 needs user action.
+- `gamepadii info`: firmware version and build, board, flash and heap use,
+  the saved input mode, the pin-mapping profiles (labels, which is active)
+  and the boot-mode buttons decoded to input modes. Needs web-config; in a
+  gamepad mode it exits 5 and says how to switch.
+- `gamepadii backup [-o FILE]`: every allowlisted web-config endpoint in one
+  versioned JSON bundle, by default under
+  `~/.local/share/gamepadii/backups/`.
+- `gamepadii reboot <gamepad|webconfig|bootsel>`.
+- `--host HOST` to reach the web configurator without the USB check.
+- Web-config client in `gamepadii-core`: serialised plain-HTTP transport
+  with timeouts, a fixture-backed mock, and an endpoint allowlist that makes
+  the endpoints known to hang or wipe the pad (`getConfig`,
+  `getI2CPeripheralMap`, `resetSettings`) impossible to request.

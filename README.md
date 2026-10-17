@@ -7,8 +7,9 @@ modes and apply profiles (pin mappings, keyboard keymaps) without the
 built-in web configurator, with as few button presses and reboots as the
 firmware allows.
 
-**Status: pre-release, in development.** Only `status` works so far; the
-plan and milestones are in [docs/PLAN.md](docs/PLAN.md).
+**Status: pre-release, in development.** `status`, `info`, `backup` and
+`reboot` work so far; the plan and milestones are in
+[docs/PLAN.md](docs/PLAN.md).
 
 The documentation will live at **<https://gamepadii.dlu.one/>**.
 
@@ -28,7 +29,26 @@ or `mise run install` in a clone.
 gamepadii status                  the pad: input mode, USB ids, bus and port
 gamepadii status --json           the same as JSON ("schema": 1)
 gamepadii status --format waybar  one line for a waybar custom module
+gamepadii info                    firmware, board, memory, input mode,
+                                  profiles and boot-mode buttons
+gamepadii backup [-o FILE]        every readable setting in one JSON file
+gamepadii reboot <gamepad|webconfig|bootsel>
 ```
+
+`info`, `backup` and `reboot` talk to the pad's web configurator, so the
+pad has to be in web-config mode. In a gamepad mode (XInput, Keyboard, ...)
+GP2040-CE has no control channel, and they exit with code 5 and say how to
+switch: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 for 4
+seconds. Those are logical buttons, so on a remapped profile they may be
+other keys. `--host HOST` skips the USB check and talks to HOST instead of
+192.168.7.1.
+
+`backup` writes to `~/.local/share/gamepadii/backups/<time>-<board>.json`
+(`$XDG_DATA_HOME` is honoured) unless given `-o FILE`. The bundle holds each
+endpoint's JSON exactly as the pad sent it. The client only reads endpoints
+on an allowlist verified safe on the S16: some GP2040-CE endpoints
+(`getConfig`, `getI2CPeripheralMap`) hang the device on v0.7.12, and
+`resetSettings` wipes it.
 
 Exit codes are stable: 0 ok, 1 check failed, 2 no device found, 3 usage,
 4 transport, 5 needs a button press on the pad. With `--json` a failure
