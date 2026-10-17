@@ -7,8 +7,8 @@ modes and apply profiles (pin mappings, keyboard keymaps) without the
 built-in web configurator, with as few button presses and reboots as the
 firmware allows.
 
-**Status: pre-release, in development.** `status`, `info`, `backup` and
-`reboot` work so far; the plan and milestones are in
+**Status: pre-release, in development.** `status`, `info`, `backup`,
+`reboot`, `mode` and `webconfig` work so far; the plan and milestones are in
 [docs/PLAN.md](docs/PLAN.md).
 
 The documentation will live at **<https://gamepadii.dlu.one/>**.
@@ -33,6 +33,14 @@ gamepadii info                    firmware, board, memory, input mode,
                                   profiles and boot-mode buttons
 gamepadii backup [-o FILE]        every readable setting in one JSON file
 gamepadii reboot <gamepad|webconfig|bootsel>
+                                  restart, wait for the pad on USB, and
+                                  check what came back
+gamepadii mode                    the current and saved input mode, and
+                                  the modes there are (with boot buttons)
+gamepadii mode <MODE>             switch: xinput, keyboard, hid, switch,
+                                  ps4, ps5, ... (gamepadii mode --help)
+gamepadii webconfig [--open]      get the pad into web-config, print the URL
+gamepadii webconfig --exit        back to gamepad mode
 ```
 
 `info`, `backup` and `reboot` talk to the pad's web configurator, so the
@@ -43,6 +51,36 @@ seconds. Those are logical buttons, so on a remapped profile they may be
 other keys. `--host HOST` skips the USB check and talks to HOST instead of
 192.168.7.1.
 
+`mode <MODE>` does the whole switch:
+
+- already in that mode: nothing to do;
+- in web-config: it backs up, writes `inputMode` (the whole options object,
+  read back and checked), reboots, waits for the pad on USB and checks its
+  VID:PID;
+- in a gamepad mode: it says what to press and waits (60 s,
+  `--timeout SECS`; Ctrl-C is safe) for the pad to show up in web-config,
+  then goes on as above. If the target mode has a boot button, that is the
+  quickest route: unplug, hold the button, plug in. No write is needed, and
+  the pad keeps the mode. `--no-wait` prints the instructions and exits 5.
+
+`webconfig` waits the same way, then prints `http://192.168.7.1/`
+(`--open` opens it).
+
+Whenever the pad is in web-config, `info`, `backup`, `mode` and `webconfig`
+save its options and pin-mapping profiles in
+`~/.cache/gamepadii/<board>.json` (`$XDG_CACHE_HOME` is honoured). In a
+gamepad mode, gamepadii can then name the boot buttons and say which keys
+the hotkey is on in the active profile, by the names profile 1 (Default)
+gives them, with Xbox labels:
+
+```text
+In profile 2 (SilkSong), S2+B3+B4 are the keys Default calls S2 (Start),
+B3 (X) and R1 (RB).
+```
+
+Web-config mode has no unique serial (every pad says `123456`), so the cache
+goes by board config, and with several boards the newest one is used.
+
 `backup` writes to `~/.local/share/gamepadii/backups/<time>-<board>.json`
 (`$XDG_DATA_HOME` is honoured) unless given `-o FILE`. The bundle holds each
 endpoint's JSON exactly as the pad sent it. The client only reads endpoints
@@ -50,8 +88,10 @@ on an allowlist verified safe on the S16: some GP2040-CE endpoints
 (`getConfig`, `getI2CPeripheralMap`) hang the device on v0.7.12, and
 `resetSettings` wipes it.
 
-Exit codes are stable: 0 ok, 1 check failed, 2 no device found, 3 usage,
-4 transport, 5 needs a button press on the pad. With `--json` a failure
+Exit codes are stable: 0 ok, 1 check failed (the pad came back in another
+mode, or a write didn't read back), 2 no device found, 3 usage,
+4 transport (or the pad didn't come back on USB), 5 needs a button press on
+the pad. With `--json` a failure
 still prints a JSON object (`{"schema": 1, "error": {...}}`), and waybar
 always gets a valid line.
 

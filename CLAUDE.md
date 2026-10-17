@@ -24,7 +24,12 @@ every action is pinned to a commit SHA with its version in a comment.
 - Workspace: `crates/gamepadii-core` is the library, `crates/gamepadii` the
   binary (CLI, later TUI). The core never prints: commands return plain
   serde data and the front ends render it (`output.rs`).
-- Layering: `discovery` → `transport` → `client` → `commands` → `output`.
+- Layering: `discovery` → `transport` → `client` → `commands` / `flow` →
+  `output`. The guided flows (`flow.rs`) take an `Env`: a `Scan` (sysfs,
+  or `sim::SimPad` in tests), a `Clock` (`wait::ManualClock` in tests, so
+  no real sleeps), an `open` closure for the client, and report through a
+  `Progress` (the CLI's spinner on stderr). Re-enumeration is detected by
+  polling sysfs (devnum change), not a udev monitor.
 - No async runtime: std threads + channels.
 - sysfs readers take a `Root` (`/` or a fixture dir) and never hard-code
   `/sys`, so tests run against fixture trees under `tests/fixtures/`.
@@ -39,13 +44,21 @@ every action is pinned to a commit SHA with its version in a comment.
   `anyhow`/`thiserror`.
 - VID:PID detection is a guess for borrowed ids: report a confidence
   (`confirmed` / `likely`), never claim certainty.
+- Hotkeys and boot buttons are logical; anything telling the user what to
+  press names the physical keys too (`buttons.rs`, from the device cache).
+- Tests that run the binary point `XDG_CACHE_HOME` and `XDG_DATA_HOME` at
+  temporary directories (`exit.rs`'s `gamepadii_in`): commands write the
+  device cache and backups there.
 
 ## Web-config API hazards
 
 The client must guard against these (details in `docs/PLAN.md`):
 
 - `setGamepadOptions` zeroes every key it isn't sent: always read-modify-write
-  the full object.
+  the full object (`api::set_gamepad_options`, which also turns the hex USB
+  ids into integers, refuses a body missing a setter key, and verifies by
+  reading back). The mock models the setter, so tests catch partial bodies.
+  It is the only write so far; any new `set*` gets the same treatment.
 - The server ignores the HTTP method: never GET a `set*` endpoint (it replays
   the previous POST body).
 - Serialise requests (one at a time); POST bodies are capped at 16 KB.
@@ -62,7 +75,9 @@ The client must guard against these (details in `docs/PLAN.md`):
 
 Agents may read from the S16 and reboot it between modes; never write
 settings to the device without the user's explicit OK, and take a backup
-first.
+first. That includes `gamepadii mode <MODE>` with the pad in web-config,
+which writes `inputMode`. Live tests that reboot or write skip unless
+`GAMEPADII_LIVE_REBOOT=1` / `GAMEPADII_LIVE_WRITE=1` is set.
 
 ## Git
 

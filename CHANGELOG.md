@@ -29,7 +29,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `~/.local/share/gamepadii/backups/`.
 - `gamepadii reboot <gamepad|webconfig|bootsel>`.
 - `--host HOST` to reach the web configurator without the USB check.
+- `gamepadii mode [MODE]`: switch the input mode. In web-config it
+  backs up, writes `inputMode` with a read-modify-write of the whole
+  `setGamepadOptions` object (read back and checked), reboots and verifies
+  the VID:PID. In a gamepad mode it says which buttons to press and waits
+  for web-config (`--timeout`, `--no-wait` exits 5); a cached boot button for
+  the target mode is offered as the no-write route. With no MODE: the
+  current and saved mode and every choice, with its boot button.
+- `gamepadii webconfig [--open | --exit]`: get into web-config (guided, with
+  a wait) and print or open the URL, or reboot back to gamepad mode.
+- `reboot` waits for the pad to re-enumerate and checks what it came back as
+  (`--no-wait`, `--timeout`). A connection dropped after the request went out
+  counts as a probable success, settled by the re-enumeration.
+- Physical key hints: hotkeys and boot buttons are logical, so gamepadii
+  says which keys they are in the active profile, by the names Default
+  gives them, with the web configurator's Xbox labels.
+- A device cache, `~/.cache/gamepadii/<board>.json`, written whenever the
+  pad is in web-config (`info`, `backup`, `mode`, `webconfig`), so gamepad
+  mode commands can name boot buttons and keys.
 - Web-config client in `gamepadii-core`: serialised plain-HTTP transport
   with timeouts, a fixture-backed mock, and an endpoint allowlist that makes
   the endpoints known to hang or wipe the pad (`getConfig`,
   `getI2CPeripheralMap`, `resetSettings`) impossible to request.
+
+### Changed
+
+- Backups and the device cache keep each endpoint's keys in the pad's order
+  (serde_json `preserve_order`).
+- Exit code 1 is now used: a verify that fails after a reboot or a write.
