@@ -212,6 +212,17 @@ stays behind cfg gates.
    write went to the real S16: the write path is tested against the setter
    model in `transport/mock.rs`, and the live write test is gated on
    `GAMEPADII_LIVE_WRITE=1`.
+3b. **`display layout`**: pick the OLED button layout that matches the panel,
+   with a read-modify-write on `setDisplayOptions` (first verify how the
+   setter reads each field in v0.7.12) and a read-back to check it.
+   - **Why:** Haute42COSMOX is one firmware for the whole family, so its
+     default "Board Defined" layout (27/31) is the original 12-button one.
+   - **Known model layouts** (`configs/Haute42COSMOX/BoardConfig.h`):
+     Alternate 0 (34/40) is G13/S13; Alternate 2 (36/42) is G16/S16;
+     Alternate 3 is T16/M16/M16+.
+   - **Usage:** `gamepadii display layout s16`.
+   - **Hint:** `info` should flag a 16-button pin mapping on the generic
+     layout and suggest the change.
 4. **Profile library**: KDL bundles with `profile
    list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
    sidekick.
