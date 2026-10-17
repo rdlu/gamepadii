@@ -1,0 +1,12 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "status(\"s16-xinput\", Format::Human)"
+---
+XInput (likely)
+usb id        045e:028e
+product       Controller
+manufacturer  ©Microsoft Corporation
+serial        0C0FFEE
+port          bus 3, port 3-1, device 6
+sysfs         /sys/devices/pci0000:00/0000:00:08.1/0000:05:00.4/usb3/3-1
+note          045e:028e is also used by the Xbox 360 controller and its clones

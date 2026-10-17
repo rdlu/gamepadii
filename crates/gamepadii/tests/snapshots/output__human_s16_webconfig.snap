@@ -1,0 +1,12 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "status(\"s16-webconfig\", Format::Human)"
+---
+web-config (confirmed)
+usb id        cafe:4028
+product       TinyUSB Device
+manufacturer  TinyUSB
+serial        123456
+port          bus 3, port 3-1, device 7
+web-config    http://192.168.7.1/ (via enp5s0f4u1)
+sysfs         /sys/devices/pci0000:00/0000:00:08.1/0000:05:00.4/usb3/3-1

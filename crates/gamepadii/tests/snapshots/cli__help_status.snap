@@ -1,0 +1,24 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"status\"])"
+---
+The pad on USB: input mode (with a confidence), USB ids, bus and port
+
+Usage: gamepadii status [OPTIONS]
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` only
+          
+          [default: human]
+
+      --json
+          Same as `--format json`
+
+  -h, --help
+          Print help (see a summary with '-h')

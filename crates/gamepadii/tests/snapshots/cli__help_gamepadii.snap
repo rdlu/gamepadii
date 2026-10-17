@@ -1,0 +1,31 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[])"
+---
+CLI (and later TUI) for GP2040-CE gamepads: status, input modes, profiles
+
+Usage: gamepadii [OPTIONS] [COMMAND]
+
+Commands:
+  status  The pad on USB: input mode (with a confidence), USB ids, bus and port
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` only
+          
+          [default: human]
+
+      --json
+          Same as `--format json`
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
