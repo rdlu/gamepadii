@@ -154,6 +154,11 @@ crates/gamepadii/src/
 
 ## Milestones
 
+Order after the MVP (decided 2026-10-17): the firmware fork and control
+channel (8b) come first, then the TUI (5), then the rest. Linux first. Windows
+and macOS wait until the GUI; the core stays portable and Linux-only code
+stays behind cfg gates.
+
 0. **Scaffold** (on `main`): the workspace, LICENSE, README, CLAUDE.md,
    CHANGELOG, mise.toml with the `check` gate, CI, `git init`, and the GitHub
    repo.
