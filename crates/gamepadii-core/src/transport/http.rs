@@ -123,6 +123,10 @@ impl Transport for Http {
 
 fn to_error(context: String, e: ureq::Error) -> Error {
     let kind = match &e {
+        // Nothing was sent: not the "dropped mid-request" a reboot causes.
+        ureq::Error::Timeout(ureq::Timeout::Resolve | ureq::Timeout::Connect) => {
+            io::ErrorKind::NotConnected
+        }
         ureq::Error::Timeout(_) => io::ErrorKind::TimedOut,
         ureq::Error::ConnectionFailed => io::ErrorKind::ConnectionRefused,
         ureq::Error::HostNotFound => io::ErrorKind::NotFound,

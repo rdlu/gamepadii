@@ -7,7 +7,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Process exit codes: a stable contract for scripts and status bars.
 pub mod exit {
     pub const OK: u8 = 0;
-    /// A check ran and failed (no command uses it yet).
+    /// A check ran and failed: the pad came back in another mode than the
+    /// one asked for, or a write did not take.
     pub const CHECK_FAILED: u8 = 1;
     /// No GP2040-CE device found.
     pub const NOT_FOUND: u8 = 2;
@@ -35,6 +36,8 @@ pub enum Error {
     Protocol(String),
     /// The user has to act on the pad first: the message says what to do.
     NeedsUser(String),
+    /// A check after an action failed (a verify mismatch).
+    CheckFailed(String),
 }
 
 impl Error {
@@ -44,6 +47,7 @@ impl Error {
             Error::Usage(_) => exit::USAGE,
             Error::Io { .. } | Error::Protocol(_) => exit::TRANSPORT,
             Error::NeedsUser(_) => exit::NEEDS_USER,
+            Error::CheckFailed(_) => exit::CHECK_FAILED,
         }
     }
 
@@ -62,6 +66,7 @@ impl Error {
             Error::Io { .. } => "io",
             Error::Protocol(_) => "protocol",
             Error::NeedsUser(_) => "needs_user",
+            Error::CheckFailed(_) => "check_failed",
         }
     }
 }
@@ -74,6 +79,7 @@ impl fmt::Display for Error {
             Error::Io { context, source } => write!(f, "{context}: {source}"),
             Error::Protocol(m) => write!(f, "protocol error: {m}"),
             Error::NeedsUser(m) => write!(f, "action needed: {m}"),
+            Error::CheckFailed(m) => write!(f, "check failed: {m}"),
         }
     }
 }
@@ -99,6 +105,7 @@ mod tests {
         assert_eq!(io.exit_code(), 4);
         assert_eq!(Error::Protocol(String::new()).exit_code(), 4);
         assert_eq!(Error::NeedsUser(String::new()).exit_code(), 5);
+        assert_eq!(Error::CheckFailed(String::new()).exit_code(), 1);
         assert_eq!(io.to_string(), "reading x: boom");
         assert_eq!(io.kind(), "io");
     }

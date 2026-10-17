@@ -9,7 +9,8 @@
 //! - `getHeldPins`: blocks until a button is pressed (it will come later,
 //!   behind its own function, for the button test).
 //! - every `set*`: the server ignores the method, so a GET would replay the
-//!   previous POST body. No writes exist yet.
+//!   previous POST body. The only write, [`set_gamepad_options`], lives in
+//!   `write` and is only ever POSTed.
 //!
 //! ```compile_fail
 //! let _ = gamepadii_core::api::Endpoint::GetConfig;
@@ -21,15 +22,17 @@
 //! The only other request is [`reboot`].
 
 pub mod model;
+pub mod write;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use model::{
     FirmwareVersion, GamepadOptions, KeyMappings, MemoryReport, PinMapping, PinMappings,
     ProfileOptions,
 };
+pub use write::{FieldChange, OptionsWrite, set_gamepad_options};
 
 use crate::error::{Error, Result};
 use crate::mode::BootMode;
@@ -165,18 +168,53 @@ pub fn key_mappings(t: &dyn Transport) -> Result<KeyMappings> {
 
 const REBOOT: ApiPath = ApiPath::new("/api/reboot");
 
+/// Whether the pad said yes to a reboot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebootAck {
+    /// It answered `{"success": true}`.
+    Confirmed,
+    /// The request went out and the connection then dropped or timed out:
+    /// most likely it rebooted before the reply made it back. Only the
+    /// re-enumeration can tell.
+    Probable,
+}
+
 /// `POST /api/reboot {"bootMode": n}`. The firmware answers
-/// `{"bootMode": n, "success": true}` and restarts right after.
-pub fn reboot(t: &dyn Transport, mode: BootMode) -> Result<()> {
+/// `{"bootMode": n, "success": true}` and restarts 500 ms later. A
+/// connection that drops or times out once the request is out counts as
+/// [`RebootAck::Probable`]; a refused connection (nothing sent) is still
+/// an error.
+pub fn reboot(t: &dyn Transport, mode: BootMode) -> Result<RebootAck> {
     let body = serde_json::json!({ "bootMode": mode.api_value() }).to_string();
-    let reply = t.request(Method::Post, REBOOT, Some(body.as_bytes()))?;
+    let reply = match t.request(Method::Post, REBOOT, Some(body.as_bytes())) {
+        Ok(r) => r,
+        Err(Error::Io { source, .. }) if dropped_after_sending(source.kind()) => {
+            return Ok(RebootAck::Probable);
+        }
+        Err(e) => return Err(e),
+    };
     if reply.status != 200 {
         return Err(Error::Protocol(format!("reboot: HTTP {}", reply.status)));
     }
-    let doc: Value = serde_json::from_slice(&reply.body)
-        .map_err(|e| Error::Protocol(format!("reboot: not JSON: {e}")))?;
+    let doc: Value = match serde_json::from_slice(&reply.body) {
+        Ok(d) => d,
+        // A reply cut short by the reboot.
+        Err(_) if reply.body.is_empty() => return Ok(RebootAck::Probable),
+        Err(e) => return Err(Error::Protocol(format!("reboot: not JSON: {e}"))),
+    };
     if doc.get("success") != Some(&Value::Bool(true)) {
         return Err(Error::Protocol(format!("reboot: the pad said {doc}")));
     }
-    Ok(())
+    Ok(RebootAck::Confirmed)
+}
+
+/// I/O errors that mean the connection went away mid-request, rather than
+/// never being made.
+fn dropped_after_sending(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind as K;
+    matches!(
+        kind,
+        K::TimedOut | K::ConnectionReset | K::ConnectionAborted | K::UnexpectedEof | K::BrokenPipe
+    )
 }
