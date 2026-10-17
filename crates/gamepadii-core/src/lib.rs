@@ -6,6 +6,8 @@
 //! plain serde data and nothing here prints; front ends own rendering.
 
 pub mod api;
+pub mod buttons;
+pub mod cache;
 pub mod client;
 pub mod commands;
 pub mod discovery;

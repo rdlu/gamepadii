@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::{self, Endpoint, FirmwareVersion, MemoryReport};
+use crate::cache::DeviceCache;
 use crate::client::Client;
 use crate::discovery::{self, Device};
 use crate::error::{Error, Result};
@@ -102,7 +103,7 @@ pub struct ModeSetting {
 }
 
 impl ModeSetting {
-    fn new(value: Option<i64>) -> Self {
+    pub fn new(value: Option<i64>) -> Self {
         let mode = value
             .and_then(|v| u32::try_from(v).ok())
             .and_then(InputMode::from_proto);
@@ -147,16 +148,27 @@ pub struct Info {
 
 /// [`Info`] for the pad behind `client` (five reads).
 pub fn info(client: &Client) -> Result<Info> {
+    info_with_cache(client, SystemTime::now()).map(|(i, _)| i)
+}
+
+fn typed<T: serde::de::DeserializeOwned>(ep: Endpoint, v: &Value) -> Result<T> {
+    serde_json::from_value(v.clone())
+        .map_err(|e| Error::Protocol(format!("{ep}: unexpected shape: {e}")))
+}
+
+/// [`info`], and the [`DeviceCache`] from the same reads.
+pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, DeviceCache)> {
     let t = client.transport();
     let memory = api::try_read_raw(t, Endpoint::GetMemoryReport)?
-        .map(|v| {
-            serde_json::from_value::<MemoryReport>(v)
-                .map_err(|e| Error::Protocol(format!("getMemoryReport: unexpected shape: {e}")))
-        })
+        .map(|v| typed::<MemoryReport>(Endpoint::GetMemoryReport, &v))
         .transpose()?;
-    let options = api::gamepad_options(t)?;
-    let base = api::pin_mappings(t)?;
-    let alternatives = api::profile_options(t)?.alternative_pin_mappings;
+    let raw_options = api::read_raw(t, Endpoint::GetGamepadOptions)?;
+    let raw_base = api::read_raw(t, Endpoint::GetPinMappings)?;
+    let raw_profiles = api::read_raw(t, Endpoint::GetProfileOptions)?;
+    let options: api::GamepadOptions = typed(Endpoint::GetGamepadOptions, &raw_options)?;
+    let base: api::PinMappings = typed(Endpoint::GetPinMappings, &raw_base)?;
+    let alternatives = typed::<api::ProfileOptions>(Endpoint::GetProfileOptions, &raw_profiles)?
+        .alternative_pin_mappings;
     let active = options.profile_number;
     let profiles = std::iter::once(&base)
         .chain(&alternatives)
@@ -176,7 +188,7 @@ pub fn info(client: &Client) -> Result<Info> {
             setting: ModeSetting::new(value),
         })
         .collect();
-    Ok(Info {
+    let info = Info {
         host: client.host(),
         firmware: client.firmware().into(),
         memory: memory.as_ref().map(Memory::from),
@@ -184,7 +196,15 @@ pub fn info(client: &Client) -> Result<Info> {
         active_profile: active,
         profiles,
         boot_buttons,
-    })
+    };
+    let cache = DeviceCache::new(
+        info.firmware.clone(),
+        now,
+        raw_options,
+        raw_base,
+        raw_profiles,
+    );
+    Ok((info, cache))
 }
 
 /// Bumped on any breaking change to the backup file format.
@@ -237,23 +257,34 @@ pub struct BackupReport {
 /// Reads a [`Bundle`] and writes it to `output`, or to
 /// [`default_backup_path`] when that is `None`.
 pub fn backup(client: &Client, output: Option<&Path>, now: SystemTime) -> Result<BackupReport> {
+    backup_with_cache(client, output, now).map(|(r, _)| r)
+}
+
+/// [`backup`], and the [`DeviceCache`] the bundle holds (no extra reads).
+pub fn backup_with_cache(
+    client: &Client,
+    output: Option<&Path>,
+    now: SystemTime,
+) -> Result<(BackupReport, Option<DeviceCache>)> {
     let bundle = backup_bundle(client, now)?;
+    let cache = DeviceCache::from_bundle(&bundle);
     let path = match output {
         Some(p) => p.to_path_buf(),
         None => default_backup_path(&bundle, now)?,
     };
-    let bytes = write_bundle(&bundle, &path)?;
+    let bytes = write_json(&bundle, &path)?;
     let (endpoints, unavailable): (Vec<_>, Vec<_>) =
         bundle.endpoints.iter().partition(|(_, v)| !v.is_null());
     let names = |v: Vec<(&String, &Value)>| v.into_iter().map(|(k, _)| k.clone()).collect();
-    Ok(BackupReport {
+    let report = BackupReport {
         path,
-        captured_at: bundle.captured_at,
-        firmware: bundle.firmware,
+        captured_at: bundle.captured_at.clone(),
+        firmware: bundle.firmware.clone(),
         endpoints: names(endpoints),
         unavailable: names(unavailable),
         bytes,
-    })
+    };
+    Ok((report, cache))
 }
 
 /// `$XDG_DATA_HOME/gamepadii/backups` (`~/.local/share/gamepadii/backups`).
@@ -274,30 +305,37 @@ pub fn default_backup_path(bundle: &Bundle, now: SystemTime) -> Result<PathBuf> 
     Ok(backups_dir()?.join(backup_file_name(bundle, now)))
 }
 
-/// `20261017-165703-Haute42COSMOX.json`: UTC time, then the board config
-/// with anything but `[A-Za-z0-9_-]` dropped.
+/// `20261017-165703-Haute42COSMOX.json`: UTC time, then the
+/// [`board_slug`].
 pub fn backup_file_name(bundle: &Bundle, now: SystemTime) -> String {
-    let board: String = bundle
-        .firmware
+    format!(
+        "{}-{}.json",
+        Utc::from_system(now).compact(),
+        board_slug(&bundle.firmware)
+    )
+}
+
+/// The board config with anything but `[A-Za-z0-9_-]` dropped
+/// (`Haute42COSMOX`), or `gp2040ce` when there is none: safe in a file name.
+pub fn board_slug(f: &Firmware) -> String {
+    let board: String = f
         .board
         .as_deref()
-        .unwrap_or("gp2040ce")
+        .unwrap_or_default()
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .collect();
-    let board = if board.is_empty() {
+    if board.is_empty() {
         "gp2040ce".into()
     } else {
         board
-    };
-    format!("{}-{board}.json", Utc::from_system(now).compact())
+    }
 }
 
-/// Writes the bundle as pretty JSON through a temporary file and a rename,
-/// so a crash never leaves half a backup; returns its size.
-fn write_bundle(bundle: &Bundle, path: &Path) -> Result<u64> {
-    let mut text =
-        serde_json::to_string_pretty(bundle).expect("serialising plain data cannot fail");
+/// Writes `value` as pretty JSON through a temporary file and a rename,
+/// so a crash never leaves half a file; returns its size.
+pub(crate) fn write_json<T: Serialize>(value: &T, path: &Path) -> Result<u64> {
+    let mut text = serde_json::to_string_pretty(value).expect("serialising plain data cannot fail");
     text.push('\n');
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(dir).map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
