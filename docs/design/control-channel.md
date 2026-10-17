@@ -1,0 +1,640 @@
+# Milestone 8b: a GP2040-CE control channel
+
+Status: design draft (2026-10-17). Nothing has been built, flashed or committed.
+
+Firmware read at `v0.7.12` (the S16's build, `0014e4a`), at our branch
+`gamepadii/freeze-investigation` (v0.7.12 + freeze fixes) and at `main`
+(`8013b41`). TinyUSB is the speedypotato fork that the v0.7.12 submodule pins
+(`9865cba`). The kernel code is read from `drivers/usb/core/devio.c` in Linux
+master (7.2 series).
+
+## 1. Goal
+
+While the pad is in a gamepad mode (XInput, Keyboard, HID, Switch, PS4/5 and
+the rest), gamepadii should be able to:
+
+- read status
+- switch the active profile
+- set the input mode
+- reboot into gamepad, web-config or BOOTSEL
+
+It should do all of this with no button press. That removes the guided
+"press S2+B3+B4" step from `mode`, `webconfig` and `reboot`.
+
+Hard constraints:
+
+- **No descriptor changes in any mode.** No new interface, no MS OS
+  descriptors and no new strings. Consoles must see exactly what they see
+  today.
+- Any vendor request that isn't ours behaves **exactly as it does today**.
+  It goes to the active driver unchanged, which STALLs it, ACKs it, or
+  answers it as before (§2.3).
+- The host must not have to detach or claim any kernel driver: xpad,
+  hid-generic, hid-sony/hid-playstation or hid-nintendo stay bound and the
+  pad keeps working during a request.
+
+## 2. Findings
+
+### 2.1 Where vendor requests go (TinyUSB)
+
+In `lib/tinyusb/src/device/usbd.c`, `process_control_request()` sends
+**every** request of type VENDOR to `tud_vendor_control_xfer_cb`. This
+happens before the switch on recipient, so a vendor request goes there
+whether its recipient is the device, an interface or an endpoint. The same
+function is installed as the completion callback, so it is also called for
+`CONTROL_STAGE_DATA` and `CONTROL_STAGE_ACK`.
+
+```c
+if ( p_request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR ) {
+  usbd_control_set_complete_callback(tud_vendor_control_xfer_cb);
+  return tud_vendor_control_xfer_cb(rhport, CONTROL_STAGE_SETUP, p_request);
+}
+```
+
+GP2040's `src/usbdriver.cpp:66` forwards the call to
+`DriverManager::getDriver()->vendor_control_xfer_cb()`. A return of `false`
+makes TinyUSB STALL EP0. The hook goes in front of that forward, so a request
+that isn't ours reaches the driver byte for byte as it does today.
+
+The control endpoint, from `headers/tusb_config.h` and `usbd_control.c`:
+
+- `CFG_TUD_ENDPOINT0_SIZE` is 64 and every driver's `bMaxPacketSize0` is 64.
+  The board is full speed: the RP2040 has no high-speed PHY.
+- TinyUSB's own EP0 bounce buffer `_usbd_ctrl_buf` holds 64 bytes. With
+  `tud_control_xfer()`, a longer transfer works packet by packet from a
+  caller-owned buffer, which must stay valid until the transfer completes.
+  v1 keeps every request and response at **64 bytes or less** (one packet),
+  with static buffers.
+- For an OUT request with data, the callback gets `CONTROL_STAGE_DATA` once
+  all the data has arrived. If it returns `false` there, the status stage
+  STALLs, so a bad payload is reported to the host as an error.
+
+Threading: `tud_task()` runs on core0, from the main loop (`gp2040.cpp:338`)
+and in web-config from `rndis_task()`. Vendor callbacks therefore run on core0,
+on the same thread as `gamepad->hotkey()` and `checkSaveRebootState()`. The
+web-config HTTP handlers already raise `GPStorageSaveEvent` and
+`GPRestartEvent` from this same context, and `EventManager::triggerEvent` is
+synchronous. The pattern is established.
+
+### 2.2 Linux: no claim, no detach
+
+`drivers/usb/core/devio.c` handles both paths: `do_proc_control()` (ioctl
+`USBDEVFS_CONTROL`) and `proc_do_submiturb()` (`USBDEVFS_URB_TYPE_CONTROL`,
+which libusb uses). Each calls `check_ctrlrecip()` first:
+
+```c
+static int check_ctrlrecip(struct usb_dev_state *ps, unsigned int requesttype,
+                           unsigned int request, unsigned int index)
+{
+        ...
+        if (USB_TYPE_VENDOR == (USB_TYPE_MASK & requesttype))
+                return 0;
+        ...
+        switch (requesttype & USB_RECIP_MASK) {
+        case USB_RECIP_ENDPOINT: ... checkintf(ps, ret) ...
+        case USB_RECIP_INTERFACE: ret = checkintf(ps, index);
+```
+
+For a **vendor** request it returns 0 before any interface check, whatever
+the recipient. `checkintf()` is what would implicitly claim the interface (and
+fail with `-EBUSY` when xpad or usbhid owns it), and it is never reached, so no
+"did not claim interface" warning appears either.
+
+A device-recipient vendor request therefore needs only an open fd on
+`/dev/bus/usb/BBB/DDD`. The kernel driver stays bound, and the kernel
+serialises our URB on ep0 with its own.
+
+There is one requirement. `usbdev_ioctl` → `usbdev_do_ioctl` returns `-EPERM`
+unless the file was opened with `FMODE_WRITE`, so the node has to be opened
+`O_RDWR`. On this machine the nodes are `crw-rw-r-- root root`
+(`50-udev-default.rules`), so a normal user needs a `uaccess` rule (§5.3).
+Steam's `60-steam-input.rules` only grants usb-node access for 28de (Valve),
+so it doesn't cover us.
+
+### 2.3 What every driver does with vendor requests today
+
+| Driver (mode) | `vendor_control_xfer_cb` today | Notes |
+|---|---|---|
+| XInput (0) | **Accepts every vendor request** when the auth driver is `available()`. That is the default: `xinputAuthType` defaults to `NONE`, and `XInputAuth::available()` is true for anything but `USB`, so XSM3 runs. An unknown IN gets a 0-byte data stage; an unknown OUT is ACKed. | Handles XSM3 bRequest `0x81–0x84, 0x86, 0x87` (the 360 console sends these as `0xC1/0x41`, interface-recipient, wIndex `0x0103`). xpad's probe sends `0xC1 0x01 wValue 0x0100` and today gets a 0-byte reply. |
+| XBOne (5) | **Accepts every vendor request**. An IN gets `wLength` bytes of an *uninitialised* 255-byte stack buffer, except MS OS 1.0 `0xC0 0x20 wIndex 4` (Extended Compat ID). | String `0xEE` "MSFT100" sets vendor code `0x20`. |
+| Switch 2 Pro (main only) | Handles bRequest `0x02, 0x03` (IN) and `0x04` (OUT); STALLs anything else. | Not in v0.7.12. |
+| Xbox OG (12) | Forwards to `xid_control_xfer_cb`, which handles `0xC1 0x06 / 0x01` (XID descriptor and capabilities) and STALLs anything else. | Interface recipient. |
+| PS3, PS4/PS5, Switch, Switch Pro, Keyboard, HID, MD-Mini, NeoGeo, PCE, Egret, Astro, PSClassic, SInput/P5General (main), Net (web-config) | `return false` → STALL. | PS4/PS5 auth uses **HID class** GET/SET_REPORT (feature reports) and Switch Pro uses interrupt-endpoint reports. Neither is vendor type, so neither reaches this callback. |
+
+So "unknown vendor requests STALL" is only true for most modes. The real rule
+is: **anything that doesn't match our request takes the existing path,
+unchanged.** XInput and XBOne carry on ACKing whatever they ACK today.
+
+This matters for detection on the host side. On stock firmware in XInput or
+XBOne mode, a request that looks like ours does *not* STALL: it gets 0 bytes
+or garbage. The HELLO reply therefore has to prove itself, with a magic value
+and a nonce echo (§3.3).
+
+Bytes already in use that we avoid:
+
+- bRequest `0x01–0x06` (XID, xpad, Switch 2 Pro, and the codes TinyUSB's
+  WebUSB/MS OS 2.0 examples use)
+- `0x20` (MS OS 1.0 vendor code)
+- `0x81–0x87` (XSM3)
+
+### 2.4 Firmware mechanics we reuse
+
+- **Profile switch** (`gamepad.cpp`, `HOTKEY_LOAD_PROFILE_n`):
+  `Storage::setProfile(n)` checks that the profile exists and is enabled, then
+  sets `config.gamepadOptions.profileNumber` in RAM. The main loop's
+  `GP2040::getReinitGamepad()` sees the change on its next pass and does the
+  rest:
+  - de-initialises the standard GPIO
+  - calls `setFunctionalPinMappings()` and re-initialises the GPIO
+  - calls `gamepad->reinit()` and `addons.ReinitializeAddons()`
+  - fires `GPProfileChangeEvent` (the OLED shows it)
+
+  The hotkey then fires `GPStorageSaveEvent(true)`, so **the hotkey path writes
+  flash on every switch.** The live switch itself needs no flash write, which
+  makes a RAM-only switch possible (§3.4). `main` is identical.
+- **Saves:** `GPStorageSaveEvent(force, restartAfterSave)` →
+  `GP2040::handleStorageSave` only sets flags. `checkSaveRebootState()` at the
+  end of the loop runs `Storage::save(force)`, which goes to
+  `ConfigUtils::save`. That function asserts core0, encodes nanopb into
+  `EEPROM.writeCache` and writes flash. `force=true` skips the "PS4/PS5 with a
+  USB auth dongle" guard, as the hotkeys and web-config do.
+- **Reboot:** `GPRestartEvent(mode)` → `handleSystemReboot` sets
+  `rebootRequested` and `rebootMode`. `checkSaveRebootState()` arms a 500 ms
+  timer and then calls `System::reboot(mode)`. That function writes the mode
+  into `watchdog_hw->scratch[5]` (GAMEPAD `0x43d566cd`, WEBCONFIG `0xe77784a5`,
+  USB/BOOTSEL `0xf737e4e1`) and resets through the watchdog.
+  `System::takeBootMode()` reads it back on the next boot.
+  - BootMode **GAMEPAD** skips the held-button scan entirely (`getBootAction`
+    returns `NONE`).
+  - DEFAULT runs the scan, and on testboot builds goes to web-config.
+  - A save event resets `rebootMode` to DEFAULT and overwrites
+    `rebootRequested`. A restart event raised *after* the save event, in the
+    same callback, wins.
+- **Forced setup locks** (`forcedSetupOptions.mode`):
+  - `LOCK_MODE_SWITCH` (1)
+  - `LOCK_WEB_CONFIG` (2)
+  - `LOCK_BOTH` (3)
+
+  The channel honours them (§3.4).
+
+## 3. Wire protocol v1
+
+### 3.1 The setup packet
+
+| Field | IN (read) | OUT (command) |
+|---|---|---|
+| `bmRequestType` | `0xC0` (device-to-host, vendor, device) | `0x40` (host-to-device, vendor, device) |
+| `bRequest` | `0x47` (`'G'`) | `0x47` |
+| `wValue` | per-command argument (nonce, string id, offset) | `0` |
+| `wIndex` | `0x50nn`: high byte `0x50` (`'P'`) is the magic, low byte `nn` is the command | same |
+| `wLength` | at most 64; the host asks for 64 and the reply is short | payload length, 8–64 |
+
+The firmware **matches** a request only when all of these hold:
+
+- the channel is enabled
+- `bmRequestType ∈ {0xC0, 0x40}`
+- `bRequest == 0x47`
+- `wIndex >> 8 == 0x50`
+- the direction bit agrees with the command's direction
+
+Anything else goes to the driver unchanged. A matched request that is
+malformed (an unknown command, the wrong length, a bad token) STALLs. That is
+safe, because the only devices that produce such a request are our own host
+or a fuzzer. The match is stateless, so the DATA and ACK stage callbacks
+re-run it on the stored request and route to the same handler.
+
+Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
+
+### 3.2 Commands
+
+| Cmd | Dir | Name | wValue | Payload or reply | Since |
+|---|---|---|---|---|---|
+| `0x01` | IN | HELLO | host nonce (u16) | reply: 20 bytes (§3.3) | v1 |
+| `0x02` | IN | STATUS | 0 | reply: 16 bytes (§3.3) | v1 |
+| `0x03` | IN | STRING | string id | reply: raw string, ≤ 63 bytes | v1 |
+| `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
+| `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config, 2 BOOTSEL, the same as `/api/reboot`) | v1 |
+| `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
+| `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
+| `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
+| `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
+| `0x23` | OUT | CFG_COMMIT | 0 | header + `u16 size`, `u32 crc32` | v2 |
+
+Every OUT payload starts with an **8-byte header**:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | session token (from HELLO) |
+| 4 | u16 | sequence number (chosen by the host, echoed in STATUS) |
+| 6 | u16 | reserved, 0 |
+
+STRING ids:
+
+| Id | Value |
+|---|---|
+| 1 | `GP2040VERSION` (for example `v0.7.12-5-g85ca0f6`) |
+| 2 | `GP2040_BOARDCONFIG` (`Haute42COSMOX`) |
+| 3 | `BOARD_CONFIG_LABEL` (`Haute42 COSMOX`) |
+| 4 | `GP2040CONFIG` (the build type) |
+| `0x11–0x16` | label of profile 1–6 |
+
+### 3.3 Replies
+
+**HELLO** (20 bytes):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | `[u8;4]` | magic `"GPii"` (`47 50 69 69`) |
+| 4 | u16 | echo of the host nonce (`wValue`) |
+| 6 | u8 | protocol major (1); a host refuses a major it doesn't know |
+| 7 | u8 | protocol minor (0); fields only ever get added |
+| 8 | u32 | capability bitmap (below) |
+| 12 | u32 | session token: random per boot (`time_us_32()` mixed with the unique board id) |
+| 16 | u32 | bitmap of `InputMode` values 0–31 this build can boot |
+
+The magic plus the nonce echo is the handshake. On stock XInput firmware a
+HELLO gets a 0-byte reply, and on stock XBOne it gets uninitialised stack
+bytes. Neither can carry the magic *and* echo a fresh random nonce, so the
+host never mistakes them for the channel. The token makes an OUT command
+require a prior, successful HELLO: something that sends random vendor
+requests would have to guess 32 bits on top of the 16-bit `bRequest`/`wIndex`
+magic.
+
+Capability bits:
+
+| Bit | Capability |
+|---|---|
+| 0 | STATUS |
+| 1 | STRING |
+| 2 | SET_PROFILE |
+| 3 | REBOOT (gamepad / web-config) |
+| 4 | REBOOT to BOOTSEL |
+| 5 | SET_INPUT_MODE |
+| 6 | CFG_READ |
+| 7 | CFG_WRITE |
+
+Bits 8–31 are reserved.
+
+**STATUS** (16 bytes):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | protocol major |
+| 1 | u8 | input mode (`DriverManager::getInputMode()`; 255 means web-config) |
+| 2 | u8 | active profile (`profileNumber`, 1–6) |
+| 3 | u8 | enabled-profile bitmap (bit 0 is profile 1, always set) |
+| 4 | u8 | `forcedSetupOptions.mode` |
+| 5 | u8 | flags: bit 0 set when the profile change is not yet applied (`profileNumber != lastReinitProfileNumber`) |
+| 6 | u16 | sequence number of the last OUT command |
+| 8 | u8 | command id of the last OUT command |
+| 9 | u8 | result of the last OUT command (below) |
+| 10 | u16 | reserved |
+| 12 | u32 | uptime in ms (`to_ms_since_boot`) |
+
+Result codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | BAD_TOKEN |
+| 2 | BAD_LENGTH |
+| 3 | BAD_ARG |
+| 4 | LOCKED (forced setup) |
+| 5 | UNSUPPORTED (mode not in this build) |
+| 6 | PROFILE_DISABLED |
+| 7 | BUSY |
+
+A failed OUT command STALLs. The host then reads STATUS to learn why, and the
+sequence number tells it which command the result belongs to.
+
+### 3.4 Command semantics
+
+Each OUT command is validated *and* applied in its `CONTROL_STAGE_DATA`
+callback, as XInput's auth path does. A `false` return there STALLs the
+status stage. Nothing slow runs in the callback: no flash writes and no GPIO
+work. It only sets RAM state and raises events, which the main loop acts on.
+
+- **SET_PROFILE:** calls `Storage::setProfile(n)`. If that returns `false`,
+  the result is PROFILE_DISABLED and the request STALLs. With `persist=1` it
+  also raises `GPStorageSaveEvent(true)`, which matches what the hotkey does.
+  - With `persist=0` nothing is written to flash, and the pad goes back to
+    the stored profile on its next boot. Use this for quick per-game
+    switching and to save flash wear.
+  - Caveat: the next save of any kind persists it anyway. Turbo, LED and
+    hotkey saves all call `save()` on the whole config.
+  - The reinit happens on the next main-loop pass (well under 1 ms at
+    1000 Hz polling). STATUS flag bit 0 shows that it is still pending.
+- **REBOOT:** maps 0, 1 and 2 to `System::BootMode::GAMEPAD`, `WEBCONFIG`
+  and `USB`, then raises `GPRestartEvent`.
+  - If the mode is web-config and `forcedSetupMode` is 2 or 3, the result is
+    LOCKED. That lock exists to keep people out of web-config, and the
+    channel must not be a way around it.
+  - BOOTSEL is allowed only when capability bit 4 is compiled in (it is in
+    our fork).
+  - The reboot happens at least 500 ms after the status stage, so the host
+    always sees its ACK before the device drops off the bus.
+- **SET_INPUT_MODE:**
+  - The mode must be in the HELLO mode bitmap and must not be
+    `INPUT_MODE_CONFIG` (255); otherwise the result is UNSUPPORTED.
+  - If `forcedSetupMode` is 1 or 3, the result is LOCKED. The lock
+    disables mode switching at boot, so the channel obeys it too.
+  - It sets `gamepadOptions.inputMode`, then raises
+    `GPStorageSaveEvent(true)` followed by `GPRestartEvent(GAMEPAD)`. The
+    restart comes second because the save handler resets `rebootMode` to
+    DEFAULT. `checkSaveRebootState()` saves on the same pass and reboots
+    500 ms later.
+  - GAMEPAD boot mode skips the button scan, so a held button can't override
+    the new mode, and a testboot build doesn't fall into web-config.
+  - A driver can't be swapped live, so this command always reboots.
+
+### 3.5 v2: config sections as nanopb protobuf (sketch)
+
+This lets `profile apply` and `backup` work with no web-config at all.
+
+- The section ids are field numbers of the top-level `Config` message: for
+  example `gamepadOptions`, `gpioMappings`, `profileOptions`,
+  `keyboardMapping`, `hotkeyOptions`.
+- **Read:** CFG_SELECT encodes that sub-message into a static buffer (a few
+  KB; nanopb is fast enough to do this in the callback). The host then pulls
+  it with CFG_READ, using `wValue` as the offset.
+- **Write:** CFG_SELECT, then CFG_WRITE chunks, then CFG_COMMIT with the size
+  and a CRC32. The main loop does the rest, so the firmware needs a
+  `ControlChannel::process()` call in `GP2040::run()`:
+  1. decode into a scratch struct
+  2. validate
+  3. swap it into `Storage::config`
+  4. raise `GPStorageSaveEvent(true)`
+
+  The host polls STATUS for the result.
+- A whole-section replace needs the same care as the `setGamepadOptions`
+  hazard: the host sends complete sections, read-modify-write.
+- RAM: on the RP2040 a 4 KB buffer is affordable in gamepad mode. Measure it
+  with `getMemoryReport`.
+- The `.proto` files must match between host and firmware. The host ships the
+  firmware's `proto/` for each supported version and checks the version
+  string first.
+
+## 4. Firmware implementation
+
+The footprint is deliberately small:
+
+- **New files:** `headers/controlchannel.h` and `src/controlchannel.cpp`,
+  roughly 250 lines for v1.
+- **`src/usbdriver.cpp`, three lines:**
+  ```cpp
+  bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request) {
+  #if GP2040_CONTROL_CHANNEL
+      if (ControlChannel::matches(request)) return ControlChannel::handle(rhport, stage, request);
+  #endif
+      return DriverManager::getInstance().getDriver()->vendor_control_xfer_cb(rhport, stage, request);
+  }
+  ```
+- **`CMakeLists.txt`:** `option(GP2040_CONTROL_CHANNEL ... OFF)`, which adds
+  the source file and the compile definition. The pattern is the same as our
+  `GAMEPADII_TEST_BOOT_WEBCONFIG`. Our builds pass `-DGP2040_CONTROL_CHANNEL=ON`
+  through `CMAKE_EXTRA_ARGS`.
+- **v2 only:** a `ControlChannel::process()` call in the main loop.
+
+How it's switched on:
+
+1. **Fork (v1):** compile time only. With the option off, the binary is
+   byte-for-byte stock in this path. With it on, the channel is always live.
+   The fork adds **no** `.proto` fields. The config is persisted in flash, so
+   a field number we picked could collide with one upstream assigns later,
+   and the old data would then be read as something else.
+2. **Upstream:** the compile-time option plus a runtime
+   `optional bool controlChannelEnabled` in whatever message the maintainers
+   choose, default **off**, with a toggle in the web UI.
+   - With it off, `matches()` returns false and behaviour is identical to
+     today.
+   - Turning it on is a one-time web-config write, which gamepadii can do
+     through its existing guided flow (one button press, ever).
+
+Other rules for the implementation:
+
+- Reply buffers are static (`tud_control_xfer` keeps the pointer until the
+  transfer completes).
+- IN replies are built in `CONTROL_STAGE_SETUP`; OUT commands act in
+  `CONTROL_STAGE_DATA`. Other stages return `true`.
+- `wLength > 64` on a matched request STALLs in SETUP.
+- Only events are raised; nothing calls `Storage::save()` directly. Flash
+  writes stay in `checkSaveRebootState()`, on core0, at the end of the loop.
+
+## 5. Host side (gamepadii)
+
+### 5.1 Transport: raw usbfs, behind a trait
+
+| Option | Dependencies | Device-level control with a kernel driver bound | Portability |
+|---|---|---|---|
+| raw usbfs ioctl (`USBDEVFS_CONTROL`) via `libc` | `libc` only (tiny, ubiquitous) | yes (§2.2) | Linux only |
+| `rusb` | libusb-1.0 C library (system copy or vendored build) | yes on Linux (libusb submits a control URB, no claim needed) | Linux, macOS, Windows (needs WinUSB/UsbDk; §6) |
+| `nusb` | pure Rust | expected yes on Linux; its API for device-level control on Windows is still to be checked | Linux, macOS, Windows |
+
+**Decision: raw usbfs through `libc` for v1**, in
+`gamepadii-core/src/transport/usbctl.rs` behind `#[cfg(target_os = "linux")]`:
+
+- open `/dev/bus/usb/{busnum:03}/{devnum:03}` with `O_RDWR | O_CLOEXEC`,
+  taking `busnum` and `devnum` from the `Device` that discovery already builds
+- issue `ioctl(fd, USBDEVFS_CONTROL, &usbdevfs_ctrltransfer)`
+- compute the request number as `_IOWR('U', 0, struct usbdevfs_ctrltransfer)`
+  from `size_of` (24 bytes on 64-bit), not as a hard-coded constant
+
+`libc` gives the correctly typed `ioctl` for both glibc and musl: they
+disagree on the request argument's type (`unsigned long` versus `int`), and
+that is the reason not to declare it by hand. This is one `unsafe` block of
+about 80 lines, and it brings in no C library.
+
+Errno mapping:
+
+| errno | Meaning | gamepadii error |
+|---|---|---|
+| `EPIPE` | STALL | channel present but the command was rejected; read STATUS for the reason |
+| `EACCES` | no permission on the node | needs the udev rule (§5.3), exit 5 with a hint |
+| `ENODEV`, `ESHUTDOWN`, `EPROTO` | the device dropped off the bus (expected after REBOOT) | — |
+| `ETIMEDOUT` | no reply within the timeout (1000 ms) | transport error (exit 4) |
+
+A `ControlPipe` trait (`control_in(cmd, value, len)`,
+`control_out(cmd, payload)`) gets a `sim::SimPad` implementation, so flow
+tests run without hardware and without real sleeps, as they do now. Revisit
+`nusb` when the GUI goes cross-platform.
+
+### 5.2 Detection and fallback
+
+1. Discovery finds the pad by VID:PID in sysfs, as it does today.
+2. gamepadii sends HELLO with a random nonce and a 200 ms timeout. It treats
+   the channel as present only when the reply has the right magic, echoes the
+   nonce, and carries a major version it knows. Anything else means "no
+   channel":
+   - a STALL
+   - a short or 0-byte reply (stock XInput)
+   - garbage (stock XBOne)
+   - `EACCES`; when the pad is *known* to support the channel (from the
+     cache), gamepadii also prints the udev hint
+3. The device cache records `control_channel: {major, minor, caps}` per board
+   serial. `status --json` shows it, `null` when unknown.
+4. Each flow uses the channel when it can and falls back otherwise:
+   - `mode X`: SET_INPUT_MODE, then wait for re-enumeration (the devnum
+     changes), then verify with STATUS
+   - `webconfig` and `reboot …`: REBOOT
+   - new `profile switch N [--persist]`: SET_PROFILE
+   - otherwise, the existing guided web-config flows
+
+   Each command's JSON says which transport it used (`"via": "control" | "webconfig"`).
+5. The channel is also live in web-config mode (NetDriver), so HELLO is a
+   uniform probe in every mode. HTTP stays the path for anything the channel
+   lacks.
+
+Writes follow the hardware rules in `CLAUDE.md`: SET_INPUT_MODE and
+SET_PROFILE with `persist=1` write flash. The live tests for them are gated on
+`GAMEPADII_LIVE_WRITE=1`, and REBOOT on `GAMEPADII_LIVE_REBOOT=1`.
+
+### 5.3 udev rule
+
+The rule is shipped as `70-gamepadii.rules`. It has to sort before
+`73-seat-late.rules`, where `uaccess` is applied. `gamepadii udev-rule` prints
+it, and the AUR package installs it. It has one line per VID:PID in
+`mode.rs`, excluding web-config, which needs no rule:
+
+```
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="045e", ATTR{idProduct}=="028e", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="cafe", ATTR{idProduct}=="0001", TAG+="uaccess"
+# … 10c4:82c0, 0f0d:0092, 1532:0401, and the rest of the table
+```
+
+The catch: these VID:PIDs are borrowed. The rule also gives the seat user
+write access to the usbfs node of a *real* Xbox 360 pad, a real Hori pad, and
+so on. That is the same trade-off Steam makes for hidraw, and it's acceptable,
+but the docs should say so.
+
+`usbOverrideID` lets users set custom IDs, so the rule file carries a comment
+on how to add a line. Matching on the manufacturer string ("Open Stick
+Community") doesn't work: `usbDesc*` overrides it and vendor builds change it.
+
+## 6. Windows and macOS (later, notes only)
+
+- **Windows:** user mode can only send a control transfer through a handle
+  from the device's function driver, which here is xusb22 or HID. WinUSB
+  needs its own interface, bound through MS OS 2.0 descriptors (a BOS
+  descriptor with a vendor code and `CompatibleID "WINUSB"`), and that is a
+  descriptor change. We rule it out for console-facing modes, and XBOne
+  already uses MS OS 1.0 for its own purposes. The options are:
+  - libusb with the **UsbDk** filter driver, which can reach any device
+    without replacing its driver. It is an install-time burden on the user.
+  - A future opt-in "PC mode" variant that adds a WinUSB interface, kept
+    separate from the console modes.
+  - Web-config, as the fallback.
+- **macOS:** `IOUSBHostDevice` / `DeviceRequest` on a device interface may
+  need `USBDeviceOpen`, which fails when a kernel driver holds the device.
+  This is unverified, and it is part of why `nusb` gets evaluated later.
+
+## 7. Upstream strategy
+
+1. File the freeze issues first (the I2C scan and the `getConfig` heap
+   exhaustion, with the fixes from our branch). That establishes credibility
+   and is useful to them on its own.
+2. Open a **GitHub Discussion** (Ideas) titled "RFC: optional USB vendor
+   control channel for host tools (no descriptor changes)". Its contents:
+   - Motivation: host-side profile managers, launcher integration, and
+     switching modes without the S2+B3+B4 dance.
+   - The safety case, point by point:
+     - off by default, both at compile time and at runtime
+     - no descriptor, interface or string changes, so console behaviour is
+       provably unchanged
+     - requests that aren't ours take the exact existing path
+     - a 16-bit magic, plus a per-boot token for anything that writes
+     - forced-setup locks are honoured
+     - flash writes go through the existing `GPStorageSaveEvent` path
+   - The request table from §3, and a diff-size estimate (one new file plus
+     three lines in `usbdriver.cpp`).
+   - Questions for the maintainers:
+     - Is `0x47`/`0x50` acceptable, or do they want to reserve a range?
+     - Where should the runtime flag live in `config.proto`?
+     - Should the channel exist at all in web-config mode?
+     - Should BOOTSEL be exposed?
+     - Would they rather have it as an addon?
+3. Port the patch to `main`, with the same hook and the `InputMode` bitmap
+   extended for P5General, SInput and Switch2Pro, and open a PR only after
+   the Discussion has some agreement. Keep the v0.7.12 fork branch
+   (`gamepadii/control-channel`) for the S16 until a release includes it.
+4. If upstream declines, carry the fork: the patch touches one hook and the
+   firmware moves slowly.
+
+## 8. Test plan (S16)
+
+The firmware branch is `gamepadii/control-channel`, based on
+`gamepadii/freeze-investigation`. Builds go through the existing script:
+
+```sh
+CMAKE_EXTRA_ARGS="-DGP2040_CONTROL_CHANNEL=ON -DGAMEPADII_TEST_BOOT_WEBCONFIG=ON" \
+  ./build.sh gamepadii/control-channel cc-testboot        # unattended loop
+CMAKE_EXTRA_ARGS="-DGP2040_CONTROL_CHANNEL=ON" \
+  ./build.sh gamepadii/control-channel cc                 # release-style
+```
+
+`flash-test.sh <uf2> <label>` takes the backup, flashes and comes back in
+web-config, because the testboot build boots DEFAULT into web-config. From
+there, REBOOT(0) boots straight into gamepad mode, since GAMEPAD boot mode
+skips the testboot redirect. That gives an unattended loop.
+
+A small `cc-probe` (a gamepadii subcommand or a test binary) drives the
+requests.
+
+1. **Read-only, every mode the S16 uses** (XInput, Keyboard, HID, Switch,
+   PS4): send HELLO, STATUS and all STRING ids, and check each of these:
+   - the kernel driver stays bound (`/sys/bus/usb/devices/<dev>:1.0/driver`
+     is unchanged)
+   - `evtest` keeps reporting presses during a 10 000-request loop
+   - no new `dmesg` lines
+   - the input report rate stays at 1000 Hz (`evhz` or a usbmon capture)
+2. **No regression for foreign requests.** Use usbmon to compare the
+   stock-v0.7.12, freeze-fix and cc builds:
+   - xpad's probe (`0xC1 0x01 0x0100`) still gets a 0-byte reply in XInput
+   - `0xC0 0x47` with a *wrong* wIndex magic gets the same reply as on stock
+     in every mode: a STALL in most, a ZLP in XInput, garbage in XBOne
+   - with the channel compiled out, the build behaves identically to the
+     freeze-fix build
+3. **Fallback detection:** on the stock and freeze-fix builds, HELLO reports
+   "no channel" in XInput (ZLP), Keyboard (STALL) and XBOne (garbage).
+4. **Negative OUT cases:** a wrong token, `wLength` > 64, a bad
+   profile/mode/boot-mode argument, and a disabled profile. Each must STALL
+   and show the right result in STATUS.
+5. **Reboots** (`GAMEPADII_LIVE_REBOOT=1`):
+   - REBOOT(1) brings up `cafe:4028`
+   - REBOOT(2) brings up `2e8a:0003`; recover by replugging, or let
+     flash-test.sh reflash
+   - REBOOT(0) comes back in the stored mode
+   - each time, the host must see the ACK before the device disappears
+6. **RAM profile switch:** SET_PROFILE(n, persist=0) switches the GPIO map
+   (shown on `evtest` and the OLED), and a replug brings back the old
+   profile. This writes no flash, but it does change live state, so ask
+   first.
+7. **Writes** (`GAMEPADII_LIVE_WRITE=1`, with the user's OK and a backup;
+   flash-test.sh takes one):
+   - SET_INPUT_MODE keyboard brings up CAFE:0001, then XInput again
+   - SET_PROFILE(n, persist=1) followed by a reboot leaves STATUS showing `n`
+   - restore the original mode and profile afterwards
+8. **Stress during a save:** request STATUS in a loop while a persist save
+   runs. Expect a few ms of NAK and no timeouts at 1000 ms.
+9. **Console smoke test, optional:** if a Switch or PS4/5 is on hand, plug
+   in the `cc` build. The pad must work as before; with no descriptor change
+   nothing is expected to differ.
+
+## 9. Open questions
+
+1. **Runtime gate in the fork:** compile time only, as proposed, or also a
+   flag in flash? The proposal avoids `.proto` collisions until upstream
+   picks a field.
+2. **BOOTSEL over the channel:** on in our fork? It's a "brick-looking"
+   state for a casual user, but very handy for the flash loop.
+3. **Lock policy:** is honouring `forcedSetupMode` for REBOOT(web-config) and
+   SET_INPUT_MODE right?
+4. **`persist` default for `profile switch`:** RAM-only, so no flash wear but
+   lost on replug, or persisted, to match the hotkeys?
+5. **Should the channel answer in web-config mode too?** It makes detection
+   uniform. It costs nothing, but it is one more thing to explain upstream.
+6. **Is v2 (config sections over EP0) worth it** before milestone 7
+   (PICOBOOT)? Both remove web-config from `profile apply`. PICOBOOT needs a
+   reboot into BOOTSEL; v2 doesn't.
+7. **Is a udev rule that grants `uaccess` on borrowed VID:PIDs (real Xbox 360
+   and Hori pads) acceptable**, or should the rule be opt-in
+   (`gamepadii udev-rule --install`)?
