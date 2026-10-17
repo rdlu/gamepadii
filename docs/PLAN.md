@@ -114,6 +114,14 @@ have.
   switch between them with no PC involved. For keyboard profiles this uses
   the superset trick: one 32-slot keymap with the pin mappings choosing keys
   per slot, and gamepadii reports when they don't fit.
+- **Key combos** (for Adobe-style sidekicks): in v0.7.12 keyboard mode, one
+  button sends exactly one key. Modifiers count as keys (`KeyboardDriver.cpp:31`),
+  so Ctrl+Z needs two buttons held together. There are three ways to put a
+  combo on one button:
+  - the Macro addon (it presses several logical buttons; whether it works in
+    keyboard mode is unverified)
+  - the host remapper
+  - a keymap extension in our firmware fork
 - **Later: a host remapper.** The pad stays in XInput/HID while gamepadii
   turns its buttons into keys through evdev → uinput. Switching per app is
   then instant and unlimited, for the "sidekick keyboard". It only works
