@@ -170,7 +170,7 @@ pub fn status(style: Style, s: &Status) -> String {
         Format::Human => {}
     }
     let mut out = String::new();
-    for (i, d) in s.devices.iter().enumerate() {
+    for (i, d) in s.devices.iter().map(|d| &d.device).enumerate() {
         if i > 0 {
             out.push('\n');
         }
@@ -208,7 +208,7 @@ pub const GLYPH: &str = "\u{f0297}";
 /// mode key (`xinput`, `webconfig`, ...), `ambiguous` when the id fits more
 /// than one mode.
 pub fn waybar_status(s: &Status) -> Waybar {
-    let Some(first) = s.devices.first() else {
+    let Some(first) = s.devices.first().map(|d| &d.device) else {
         return waybar_error(&Error::NotFound("no device".into()));
     };
     let class = first
@@ -220,7 +220,7 @@ pub fn waybar_status(s: &Status) -> Waybar {
     }
     // waybar renders tooltips in a proportional font: "label: value", no padding.
     let mut parts = Vec::new();
-    for d in &s.devices {
+    for d in s.devices.iter().map(|d| &d.device) {
         let mut t = format!("{} ({})", mode_label(d), confidence(d.confidence));
         for (label, value) in device_rows(d) {
             t.push_str(&format!("\n{label}: {value}"));
@@ -483,6 +483,20 @@ pub fn mode(style: Style, r: &ModeReport) -> String {
         Via::BootButton => {
             rw.push(("was", seen(&r.before)));
             rw.push(("via", "its boot button; nothing written".into()));
+        }
+        Via::Control => {
+            rw.push(("was", seen(&r.before)));
+            rw.push((
+                "via",
+                "the control channel; no web-config, no button press".into(),
+            ));
+            rw.push((
+                "saved",
+                format!("{target} (the pad saved it and restarted)"),
+            ));
+            if r.reboot == Some(RebootAck::Probable) {
+                rw.push(("reboot", ack(RebootAck::Probable).into()));
+            }
         }
         Via::WebConfig => {
             rw.push(("was", seen(&r.before)));

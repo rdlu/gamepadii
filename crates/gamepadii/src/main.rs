@@ -208,6 +208,7 @@ fn env<'a>(
         scan: root,
         clock,
         open,
+        control: None,
         cache_dir: cache::cache_dir(),
         backups_dir: if backup {
             commands::backups_dir().ok()

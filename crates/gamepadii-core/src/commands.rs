@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::{self, Endpoint, FirmwareVersion, MemoryReport};
-use crate::cache::DeviceCache;
+use crate::cache::{self, DeviceCache};
+use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
-use crate::discovery::{self, Device};
+use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
+use crate::mode::Confidence;
 use crate::mode::{BootMode, InputMode};
 use crate::sysfs::Root;
 use crate::timestamp::Utc;
@@ -21,23 +23,192 @@ use crate::timestamp::Utc;
 /// `gamepadii status`: every GP2040-CE device on USB, with its mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {
-    pub devices: Vec<Device>,
+    pub devices: Vec<StatusDevice>,
 }
 
-/// [`Status`] for the machine under `root`; [`Error::NotFound`] when no
-/// device has an id GP2040-CE uses.
+/// A device, and what its control channel says (when it has one).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StatusDevice {
+    /// With the channel, `mode` is what the firmware reports and
+    /// `confidence` is `confirmed`.
+    #[serde(flatten)]
+    pub device: Device,
+    /// `null` when the pad has no channel (stock firmware) or it wasn't
+    /// probed.
+    pub control_channel: Option<ChannelReport>,
+    /// Why the channel couldn't be used, when that is worth saying (no
+    /// permission on the node of a pad known to have it, a newer protocol).
+    pub channel_note: Option<String>,
+}
+
+/// [`Status`] for the machine under `root`, from sysfs alone (no channel
+/// probe); [`Error::NotFound`] when no device has an id GP2040-CE uses.
 pub fn status(root: &Root) -> Result<Status> {
-    let devices = discovery::scan(root);
+    status_with(root, None, None)
+}
+
+/// [`Status`] with a HELLO to each pad through `control` (none for BOOTSEL,
+/// the boot ROM has no channel). Pads seen with the channel are recorded
+/// in `cache_dir`, so a later permission problem gets the udev hint.
+pub fn status_with(
+    scan: &dyn Scan,
+    control: Option<&OpenControl<'_>>,
+    cache_dir: Option<&Path>,
+) -> Result<Status> {
+    let devices = scan.scan();
     if devices.is_empty() {
         return Err(Error::NotFound(
             "no GP2040-CE device on USB (is it plugged in?)".into(),
         ));
     }
+    let devices = devices
+        .into_iter()
+        .map(|device| match control {
+            Some(open) if device.mode != Some(InputMode::Bootsel) => {
+                probe_status(open, device, cache_dir)
+            }
+            _ => StatusDevice {
+                device,
+                control_channel: None,
+                channel_note: None,
+            },
+        })
+        .collect();
     Ok(Status { devices })
 }
 
-/// The firmware build, from `getFirmwareVersion`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn probe_status(
+    open: &OpenControl<'_>,
+    mut device: Device,
+    cache_dir: Option<&Path>,
+) -> StatusDevice {
+    let (mut report, mut note) = (None, None);
+    match channel::probe(open, &device) {
+        Probe::Found(ch) => match channel_report(&ch) {
+            Ok(r) => {
+                confirm(&mut device, &r);
+                remember(cache_dir, &ch, &r.firmware);
+                report = Some(r);
+            }
+            Err(e) => note = Some(format!("the control channel answered HELLO, then: {e}")),
+        },
+        Probe::NoAccess { node } if cache::channel_known(cache_dir) => {
+            note = Some(channel::udev_hint(&node));
+        }
+        Probe::Newer { major, .. } => note = Some(newer_protocol(major)),
+        Probe::NoAccess { .. } | Probe::Absent(_) => {}
+    }
+    StatusDevice {
+        device,
+        control_channel: report,
+        channel_note: note,
+    }
+}
+
+/// What to say about a channel speaking a protocol major we don't.
+pub fn newer_protocol(major: u8) -> String {
+    format!(
+        "the pad's control channel speaks protocol v{major}; this gamepadii speaks v{}, \
+         so it isn't used (update gamepadii)",
+        proto::MAJOR
+    )
+}
+
+/// The firmware said which mode it runs: no more guessing from the VID:PID.
+pub fn confirm(device: &mut Device, r: &ChannelReport) {
+    device.confidence = Confidence::Confirmed;
+    device.note = None;
+    if let Some(m) = r.input_mode.mode {
+        device.mode = Some(m);
+    }
+}
+
+/// Records the channel for this board (best effort).
+pub fn remember(cache_dir: Option<&Path>, ch: &Channel, fw: &Firmware) {
+    if let Some(dir) = cache_dir {
+        let _ = fs::create_dir_all(dir);
+        let _ = cache::record_channel(dir, &board_slug(fw), ch.hello());
+    }
+}
+
+/// A profile by number, with its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileName {
+    pub number: u8,
+    pub label: Option<String>,
+}
+
+impl ProfileName {
+    /// `2 SilkSong`, or `2`.
+    pub fn display(&self) -> String {
+        match &self.label {
+            Some(l) => format!("{} {l}", self.number),
+            None => self.number.to_string(),
+        }
+    }
+}
+
+/// What the control channel says about the pad.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelReport {
+    /// The device node it was reached through: `/dev/bus/usb/003/007`.
+    pub node: String,
+    /// `1.0`.
+    pub protocol: String,
+    pub capabilities: Caps,
+    /// The input modes this build can boot.
+    pub input_modes: Vec<InputMode>,
+    /// From the build: version, board config, label, build type (the rest
+    /// is `null`; web-config has it).
+    pub firmware: Firmware,
+    /// The running mode: `webconfig` (255) in web-config.
+    pub input_mode: ModeSetting,
+    pub active_profile: ProfileName,
+    pub enabled_profiles: Vec<u8>,
+    /// A profile switch the main loop hasn't applied yet.
+    pub profile_pending: bool,
+    /// `forcedSetupOptions.mode`: 1 locks mode switching, 2 web-config, 3
+    /// both.
+    pub forced_setup: u8,
+    pub uptime_ms: u32,
+}
+
+/// STATUS and the strings (version, board, the active profile's label).
+pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
+    let st = ch.status()?;
+    let has_strings = ch.caps().has(Caps::STRING);
+    let string =
+        |id| -> Result<Option<String>> { if has_strings { ch.string(id) } else { Ok(None) } };
+    let h = ch.hello();
+    Ok(ChannelReport {
+        node: ch.node(),
+        protocol: format!("{}.{}", h.major, h.minor),
+        capabilities: h.caps,
+        input_modes: h.input_modes(),
+        firmware: Firmware {
+            version: string(proto::string::VERSION)?,
+            board: string(proto::string::BOARD)?,
+            board_label: string(proto::string::BOARD_LABEL)?,
+            architecture: None,
+            build: None,
+            build_type: string(proto::string::BUILD_TYPE)?,
+            file_name: None,
+        },
+        input_mode: ModeSetting::new(Some(i64::from(st.input_mode))),
+        active_profile: ProfileName {
+            number: st.profile,
+            label: string(proto::string::profile_label(st.profile))?,
+        },
+        enabled_profiles: st.enabled(),
+        profile_pending: st.pending(),
+        forced_setup: st.forced_setup,
+        uptime_ms: st.uptime_ms,
+    })
+}
+
+/// The firmware build, from `getFirmwareVersion` (or the control
+/// channel's strings).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Firmware {
     /// `v0.7.12`.
     pub version: Option<String>,

@@ -1,13 +1,15 @@
-//! The guided flows: `mode`, `webconfig`, and `reboot` with a wait. They
-//! poll USB through a [`Scan`] and time through a [`Clock`], open the
-//! web-config client through a closure, and report progress through a
-//! [`Progress`], so every branch runs in tests against a simulated pad with
-//! no real sleeps.
+//! The guided flows: `mode`, `webconfig`, `reboot` with a wait, and
+//! `profile switch`. They poll USB through a [`Scan`] and time through a
+//! [`Clock`], open the web-config client and the control channel through
+//! closures, and report progress through a [`Progress`], so every branch
+//! runs in tests against a simulated pad with no real sleeps.
 //!
-//! In a gamepad mode GP2040-CE has no control channel: the flows tell the
-//! user which buttons to hold (with key-by-key hints from the
-//! [`DeviceCache`] when there is one), wait for the pad to re-enumerate,
-//! and carry on from there.
+//! In a gamepad mode the flows first send HELLO on the control channel
+//! (`crate::channel`). When the firmware answers, they switch the mode or
+//! the profile, or reboot, over it: no web-config, no button press. Stock
+//! GP2040-CE has no channel: the flows tell the user which buttons to hold
+//! (with key-by-key hints from the [`DeviceCache`] when there is one), wait
+//! for the pad to re-enumerate, and carry on from there.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,8 +19,9 @@ use serde::Serialize;
 use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
 use crate::buttons::{Button, Combo};
 use crate::cache::{self, DeviceCache};
-use crate::client::Client;
-use crate::commands::{self, ModeSetting};
+use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
+use crate::client::{Client, WEBCONFIG_HINT};
+use crate::commands::{self, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::mode::{BootMode, Confidence, InputMode};
@@ -52,6 +55,9 @@ pub struct Env<'a> {
     pub clock: &'a dyn Clock,
     /// Opens the web-config client, with no USB check (the flow has looked).
     pub open: &'a dyn Fn() -> Result<Client>,
+    /// Opens a pad's control channel; `None` never tries (`--no-channel`,
+    /// or a platform without usbfs).
+    pub control: Option<&'a OpenControl<'a>>,
     /// Where the [`DeviceCache`] lives; `None` neither reads nor writes it.
     pub cache_dir: Option<PathBuf>,
     /// Where to back up before a write; `None` skips the backup.
@@ -197,6 +203,9 @@ pub struct Guide {
     pub hotkey: Option<Hold>,
     /// When the cache the key hints come from was taken.
     pub cached_at: Option<String>,
+    /// Why the control channel, which would have made this unnecessary,
+    /// couldn't be used (no udev rule); `null` for stock firmware.
+    pub channel_hint: Option<String>,
 }
 
 /// The parts of a cache the guide uses.
@@ -263,12 +272,19 @@ impl Guide {
                 .then(|| Hold::new(&[Button::S2], c)),
             hotkey: (!in_bootsel).then(|| Hold::new(&[Button::S2, Button::B3, Button::B4], c)),
             cached_at: c.map(|c| c.captured_at.clone()),
+            channel_hint: None,
         }
+    }
+
+    fn with_hint(mut self, hint: Option<String>) -> Self {
+        self.channel_hint = hint;
+        self
     }
 
     /// The instructions, a sentence per line.
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
+        out.extend(self.channel_hint.clone());
         if let (Some(hold), Some(target)) = (&self.boot_button, self.target) {
             out.push(format!(
                 "No write needed: unplug the pad, hold {} (only that button) and plug it \
@@ -336,6 +352,76 @@ fn pick(devices: Vec<Device>) -> Result<Device> {
 
 fn in_gamepad_mode(d: &Device) -> bool {
     !matches!(d.mode, Some(InputMode::Webconfig | InputMode::Bootsel))
+}
+
+/// The pad's control channel, or (when it couldn't be used and that is
+/// worth saying) a sentence for the guide. Pads seen with the channel are
+/// recorded in the cache dir, so a later `EACCES` gets the udev hint.
+fn channel(env: &Env, d: &Device) -> (Option<Channel>, Option<String>) {
+    let Some(open) = env.control else {
+        return (None, None);
+    };
+    if d.mode == Some(InputMode::Bootsel) {
+        return (None, None);
+    }
+    match channel::probe(open, d) {
+        Probe::Found(ch) => {
+            let board = ch.string(proto::string::BOARD).ok().flatten();
+            let fw = Firmware {
+                board,
+                ..Firmware::default()
+            };
+            commands::remember(env.cache_dir.as_deref(), &ch, &fw);
+            (Some(ch), None)
+        }
+        Probe::NoAccess { node } if cache::channel_known(env.cache_dir.as_deref()) => (
+            None,
+            Some(format!(
+                "gamepadii could do this over the pad's control channel, but has no \
+                 permission to use {node}: run `gamepadii setup udev` once, then replug the pad."
+            )),
+        ),
+        Probe::Newer { major, .. } => (None, Some(format!("{}.", commands::newer_protocol(major)))),
+        Probe::NoAccess { .. } | Probe::Absent(_) => (None, None),
+    }
+}
+
+/// The channel on a pad that has just re-enumerated. udev may need a
+/// moment to apply the `uaccess` ACL to the new node, so this retries
+/// briefly.
+fn channel_after_reboot(env: &Env, d: &Device) -> Option<Channel> {
+    let open = env.control?;
+    wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(200),
+            timeout: Duration::from_secs(2),
+        },
+        || channel::probe(open, d).found(),
+        |_| {},
+    )
+}
+
+/// `d` as the channel reports it: `confirmed`, in the mode it says it runs.
+fn confirmed(d: &Device, running: Option<InputMode>) -> Seen {
+    Seen {
+        mode: running.or(d.mode),
+        candidates: d.candidates.clone(),
+        confidence: Confidence::Confirmed,
+        usb_id: d.usb_id(),
+    }
+}
+
+fn running(st: &channel::Status) -> Option<InputMode> {
+    InputMode::from_proto(st.input_mode.into())
+}
+
+/// The options from the cache, for the `usbOverrideID` check.
+fn cached_options(env: &Env) -> Option<api::GamepadOptions> {
+    env.cache_dir
+        .as_deref()
+        .and_then(cache::load_latest)
+        .and_then(|c| c.options())
 }
 
 /// Whether the device shows `target`'s ids.
@@ -479,6 +565,19 @@ pub enum Via {
     WebConfig,
     /// The user held the target's boot button: nothing written.
     BootButton,
+    /// SET_INPUT_MODE on the control channel: the pad saved the mode and
+    /// rebooted itself.
+    Control,
+}
+
+/// Which way a command reached the pad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// The web configurator's HTTP API.
+    WebConfig,
+    /// The USB control channel.
+    Control,
 }
 
 /// `gamepadii mode <mode>`.
@@ -534,11 +633,19 @@ pub fn mode(
             note: pad.note.clone(),
         });
     }
+    let mut hint = None;
+    if in_gamepad_mode(&pad) {
+        let (ch, h) = channel(env, &pad);
+        hint = h;
+        if let Some(ch) = ch.filter(|c| c.caps().has(Caps::SET_INPUT_MODE)) {
+            return via_control(env, target, &pad, &ch, progress);
+        }
+    }
     if pad.mode == Some(InputMode::Webconfig) {
         return via_webconfig(env, target, &pad, (&pad).into(), false, progress);
     }
     let cache = env.cache_dir.as_deref().and_then(cache::load_latest);
-    let guide = Guide::new(&pad, Some(target), cache.as_ref());
+    let guide = Guide::new(&pad, Some(target), cache.as_ref()).with_hint(hint);
     if !wait {
         return Err(Error::NeedsUser(format!(
             "the pad is in {} mode. {}",
@@ -583,6 +690,94 @@ fn gave_up(after: Duration, guide: &Guide) -> Error {
         guide.current.label(),
         guide.text()
     ))
+}
+
+/// `mode` over the control channel: SET_INPUT_MODE (the pad saves the mode
+/// and reboots into it), then the re-enumeration and STATUS to check.
+fn via_control(
+    env: &Env,
+    target: InputMode,
+    pad: &Device,
+    ch: &Channel,
+    progress: &mut dyn Progress,
+) -> Result<ModeReport> {
+    if !ch.hello().boots(target) {
+        let fw = ch.string(proto::string::VERSION).ok().flatten();
+        return Err(Error::Usage(format!(
+            "this firmware ({}) has no {} mode",
+            fw.as_deref().unwrap_or("unknown version"),
+            target.label()
+        )));
+    }
+    let st = ch.status()?;
+    let before = confirmed(pad, running(&st));
+    let mut report = ModeReport {
+        target,
+        via: Via::Already,
+        before: before.clone(),
+        after: Some(before),
+        verified: true,
+        waited_for_user: false,
+        saved_before: None,
+        write: None,
+        backup: None,
+        reboot: None,
+        note: None,
+    };
+    if running(&st) == Some(target) {
+        return Ok(report);
+    }
+    progress.step(Step::Writing(target));
+    let ack = ch.set_input_mode(target)?;
+    progress.step(Step::Rebooting(BootMode::Gamepad));
+    report.via = Via::Control;
+    report.after = None;
+    report.verified = false;
+    report.reboot = Some(ack);
+    if let Some(ids) = cached_options(env).and_then(|o| custom_ids(&o, target)) {
+        report.note = Some(format!(
+            "usbOverrideID is on, so it comes back as {ids}, which gamepadii can't \
+             recognise; not verified"
+        ));
+        return Ok(report);
+    }
+    let what = format!("{} is saved", target.label());
+    let got = wait_reenumerated(
+        env,
+        pad,
+        env.timeouts.reboot,
+        Awaiting::Reboot(BootMode::Gamepad),
+        progress,
+        in_gamepad_mode,
+    )
+    .ok_or_else(|| not_back(env.timeouts.reboot, &what))?;
+    if !shows(target, &got) {
+        return Err(Error::CheckFailed(format!(
+            "{what}, but the pad came back as {} ({}), not {}",
+            Seen::from(&got).label(),
+            got.usb_id(),
+            target.label()
+        )));
+    }
+    let after = match channel_after_reboot(env, &got) {
+        Some(ch) => {
+            let now = running(&ch.status()?);
+            if now != Some(target) {
+                return Err(Error::CheckFailed(format!(
+                    "{what}, but the pad says it runs {}",
+                    now.map_or("an unknown mode", InputMode::label)
+                )));
+            }
+            confirmed(&got, now)
+        }
+        None => {
+            report.note = got.note.clone();
+            (&got).into()
+        }
+    };
+    report.after = Some(after);
+    report.verified = true;
+    Ok(report)
 }
 
 /// The web-config half of `mode`: `pad` is the pad in web-config, `before`
@@ -720,6 +915,16 @@ pub struct ModeStatus {
 
 pub fn mode_status(env: &Env, progress: &mut dyn Progress) -> Result<ModeStatus> {
     let pad = pick(env.scan.scan())?;
+    let mut current: Seen = (&pad).into();
+    let mut boots = None;
+    if in_gamepad_mode(&pad)
+        && let (Some(ch), _) = channel(env, &pad)
+    {
+        if let Ok(st) = ch.status() {
+            current = confirmed(&pad, running(&st));
+        }
+        boots = Some(*ch.hello());
+    }
     let (cache, from) = if pad.mode == Some(InputMode::Webconfig) {
         let client = connect_ready(env, progress)?;
         (Some(refresh_cache(env, &client, progress)?), Some("pad"))
@@ -744,15 +949,18 @@ pub fn mode_status(env: &Env, progress: &mut dyn Progress) -> Result<ModeStatus>
                     .and_then(|(name, _)| Button::from_name(name))
                     .filter(|_| boot_button_selects(m))
             }),
-            supported: fw
-                .as_ref()
-                .filter(|f| f.version.is_some())
-                .map(|f| firmware_has(f, m)),
-            current: pad.mode == Some(m),
+            supported: match &boots {
+                Some(h) => Some(h.boots(m)),
+                None => fw
+                    .as_ref()
+                    .filter(|f| f.version.is_some())
+                    .map(|f| firmware_has(f, m)),
+            },
+            current: current.mode == Some(m),
         })
         .collect();
     Ok(ModeStatus {
-        current: (&pad).into(),
+        current,
         saved: options.as_ref().map(|o| ModeSetting::new(o.input_mode)),
         saved_from: options.as_ref().and(from),
         cached_at: (from == Some("cache"))
@@ -769,17 +977,46 @@ pub struct WebconfigReport {
     pub url: String,
     pub device: Seen,
     pub waited_for_user: bool,
+    /// How it got there: `already`, `control` (REBOOT on the control
+    /// channel) or `user` (the guided button press).
+    pub via: WebconfigVia,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebconfigVia {
+    Already,
+    Control,
+    User,
 }
 
 /// Gets the pad into web-config (guiding the user if needed) and returns
 /// the URL. Refreshes the cache when the server answers.
 pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<WebconfigReport> {
     let pad = pick(env.scan.scan())?;
-    let (pad, waited) = if pad.mode == Some(InputMode::Webconfig) {
-        (pad, false)
+    let (ch, hint) = if in_gamepad_mode(&pad) {
+        channel(env, &pad)
+    } else {
+        (None, None)
+    };
+    let (pad, via) = if pad.mode == Some(InputMode::Webconfig) {
+        (pad, WebconfigVia::Already)
+    } else if let Some(ch) = ch.filter(|c| c.caps().has(Caps::REBOOT)) {
+        progress.step(Step::Rebooting(BootMode::Webconfig));
+        ch.reboot(BootMode::Webconfig)?;
+        let got = wait_reenumerated(
+            env,
+            &pad,
+            env.timeouts.reboot,
+            Awaiting::Reboot(BootMode::Webconfig),
+            progress,
+            |d| d.mode == Some(InputMode::Webconfig),
+        )
+        .ok_or_else(|| not_back(env.timeouts.reboot, "asked for web-config"))?;
+        (got, WebconfigVia::Control)
     } else {
         let cache = env.cache_dir.as_deref().and_then(cache::load_latest);
-        let guide = Guide::new(&pad, None, cache.as_ref());
+        let guide = Guide::new(&pad, None, cache.as_ref()).with_hint(hint);
         if !wait {
             return Err(Error::NeedsUser(format!(
                 "the pad is in {} mode. {}",
@@ -797,7 +1034,7 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
             |d| d.mode == Some(InputMode::Webconfig),
         )
         .ok_or_else(|| gave_up(env.timeouts.user, &guide))?;
-        (got, true)
+        (got, WebconfigVia::User)
     };
     // The cache is a bonus: a pad whose server isn't up yet still has a URL.
     if let Ok(client) = connect_ready(env, progress) {
@@ -806,15 +1043,20 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
     Ok(WebconfigReport {
         url: env.url.clone(),
         device: (&pad).into(),
-        waited_for_user: waited,
+        waited_for_user: via == WebconfigVia::User,
+        via,
     })
 }
 
 /// `gamepadii reboot`, waiting for the pad to come back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RebootReport {
+    /// Where the request went: `http://192.168.7.1`, or the device node
+    /// over the control channel.
     pub host: String,
     pub mode: BootMode,
+    /// `web_config` or `control`.
+    pub via: Route,
     pub ack: RebootAck,
     /// Whether it watched USB for the pad to come back.
     pub waited: bool,
@@ -828,8 +1070,111 @@ pub struct RebootReport {
     pub note: Option<String>,
 }
 
-/// Reboots the pad into `mode`; with `wait`, watches USB until it comes
-/// back and checks what it came back as.
+/// Reboots the pad wherever it is: over HTTP in web-config, over the
+/// control channel in a gamepad mode. BOOTSEL isn't offered on the channel
+/// (issue #2), so from a gamepad mode it goes through web-config: REBOOT
+/// into web-config, then `/api/reboot`. A pad with neither is
+/// [`Error::NeedsUser`], with how to get into web-config.
+pub fn reboot_pad(
+    env: &Env,
+    mode: BootMode,
+    wait: bool,
+    progress: &mut dyn Progress,
+) -> Result<RebootReport> {
+    let pad = pick(env.scan.scan())?;
+    if pad.mode == Some(InputMode::Webconfig) {
+        let client = connect_ready(env, progress)?;
+        return reboot(env, &client, mode, wait, progress);
+    }
+    let (ch, hint) = if in_gamepad_mode(&pad) {
+        channel(env, &pad)
+    } else {
+        (None, None)
+    };
+    match ch.filter(|c| c.caps().has(Caps::REBOOT)) {
+        Some(ch) => reboot_via_control(env, &pad, &ch, mode, wait, progress),
+        None => {
+            let mut msg = format!(
+                "the pad is in {} mode, not web-config. To switch: {WEBCONFIG_HINT}. \
+                 Then run this again",
+                Seen::from(&pad).label()
+            );
+            if let Some(h) = hint {
+                msg = format!("{h} Or: {msg}");
+            }
+            Err(Error::NeedsUser(msg))
+        }
+    }
+}
+
+fn reboot_via_control(
+    env: &Env,
+    pad: &Device,
+    ch: &Channel,
+    mode: BootMode,
+    wait: bool,
+    progress: &mut dyn Progress,
+) -> Result<RebootReport> {
+    if mode == BootMode::Bootsel && !ch.caps().has(Caps::REBOOT_BOOTSEL) {
+        progress.step(Step::Rebooting(BootMode::Webconfig));
+        ch.reboot(BootMode::Webconfig)?;
+        wait_reenumerated(
+            env,
+            pad,
+            env.timeouts.reboot,
+            Awaiting::Reboot(BootMode::Webconfig),
+            progress,
+            |d| d.mode == Some(InputMode::Webconfig),
+        )
+        .ok_or_else(|| {
+            not_back(
+                env.timeouts.reboot,
+                "asked for web-config, on the way to BOOTSEL",
+            )
+        })?;
+        let client = connect_ready(env, progress)?;
+        let mut r = reboot(env, &client, BootMode::Bootsel, wait, progress)?;
+        let via = "BOOTSEL isn't offered over the control channel, so gamepadii went \
+                   through web-config";
+        r.note = Some(match r.note.take() {
+            Some(n) => format!("{via}; {n}"),
+            None => via.to_string(),
+        });
+        return Ok(r);
+    }
+    let expected = match mode {
+        BootMode::Gamepad => ch
+            .status()
+            .ok()
+            .and_then(|st| running(&st))
+            .filter(|m| *m != InputMode::Webconfig),
+        BootMode::Webconfig => Some(InputMode::Webconfig),
+        BootMode::Bootsel => Some(InputMode::Bootsel),
+    };
+    progress.step(Step::Rebooting(mode));
+    let ack = ch.reboot(mode)?;
+    let report = RebootReport {
+        host: ch.node(),
+        mode,
+        via: Route::Control,
+        ack,
+        waited: false,
+        after: None,
+        expected,
+        verified: None,
+        note: None,
+    };
+    let custom = match mode {
+        BootMode::Gamepad => cached_options(env)
+            .zip(expected)
+            .and_then(|(o, m)| custom_ids(&o, m)),
+        _ => None,
+    };
+    watch_reboot(env, wait.then_some(pad), custom, report, progress)
+}
+
+/// Reboots the pad in web-config (behind `client`) into `mode`; with
+/// `wait`, watches USB until it comes back and checks what it came back as.
 pub fn reboot(
     env: &Env,
     client: &Client,
@@ -860,6 +1205,7 @@ pub fn reboot(
     let mut report = RebootReport {
         host: client.host(),
         mode,
+        via: Route::WebConfig,
         ack,
         waited: false,
         after: None,
@@ -871,10 +1217,32 @@ pub fn reboot(
         .as_ref()
         .zip(expected)
         .and_then(|(o, m)| custom_ids(o, m));
-    let Some(before) = before.filter(|_| wait) else {
-        if wait {
-            report.note = Some("the pad isn't on this machine's USB in web-config, so gamepadii can't watch it come back".into());
-        }
+    if wait && before.is_none() {
+        report.note = Some(
+            "the pad isn't on this machine's USB in web-config, so gamepadii can't watch it come back"
+                .into(),
+        );
+        return Ok(report);
+    }
+    watch_reboot(
+        env,
+        before.as_ref().filter(|_| wait),
+        custom,
+        report,
+        progress,
+    )
+}
+
+/// The second half of a reboot: watch `before` re-enumerate (unless it is
+/// `None`: no wait) and check it came back as `report.expected`.
+fn watch_reboot(
+    env: &Env,
+    before: Option<&Device>,
+    custom: Option<String>,
+    mut report: RebootReport,
+    progress: &mut dyn Progress,
+) -> Result<RebootReport> {
+    let Some(before) = before else {
         return Ok(report);
     };
     if let Some(ids) = custom {
@@ -883,6 +1251,7 @@ pub fn reboot(
         ));
         return Ok(report);
     }
+    let mode = report.mode;
     let accept = |d: &Device| match mode {
         BootMode::Gamepad => in_gamepad_mode(d),
         BootMode::Webconfig => d.mode == Some(InputMode::Webconfig),
@@ -890,7 +1259,7 @@ pub fn reboot(
     };
     let got = wait_reenumerated(
         env,
-        &before,
+        before,
         env.timeouts.reboot,
         Awaiting::Reboot(mode),
         progress,
@@ -900,7 +1269,7 @@ pub fn reboot(
     report.waited = true;
     report.after = Some((&got).into());
     report.note = got.note.clone();
-    if let Some(m) = expected {
+    if let Some(m) = report.expected {
         let ok = shows(m, &got);
         report.verified = Some(ok);
         if !ok {
@@ -912,6 +1281,187 @@ pub fn reboot(
                 got.usb_id()
             )));
         }
+    }
+    Ok(report)
+}
+
+/// Which profile `profile switch` goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileArg {
+    Number(u8),
+    /// Matched against the labels, ignoring case.
+    Label(String),
+}
+
+impl std::str::FromStr for ProfileArg {
+    type Err = String;
+
+    /// `1`–`6`, or a label.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("empty profile".into());
+        }
+        if s.chars().all(|c| c.is_ascii_digit()) {
+            return match s.parse::<u8>() {
+                Ok(n @ 1..=6) => Ok(ProfileArg::Number(n)),
+                _ => Err(format!("profile {s}: profiles are 1 to 6")),
+            };
+        }
+        Ok(ProfileArg::Label(s.to_string()))
+    }
+}
+
+/// `gamepadii profile switch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileReport {
+    /// Always `control`: there is no other way without a button press.
+    pub via: Route,
+    /// The device node.
+    pub host: String,
+    pub before: ProfileName,
+    pub profile: ProfileName,
+    /// Whether the active profile changed.
+    pub changed: bool,
+    /// Whether it was saved to flash (`--save`).
+    pub saved: bool,
+    /// Whether STATUS shows the switch applied (the pins remapped).
+    pub applied: bool,
+    pub note: Option<String>,
+}
+
+/// Why `profile switch` can't work on `pad`.
+fn no_channel_for_profiles(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel, so gamepadii can't switch its \
+         profile; that needs the gamepadii build of GP2040-CE. On stock firmware, switch \
+         with the pad's profile hotkeys (LOAD_PROFILE_n or NEXT_PROFILE, set up under \
+         Hotkeys in web-config), which also save the profile",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// Switches the active profile over the control channel: live, with no
+/// reboot; saved to flash only with `save`.
+pub fn profile_switch(
+    env: &Env,
+    which: &ProfileArg,
+    save: bool,
+    _progress: &mut dyn Progress,
+) -> Result<ProfileReport> {
+    let pad = pick(env.scan.scan())?;
+    if pad.mode == Some(InputMode::Bootsel) {
+        return Err(Error::NeedsUser(
+            "the pad is in BOOTSEL (the boot ROM, for flashing); replug it first".into(),
+        ));
+    }
+    let Some(open) = env.control else {
+        return Err(no_channel_for_profiles(
+            &pad,
+            Some("the control channel is off: --no-channel".into()),
+        ));
+    };
+    let ch = match channel::probe(open, &pad) {
+        Probe::Found(ch) if ch.caps().has(Caps::SET_PROFILE) => ch,
+        Probe::Found(_) => {
+            return Err(no_channel_for_profiles(
+                &pad,
+                Some("this build's channel has no SET_PROFILE".into()),
+            ));
+        }
+        Probe::NoAccess { node } => {
+            return Err(Error::NeedsUser(format!(
+                "{}; switching profiles needs the control channel",
+                channel::udev_hint(&node)
+            )));
+        }
+        Probe::Newer { major, .. } => return Err(Error::Usage(commands::newer_protocol(major))),
+        Probe::Absent(_) => return Err(no_channel_for_profiles(&pad, None)),
+    };
+    let st = ch.status()?;
+    let mut labels = std::collections::BTreeMap::new();
+    for n in st.enabled() {
+        labels.insert(n, ch.string(proto::string::profile_label(n))?);
+    }
+    let name = |n: u8| ProfileName {
+        number: n,
+        label: labels.get(&n).cloned().flatten(),
+    };
+    let choices = || {
+        labels
+            .keys()
+            .map(|n| name(*n).display())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let n = match which {
+        ProfileArg::Number(n) if st.profile_enabled(*n) => *n,
+        ProfileArg::Number(n) => {
+            return Err(Error::Usage(format!(
+                "profile {n} isn't enabled on the pad; it has {}",
+                choices()
+            )));
+        }
+        ProfileArg::Label(l) => labels
+            .iter()
+            .find(|(_, v)| v.as_deref().is_some_and(|v| v.eq_ignore_ascii_case(l)))
+            .map(|(n, _)| *n)
+            .ok_or_else(|| {
+                Error::Usage(format!(
+                    "no enabled profile is called {l:?}; the pad has {}",
+                    choices()
+                ))
+            })?,
+    };
+    let before = name(st.profile);
+    let mut report = ProfileReport {
+        via: Route::Control,
+        host: ch.node(),
+        before,
+        profile: name(n),
+        changed: st.profile != n,
+        saved: false,
+        applied: true,
+        note: None,
+    };
+    if !report.changed && !save {
+        report.note = Some("already the active profile".into());
+        return Ok(report);
+    }
+    ch.set_profile(n, save)?;
+    report.saved = save;
+    // The main loop remaps the pins on its next pass (well under 1 ms).
+    let done = wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(20),
+            timeout: Duration::from_secs(1),
+        },
+        || ch.status().ok().filter(|s| s.profile != n || !s.pending()),
+        |_| {},
+    );
+    let Some(after) = done else {
+        report.applied = false;
+        report.note = Some("the pad took the switch but hasn't applied it after 1 s".into());
+        return Ok(report);
+    };
+    if after.profile != n {
+        return Err(Error::CheckFailed(format!(
+            "the pad accepted profile {}, but STATUS shows profile {}",
+            n, after.profile
+        )));
+    }
+    if !save {
+        report.note = Some(
+            "not saved: the pad goes back to its saved profile when it restarts, unless \
+             something saves its settings first (any hotkey, turbo or LED change does); \
+             --save keeps it"
+                .into(),
+        );
     }
     Ok(report)
 }

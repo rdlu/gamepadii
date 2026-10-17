@@ -96,6 +96,32 @@ impl Rig {
         Self::new(SimPad::new(s16_dir(), mode))
     }
 
+    /// The S16 in `mode`, running our firmware with the control channel.
+    fn cc(mode: InputMode) -> Self {
+        Self::new(SimPad::new(s16_dir(), mode).with_channel())
+    }
+
+    /// Records that a pad with the channel has been seen (as an earlier
+    /// `status` would have).
+    fn knows_the_channel(self) -> Self {
+        std::fs::write(
+            self.cache_dir().join(cache::CHANNELS_FILE),
+            r#"{"schema":1,"boards":{"Haute42COSMOX":{"major":1,"minor":0,"capabilities":["status"]}}}"#,
+        )
+        .unwrap();
+        self
+    }
+
+    /// OUT commands the pad got on EP0, by command byte.
+    fn channel_commands(&self) -> Vec<u8> {
+        self.pad
+            .control_log()
+            .into_iter()
+            .filter(|s| !s.setup.is_in())
+            .map(|s| s.setup.command_byte())
+            .collect()
+    }
+
     fn with_cache(self) -> Self {
         cache::store(&self.cache_dir(), &s16_cache()).unwrap();
         self
@@ -112,10 +138,13 @@ impl Rig {
     fn run<T>(&self, f: impl FnOnce(&Env) -> T) -> T {
         let pad = self.pad.clone();
         let open = move || pad.open();
+        let pad = self.pad.clone();
+        let control = move |d: &gamepadii_core::discovery::Device| pad.open_control(d);
         let env = Env {
             scan: &*self.pad,
             clock: &self.clock,
             open: &open,
+            control: Some(&control),
             cache_dir: Some(self.cache_dir()),
             backups_dir: Some(self.backups_dir()),
             url: "http://192.168.7.1/".into(),
@@ -724,4 +753,408 @@ fn info_and_backup_produce_the_cache() {
         gamepadii_core::commands::backup_with_cache(&client, Some(&dir.path().join("b.json")), now)
             .unwrap();
     assert_eq!(from_backup, Some(s16_cache()));
+}
+
+// ---- the control channel --------------------------------------------------
+
+#[test]
+fn mode_over_the_channel_needs_no_web_config_and_no_button() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let mut log = Log::default();
+    let r = rig.mode(InputMode::Keyboard, true, &mut log).unwrap();
+    assert_eq!(r.via, Via::Control);
+    assert!(r.verified);
+    assert!(!r.waited_for_user);
+    assert_eq!(
+        r.before.confidence,
+        gamepadii_core::mode::Confidence::Confirmed
+    );
+    let after = r.after.as_ref().unwrap();
+    assert_eq!(after.usb_id, "cafe:0001");
+    assert_eq!(after.mode, Some(InputMode::Keyboard));
+    assert_eq!(r.reboot, Some(RebootAck::Confirmed));
+    assert!(r.write.is_none() && r.backup.is_none());
+    assert!(log.guides.is_empty(), "no button press");
+    assert!(rig.requests().is_empty(), "no web-config");
+    assert_eq!(rig.channel_commands(), [0x12], "one SET_INPUT_MODE");
+    assert_eq!(log.other, ["writing keyboard", "rebooting gamepad"]);
+    assert_eq!(rig.pad.mode(), Some(InputMode::Keyboard));
+    assert_eq!(
+        rig.pad.mock().current("getGamepadOptions").unwrap()["inputMode"],
+        3
+    );
+    // The channel is remembered for this board.
+    assert!(cache::channel_known(Some(&rig.cache_dir())));
+}
+
+#[test]
+fn the_channel_settles_ps4_or_ps5() {
+    // 1532:0401 is PS4 or PS5; STATUS says which, so PS5 is "already".
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Ps5)
+            .with_channel()
+            .channel(|c| c.running = Some(13)),
+    );
+    let r = rig.mode(InputMode::Ps5, true, &mut Log::default()).unwrap();
+    assert_eq!(r.via, Via::Already);
+    assert_eq!(r.before.mode, Some(InputMode::Ps5));
+    assert!(rig.channel_commands().is_empty());
+}
+
+#[test]
+fn mode_over_the_channel_refuses_what_the_build_cant_boot() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let err = rig
+        .mode(InputMode::Sinput, true, &mut Log::default())
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::USAGE);
+    assert!(err.to_string().contains("has no SInput mode"), "{err}");
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+}
+
+#[test]
+fn mode_over_the_channel_honours_the_lock() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| c.forced_setup = 1),
+    );
+    let err = rig
+        .mode(InputMode::Keyboard, true, &mut Log::default())
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::USAGE);
+    assert!(err.to_string().contains("locks mode switching"), "{err}");
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+}
+
+#[test]
+fn mode_over_the_channel_checks_what_came_back() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .come_back_as(InputMode::Ps3),
+    );
+    let err = rig
+        .mode(InputMode::Keyboard, true, &mut Log::default())
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::CHECK_FAILED);
+    assert!(
+        err.to_string()
+            .contains("Keyboard is saved, but the pad came back as PS3"),
+        "{err}"
+    );
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .stays_away(),
+    );
+    let err = rig
+        .mode(InputMode::Keyboard, true, &mut Log::default())
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+}
+
+#[test]
+fn stock_firmware_falls_back_to_the_guide() {
+    // XInput answers HELLO with 0 bytes, Xbox One with garbage, Keyboard
+    // STALLs: all three are "no channel", and the guided flow runs.
+    for m in [InputMode::Xinput, InputMode::Xbone, InputMode::Keyboard] {
+        let rig = Rig::s16(m);
+        let err = rig
+            .mode(InputMode::Switch, false, &mut Log::default())
+            .unwrap_err();
+        assert_eq!(err.exit_code(), exit::NEEDS_USER, "{m:?}");
+        assert!(err.to_string().contains("S2+B3+B4"), "{m:?}: {err}");
+        assert!(!err.to_string().contains("setup udev"), "{m:?}: {err}");
+        assert_eq!(rig.pad.control_log().len(), 1, "one HELLO, {m:?}");
+        assert!(rig.channel_commands().is_empty());
+    }
+}
+
+#[test]
+fn no_permission_on_a_known_channel_pad_adds_the_udev_hint() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .no_access(),
+    )
+    .knows_the_channel();
+    let err = rig
+        .mode(InputMode::Keyboard, false, &mut Log::default())
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    let msg = err.to_string();
+    assert!(msg.contains("run `gamepadii setup udev` once"), "{msg}");
+    assert!(msg.contains("/dev/bus/usb/003/007"), "{msg}");
+    assert!(msg.contains("S2+B3+B4"), "the guide still follows: {msg}");
+    // Without the record (stock firmware, as far as gamepadii knows): quiet.
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).no_access());
+    let err = rig
+        .mode(InputMode::Keyboard, false, &mut Log::default())
+        .unwrap_err();
+    assert!(!err.to_string().contains("setup udev"), "{err}");
+}
+
+#[test]
+fn web_config_still_uses_http_for_mode() {
+    let rig = Rig::cc(InputMode::Webconfig);
+    let r = rig
+        .mode(InputMode::Keyboard, true, &mut Log::default())
+        .unwrap();
+    assert_eq!(r.via, Via::WebConfig);
+    assert!(r.backup.is_some(), "the HTTP path backs up first");
+    assert!(rig.pad.control_log().is_empty(), "no probe in web-config");
+}
+
+#[test]
+fn mode_status_with_the_channel() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let s = rig
+        .run(|env| flow::mode_status(env, &mut Log::default()))
+        .unwrap();
+    assert_eq!(
+        s.current.confidence,
+        gamepadii_core::mode::Confidence::Confirmed
+    );
+    let choice = |m| s.modes.iter().find(|c| c.mode == m).unwrap();
+    assert_eq!(choice(InputMode::Sinput).supported, Some(false));
+    assert_eq!(choice(InputMode::Generic).supported, Some(true));
+    assert!(choice(InputMode::Xinput).current);
+}
+
+#[test]
+fn webconfig_over_the_channel() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let mut log = Log::default();
+    let r = rig.run(|env| flow::webconfig(env, true, &mut log)).unwrap();
+    assert_eq!(r.via, flow::WebconfigVia::Control);
+    assert!(!r.waited_for_user);
+    assert_eq!(r.device.usb_id, "cafe:4028");
+    assert!(log.guides.is_empty());
+    assert_eq!(log.other, ["rebooting webconfig"]);
+    assert_eq!(rig.channel_commands(), [0x11]);
+    // Once there, the cache is refreshed over HTTP.
+    assert_eq!(
+        files(&rig.cache_dir()),
+        ["Haute42COSMOX.json", cache::CHANNELS_FILE]
+    );
+}
+
+#[test]
+fn webconfig_locked_by_forced_setup() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| c.forced_setup = 2),
+    );
+    let err = rig
+        .run(|env| flow::webconfig(env, true, &mut Log::default()))
+        .unwrap_err();
+    assert_eq!(err.exit_code(), exit::USAGE);
+    assert!(err.to_string().contains("locks web-config"), "{err}");
+}
+
+fn reboot_pad(rig: &Rig, m: BootMode) -> gamepadii_core::Result<flow::RebootReport> {
+    rig.run(|env| flow::reboot_pad(env, m, true, &mut Log::default()))
+}
+
+#[test]
+fn reboot_from_a_gamepad_mode_over_the_channel() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let r = reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    assert_eq!(r.via, flow::Route::Control);
+    assert_eq!(r.host, "/dev/bus/usb/003/007");
+    assert_eq!(r.expected, Some(InputMode::Xinput));
+    assert_eq!(r.verified, Some(true));
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+
+    let rig = Rig::cc(InputMode::Keyboard);
+    let r = reboot_pad(&rig, BootMode::Webconfig).unwrap();
+    assert_eq!(r.verified, Some(true));
+    assert_eq!(r.after.unwrap().usb_id, "cafe:4028");
+    assert!(rig.requests().is_empty());
+}
+
+#[test]
+fn bootsel_from_a_gamepad_mode_goes_through_web_config() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let r = reboot_pad(&rig, BootMode::Bootsel).unwrap();
+    assert_eq!(r.via, flow::Route::WebConfig);
+    assert_eq!(r.verified, Some(true));
+    assert_eq!(rig.pad.mode(), Some(InputMode::Bootsel));
+    assert!(r.note.unwrap().contains("went through web-config"));
+    // REBOOT(1) on the channel, then /api/reboot {"bootMode": 2}.
+    assert_eq!(rig.channel_commands(), [0x11]);
+    let reboots: Vec<Value> = rig
+        .pad
+        .mock()
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == "/api/reboot")
+        .map(|r| r.json())
+        .collect();
+    assert_eq!(reboots, [serde_json::json!({"bootMode": 2})]);
+}
+
+#[test]
+fn reboot_in_web_config_uses_http_and_without_a_channel_guides() {
+    let rig = Rig::cc(InputMode::Webconfig);
+    let r = reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    assert_eq!(r.via, flow::Route::WebConfig);
+    assert_eq!(r.host, "mock:s16-v0.7.12");
+
+    let rig = Rig::s16(InputMode::Xinput);
+    let err = reboot_pad(&rig, BootMode::Webconfig).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    let msg = err.to_string();
+    assert!(msg.contains("XInput mode, not web-config"), "{msg}");
+    assert!(msg.contains("S2+B3+B4 for 4 seconds"), "{msg}");
+}
+
+fn switch(rig: &Rig, which: &str, save: bool) -> gamepadii_core::Result<flow::ProfileReport> {
+    let which: flow::ProfileArg = which.parse().unwrap();
+    rig.run(|env| flow::profile_switch(env, &which, save, &mut Log::default()))
+}
+
+fn saved_profile(rig: &Rig) -> Value {
+    rig.pad.mock().current("getGamepadOptions").unwrap()["profileNumber"].clone()
+}
+
+#[test]
+fn profile_switch_is_ram_only_by_default() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let r = switch(&rig, "3", false).unwrap();
+    assert_eq!(r.before.display(), "2 SilkSong");
+    assert_eq!(r.profile.display(), "3 Celeste");
+    assert!(r.changed && r.applied && !r.saved);
+    assert!(r.note.unwrap().contains("not saved"));
+    assert_eq!(rig.pad.firmware().active, 3);
+    assert_eq!(saved_profile(&rig), 2, "flash untouched");
+    assert!(rig.requests().is_empty());
+}
+
+#[test]
+fn profile_switch_by_label_and_saved() {
+    let rig = Rig::cc(InputMode::Keyboard);
+    let r = switch(&rig, "dkc", true).unwrap();
+    assert_eq!(r.profile.display(), "4 DKC");
+    assert!(r.saved);
+    assert_eq!(r.note, None);
+    assert_eq!(saved_profile(&rig), 4);
+}
+
+#[test]
+fn profile_switch_already_active() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let r = switch(&rig, "SilkSong", false).unwrap();
+    assert!(!r.changed);
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    // --save on the active profile still saves it.
+    let r = switch(&rig, "2", true).unwrap();
+    assert!(r.saved);
+    assert_eq!(rig.channel_commands(), [0x10]);
+}
+
+#[test]
+fn profile_switch_refuses_unknown_and_disabled_profiles() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let err = switch(&rig, "Hades", false).unwrap_err();
+    assert_eq!(err.exit_code(), exit::USAGE);
+    assert!(
+        err.to_string().contains(
+            "no enabled profile is called \"Hades\"; the pad has 1 Default, 2 SilkSong, \
+             3 Celeste, 4 DKC, 5 TGX"
+        ),
+        "{err}"
+    );
+    let err = switch(&rig, "6", false).unwrap_err();
+    assert!(err.to_string().contains("profile 6 isn't enabled"), "{err}");
+    assert!("7".parse::<flow::ProfileArg>().is_err());
+    assert!("0".parse::<flow::ProfileArg>().is_err());
+    assert!(rig.channel_commands().is_empty());
+}
+
+#[test]
+fn profile_switch_without_the_channel() {
+    let rig = Rig::s16(InputMode::Xinput);
+    let err = switch(&rig, "2", false).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    let msg = err.to_string();
+    assert!(msg.contains("has no control channel"), "{msg}");
+    assert!(msg.contains("LOAD_PROFILE_n"), "{msg}");
+
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .no_access(),
+    );
+    let err = switch(&rig, "2", false).unwrap_err();
+    assert_eq!(err.exit_code(), exit::NEEDS_USER);
+    assert!(err.to_string().contains("gamepadii setup udev"), "{err}");
+}
+
+#[test]
+fn a_ram_switch_is_undone_by_a_reboot() {
+    let rig = Rig::cc(InputMode::Xinput);
+    switch(&rig, "5", false).unwrap();
+    reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    assert_eq!(rig.pad.firmware().active, 2);
+}
+
+// ---- status ----------------------------------------------------------------
+
+fn status(rig: &Rig) -> gamepadii_core::commands::Status {
+    let pad = rig.pad.clone();
+    let control = move |d: &gamepadii_core::discovery::Device| pad.open_control(d);
+    let dir = rig.cache_dir();
+    gamepadii_core::commands::status_with(&*rig.pad, Some(&control), Some(&dir)).unwrap()
+}
+
+#[test]
+fn status_with_the_channel_is_confirmed() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let s = status(&rig);
+    let d = &s.devices[0];
+    assert_eq!(
+        d.device.confidence,
+        gamepadii_core::mode::Confidence::Confirmed
+    );
+    assert_eq!(d.device.note, None);
+    let c = d.control_channel.as_ref().unwrap();
+    assert_eq!(c.firmware.version.as_deref(), Some("v0.7.12"));
+    assert_eq!(c.firmware.board.as_deref(), Some("Haute42COSMOX"));
+    assert_eq!(c.input_mode.mode, Some(InputMode::Xinput));
+    assert_eq!(c.active_profile.display(), "2 SilkSong");
+    assert_eq!(c.enabled_profiles, [1, 2, 3, 4, 5]);
+    assert_eq!(c.protocol, "1.0");
+    assert!(cache::channel_known(Some(&rig.cache_dir())));
+    assert!(rig.channel_commands().is_empty(), "status only reads");
+}
+
+#[test]
+fn status_without_the_channel() {
+    let rig = Rig::s16(InputMode::Xinput);
+    let d = &status(&rig).devices[0];
+    assert!(d.control_channel.is_none());
+    assert_eq!(d.channel_note, None);
+    assert_eq!(
+        d.device.confidence,
+        gamepadii_core::mode::Confidence::Likely
+    );
+
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).no_access()).knows_the_channel();
+    let d = &status(&rig).devices[0];
+    assert!(
+        d.channel_note
+            .as_ref()
+            .unwrap()
+            .contains("gamepadii setup udev")
+    );
+
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).no_access());
+    assert_eq!(status(&rig).devices[0].channel_note, None);
+
+    let rig = Rig::cc(InputMode::Bootsel);
+    assert!(status(&rig).devices[0].control_channel.is_none());
+    assert!(rig.pad.control_log().is_empty(), "no HELLO to the boot ROM");
 }

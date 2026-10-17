@@ -236,6 +236,7 @@ mod flows {
                 scan: &*self.pad,
                 clock: &self.clock,
                 open: &open,
+                control: None,
                 cache_dir: Some(self.dirs.path().join("cache")),
                 backups_dir: Some(self.dirs.path().join("backups")),
                 url: "http://192.168.7.1/".into(),

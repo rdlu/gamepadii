@@ -10,6 +10,7 @@ note          045e:028e is also used by the Xbox 360 controller and its clones
   "schema": 1,
   "host": "mock:s16-v0.7.12",
   "mode": "gamepad",
+  "via": "web_config",
   "ack": "confirmed",
   "waited": true,
   "after": {

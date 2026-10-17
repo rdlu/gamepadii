@@ -16,5 +16,6 @@ the pad was already in web-config; leave it with: gamepadii webconfig --exit
     "confidence": "confirmed",
     "usb_id": "cafe:4028"
   },
-  "waited_for_user": false
+  "waited_for_user": false,
+  "via": "already"
 }

@@ -18,7 +18,7 @@ fn status_finds_a_pad() {
     let json: serde_json::Value =
         serde_json::from_str(&output::status(Style::plain(Format::Json), &status)).unwrap();
     assert_eq!(json["schema"], 1);
-    for d in &status.devices {
+    for d in status.devices.iter().map(|d| &d.device) {
         assert!(d.sysfs_path.is_some(), "{d:?}");
         assert!(!d.candidates.is_empty());
     }
@@ -90,6 +90,7 @@ fn reboot_into_web_config_comes_back() {
         scan: &root,
         clock: &clock,
         open: &open,
+        control: None,
         cache_dir: None,
         backups_dir: None,
         url: "http://192.168.7.1/".into(),
