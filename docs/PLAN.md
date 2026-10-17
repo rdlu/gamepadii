@@ -50,6 +50,11 @@ reboots as possible.
     the previous POST body.
   - POST bodies are capped at 16 KB, and requests must be serialised.
   - `resetSettings` is a destructive GET.
+  - **Never call `getConfig` on v0.7.12.** On the S16 (Haute42COSMOX build
+    0014e4a) it hangs the network stack: USB stays enumerated, the device
+    stops answering ping, and only a replug brings it back (seen
+    2026-10-17). Back up through the per-section `get*` endpoints instead,
+    as the web UI does.
 - **Input mode persists.** It is written to flash and survives replugs. It is
   also selected at boot by holding a mapped button: `inputModeB1..R2`, and on
   newer firmware `bootModeOptions.inputModeMappings`, which also picks the
@@ -73,23 +78,31 @@ reboots as possible.
   JSON fields it doesn't know. The S16's exact build is still unknown; it may
   be a Haute42 vendor build.
 
-## Keyboard profiles: three strategies
+## Profiles live in gamepadii, not on the pad
 
-1. **Rewrite the keymap (MVP).** A host-side profile file such as
-   `nms.toml` sets `inputMode=Keyboard` plus a full `keyMappings`, and is
-   applied over web-config. Simple, but every switch costs one guided button
-   press and a reboot.
-2. **Superset keymap plus pin profiles (no reboot).** Fill the 34 keymap slots
-   with every key the profiles need, then use the 6 pin profiles to choose
-   which logical button (and so which key) each physical button sends. The
-   on-device hotkeys switch profiles live, so the controller stays in
-   Keyboard mode. gamepadii compiles N app profiles into one keymap plus N pin
-   profiles, and reports when they don't fit.
-3. **Host-side remapper (Linux, no reboot, unlimited).** Leave the pad in
-   XInput/HID and have a small daemon read it through evdev and emit keys
-   through uinput, with optional per-app switching. This is the most flexible
-   option for the "sidekick keyboard". It only works where gamepadii is
-   running, and it can coexist with 1 and 2.
+gamepadii keeps a host-side **profile library** with no size limit, stored
+as TOML in `~/.config/gamepadii/profiles/`. The pad is only a target that
+gamepadii writes profiles into. The library is the source of truth, so the
+device's 6 slots and its single keymap don't limit how many profiles you
+have.
+
+- **A profile is a full bundle.** Any of these can be included, and anything
+  left out is inherited from a base profile: input mode, gamepad options
+  (SOCD, D-pad mode, hotkeys), a pin mapping, and a keyboard keymap. Examples:
+  `silksong`, `nms-keyboard`, `sidekick-obs`.
+- **`profile pull`** imports what is on the device now (all 6 slots plus the
+  keymap) into the library.
+- **`profile apply <name>`** writes the bundle to the device. In gamepad
+  mode it takes one guided button press and one reboot.
+- **`slots load a b c …`** picks up to 6 library profiles that share an
+  input mode and puts them in the device's slots, so the on-pad hotkeys can
+  switch between them with no PC involved. For keyboard profiles this uses
+  the superset trick: one 34-slot keymap with the pin mappings choosing keys
+  per slot, and gamepadii reports when they don't fit.
+- **Later: a host remapper.** The pad stays in XInput/HID while gamepadii
+  turns its buttons into keys through evdev → uinput. Switching per app is
+  then instant and unlimited, for the "sidekick keyboard". It only works
+  where gamepadii is running.
 
 ## Architecture
 
@@ -131,16 +144,16 @@ crates/gamepadii/src/
    web-config, read-modify-write `inputMode`, reboot, wait, verify), and
    `reboot <gamepad|webconfig|bootsel>`. This is the MVP; then switch to the
    PR workflow and protect `main`.
-4. **Profiles (strategy 1)**: TOML profiles with `profile
+4. **Profile library**: TOML bundles with `profile
    list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
    sidekick.
 5. **TUI**: status, mode switcher, profile browser with diffs, live
    button-test view (`getHeldPins`).
-6. **Strategy 2 compiler**: superset keymap plus pin profiles, and hotkey
-   setup.
+6. **`slots load`**: pack library profiles into the 6 device slots, using
+   the superset keymap for keyboard profiles, and set up the hotkeys.
 7. **PICOBOOT transport**: offline backup/restore and mode change with no
    web-config.
-8. **Host remapper (strategy 3)**: evdev → uinput, with per-app profiles.
+8. **Host remapper**: evdev → uinput, with per-app profiles.
 9. **Site and release**: the Hugo + Hextra docs site, release binaries, AUR.
 10. **Tauri GUI** on top of `gamepadii-core`.
 

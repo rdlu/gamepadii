@@ -47,7 +47,8 @@ confidence: `confirmed` when the ids or strings can only be GP2040-CE
 
 ## Supported devices
 
-- **Haute42 S16** (leverless), tested.
+- **Haute42 S16** (leverless), tested. It runs stock GP2040-CE v0.7.12
+  with the `Haute42COSMOX` board config.
 - Other GP2040-CE controllers should work the same way: detection relies on
   the firmware, not the board.
 
