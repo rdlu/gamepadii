@@ -4,7 +4,8 @@
 //! A transport only sends what it is given, but what it can be given is
 //! narrow: an [`ApiPath`] can only be made inside this crate, by the `api`
 //! module, so the endpoint allowlist there is the only way to reach the
-//! device. Nothing outside the crate can ask for `/api/getConfig`:
+//! device (`getConfig` only behind `api::fork`'s capability check). Nothing
+//! outside the crate can ask for `/api/getConfig`:
 //!
 //! ```compile_fail
 //! use gamepadii_core::transport::ApiPath;

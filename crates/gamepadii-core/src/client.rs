@@ -1,7 +1,8 @@
 //! A connection to a pad in web-config: finds it (or takes `--host`),
 //! checks it answers, and remembers its firmware version.
 
-use crate::api::{self, FirmwareVersion};
+use crate::api::{self, FirmwareVersion, ForkFixes};
+use crate::channel::Hello;
 use crate::discovery::{self, Device};
 use crate::error::{Error, Result};
 use crate::mode::InputMode;
@@ -19,6 +20,8 @@ pub const WEBCONFIG_HINT: &str = "hold S2 (Start) while plugging the pad in, \
 pub struct Client {
     transport: Box<dyn Transport>,
     firmware: FirmwareVersion,
+    /// The control channel's HELLO, when the same pad answered one.
+    hello: Option<Hello>,
 }
 
 impl Client {
@@ -38,6 +41,7 @@ impl Client {
         Ok(Client {
             transport,
             firmware,
+            hello: None,
         })
     }
 
@@ -48,6 +52,20 @@ impl Client {
     /// From `getFirmwareVersion` at connect time.
     pub fn firmware(&self) -> &FirmwareVersion {
         &self.firmware
+    }
+
+    /// The pad's control channel answered `hello` (the flows probe the
+    /// device they connected to): evidence for [`Client::fork_fixes`].
+    pub fn with_hello(mut self, hello: Hello) -> Self {
+        self.hello = Some(hello);
+        self
+    }
+
+    /// Whether this pad runs our fork with the web-config fixes, from the
+    /// firmware version and the channel's HELLO (the rule is in
+    /// [`api::fork`]). `None` for stock.
+    pub fn fork_fixes(&self) -> Option<ForkFixes> {
+        ForkFixes::check(&self.firmware, self.hello.as_ref())
     }
 
     /// Where it talks to: `http://192.168.7.1`.

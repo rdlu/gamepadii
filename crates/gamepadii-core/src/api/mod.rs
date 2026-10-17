@@ -3,8 +3,10 @@
 //! an `Endpoint`, so nothing else can be read. In particular these are not
 //! in it, and cannot be named:
 //!
-//! - `getConfig`: hangs the S16's network stack until it is replugged.
-//! - `getI2CPeripheralMap`: a live I2C bus scan, which hangs it the same way.
+//! - `getConfig`: on stock v0.7.12 it runs the web server out of heap and
+//!   hangs the S16's network stack until it is replugged.
+//! - `getI2CPeripheralMap`: a live I2C bus scan, which hangs stock the same
+//!   way.
 //! - `resetSettings`: a destructive GET that wipes the configuration.
 //! - `getHeldPins`: blocks until a button is pressed (it will come later,
 //!   behind its own function, for the button test).
@@ -19,8 +21,13 @@
 //! let _ = gamepadii_core::api::Endpoint::GetI2CPeripheralMap;
 //! ```
 //!
+//! Our firmware fork fixes both hangs: [`fork::get_config`] and
+//! [`fork::get_i2c_peripheral_map`] read them, and only with a
+//! [`ForkFixes`], which only the capability check makes (see [`fork`]).
+//!
 //! The only other request is [`reboot`].
 
+pub mod fork;
 pub mod model;
 pub mod write;
 
@@ -28,6 +35,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use fork::{Evidence, ForkFixes};
 pub use model::{
     DisplayOptions, FirmwareVersion, GamepadOptions, KeyMappings, MemoryReport, PinMapping,
     PinMappings, ProfileOptions,
@@ -92,7 +100,7 @@ endpoints! {
 
 impl Endpoint {
     /// The allowlisted endpoint with this exact name; `None` for anything
-    /// else, `getConfig` included.
+    /// else, `getConfig` included (that one is [`fork::get_config`]).
     pub fn from_name(name: &str) -> Option<Endpoint> {
         Endpoint::ALL.iter().copied().find(|e| e.name() == name)
     }
