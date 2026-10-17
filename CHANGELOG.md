@@ -103,6 +103,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   button-press guides on screen; USB is watched once a second for
   hotplug. Off a terminal, `gamepadii` still prints usage and `gamepadii
   tui` exits 3.
+- `gamepadii display layout [MODEL | --left N --right N]`: the OLED's
+  button drawing. Haute42 pads (Haute42COSMOX) take their model (`s16`,
+  `g16`, `s13`, `m16+`, `e16`, ...) or the layout (`default`,
+  `alt0`..`alt5`), from the board's BoardConfig.h; S16/G16 is Board
+  Defined Alternate 2 (36/42). Any board takes the raw values. With no
+  argument it shows the current layout and the choices. It backs up
+  first (`--no-backup` to skip), writes with a read-modify-write of the
+  whole `setDisplayOptions` object (which zeroes whatever it isn't sent),
+  and reads it back; from a gamepad mode the control channel takes the
+  pad to web-config and back, like `info`.
+- `info` shows the OLED layout, and on a Haute42 still on the generic
+  12-button drawing with a 16-button pin mapping, suggests
+  `gamepadii display layout s16`. The JSON gains `display_layout` and
+  `hints` (additive, still schema 1).
 
 ### Fixed
 

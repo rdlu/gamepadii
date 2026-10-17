@@ -75,6 +75,24 @@ reboots as possible.
     write's reply, never alongside it. gamepadii's `api::write` refuses to
     post a body that lacks any key the setter reads, then reads the options
     back and fails on any difference.
+  - `setDisplayOptions` (v0.7.12 `webconfig.cpp:421`) is the same kind of
+    setter: `readDoc` for every field, so anything not sent is 0. It reads
+    22 top-level numbers: `enabled`, `flipDisplay`, `invertDisplay`,
+    `buttonLayout`, `buttonLayoutRight`, `splashMode`, `splashChoice`,
+    `splashDuration`, `displaySaverTimeout`, `displaySaverMode`,
+    `buttonLayoutOrientation`, `turnOffWhenSuspended`, `inputMode`,
+    `turboMode`, `dpadMode`, `socdMode`, `macroMode`, `profileMode`,
+    `inputHistoryEnabled`, `inputHistoryLength`, `inputHistoryCol`,
+    `inputHistoryRow`; and 10 nested ones, `layout`, `startX`, `startY`,
+    `buttonRadius` and `buttonPadding` under both
+    `buttonLayoutCustomOptions.params` (left) and `.paramsRight`. A missing
+    `buttonLayoutCustomOptions` zeroes all ten. There are no strings, and
+    the getter returns exactly these keys (its `bool`s as 1/0, which
+    ArduinoJson reads back as booleans), so the getter's object is posted
+    back unchanged apart from the edit. The splash image has its own
+    setter. It saves (`GPStorageSaveEvent`) and echoes the body like
+    `setGamepadOptions`. `api::set_display_options` refuses a body missing
+    any of the 32 and verifies by reading back; the mock models the setter.
   - The server ignores the HTTP method, and a GET to a `set*` endpoint replays
     the previous POST body.
   - POST bodies are capped at 16 KB, and requests must be serialised.

@@ -34,7 +34,8 @@ gamepadii status                  the pad: input mode, USB ids, bus and port
 gamepadii status --json           the same as JSON ("schema": 1)
 gamepadii status --format waybar  one line for a waybar custom module
 gamepadii info                    firmware, board, memory, input mode,
-                                  profiles and boot-mode buttons
+                                  profiles, boot-mode buttons and the
+                                  OLED layout
 gamepadii backup [-o FILE]        every readable setting in one JSON file
                                   (both from a gamepad mode too, with the
                                   control channel; --stay stays in
@@ -52,6 +53,13 @@ gamepadii profile switch <N|LABEL> [--save]
                                   switch the active profile, live (needs
                                   the control channel); RAM only unless
                                   --save
+gamepadii display layout          the OLED's button drawing, and the
+                                  choices for this board
+gamepadii display layout <MODEL>  pick the drawing for a Haute42 model:
+                                  s16, g16, s13, m16, ... (or default,
+                                  alt0..alt5); backs up, writes, reads back
+gamepadii display layout --left N --right N
+                                  the raw buttonLayout values, any board
 gamepadii setup udev [--print|--install]
                                   the udev rule the control channel needs
 ```
@@ -104,7 +112,8 @@ press:
   saved profile when it restarts (unless something else, such as a hotkey,
   saves the settings first). Either way the device cache (below) records
   which profile the pad runs, so the key hints follow;
-- `info` and `backup` reboot it into web-config, read, then reboot it back
+- `info`, `backup` and `display layout` reboot it into web-config, read
+  (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes
   a few seconds; the output says so ("via the control channel: web-config
   and back"). `--stay` leaves it in web-config. If anything fails on the

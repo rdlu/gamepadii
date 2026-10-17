@@ -114,6 +114,23 @@ impl GamepadOptions {
     }
 }
 
+/// `getDisplayOptions`. Only the OLED button layout is named; the splash,
+/// the screen saver, the status-bar flags, the custom layout parameters and
+/// the rest stay in `extra`, untouched (`setDisplayOptions` zeroes whatever
+/// it isn't sent, like `setGamepadOptions`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayOptions {
+    /// The left half of the drawing: the protobuf `ButtonLayout` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_layout: Option<i64>,
+    /// The right half: the protobuf `ButtonLayoutRight` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_layout_right: Option<i64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// One GPIO's mapping.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

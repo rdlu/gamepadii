@@ -14,6 +14,7 @@ use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
 use crate::discovery::{Device, Scan};
+use crate::display;
 use crate::error::{Error, Result};
 use crate::mode::Confidence;
 use crate::mode::{BootMode, InputMode};
@@ -358,9 +359,14 @@ pub struct Info {
     pub active_profile: Option<i64>,
     pub profiles: Vec<Profile>,
     pub boot_buttons: Vec<BootButton>,
+    /// The OLED's button layout; `null` when the firmware has no
+    /// `getDisplayOptions`.
+    pub display_layout: Option<display::Current>,
+    /// Suggestions for the user (the OLED layout, for now).
+    pub hints: Vec<String>,
 }
 
-/// [`Info`] for the pad behind `client` (five reads).
+/// [`Info`] for the pad behind `client` (six reads).
 pub fn info(client: &Client) -> Result<Info> {
     info_with_cache(client, SystemTime::now()).map(|(i, _)| i)
 }
@@ -402,14 +408,29 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
             setting: ModeSetting::new(value),
         })
         .collect();
+    let firmware: Firmware = client.firmware().into();
+    let board = firmware.board.as_deref();
+    let display_options = api::try_read_raw(t, Endpoint::GetDisplayOptions)?
+        .map(|v| typed::<api::DisplayOptions>(Endpoint::GetDisplayOptions, &v))
+        .transpose()?;
+    let display_layout = display_options
+        .as_ref()
+        .map(|d| display::Current::new(board, d));
+    let hints = display_options
+        .as_ref()
+        .and_then(|d| display::generic_layout_hint(board, d, &base))
+        .into_iter()
+        .collect();
     let info = Info {
         host: client.host(),
-        firmware: client.firmware().into(),
         memory: memory.as_ref().map(Memory::from),
         input_mode: ModeSetting::new(options.input_mode),
         active_profile: active,
         profiles,
         boot_buttons,
+        display_layout,
+        hints,
+        firmware,
     };
     let cache = DeviceCache::new(
         info.firmware.clone(),
