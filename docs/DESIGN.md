@@ -1,4 +1,4 @@
-# gamepadii — plan
+# gamepadii — design
 
 A Linux CLI, then a ratatui TUI, then a Tauri GUI, for GP2040-CE gamepads.
 The first target is a Haute42 S16 leverless. The goal is to stop using the
@@ -23,8 +23,15 @@ reboots as possible.
   omitted). Exit codes are stable: 0 ok, 1 check failed, 2 device not found,
   3 usage, 4 transport, 5 needs user action (a button press).
 - **No async runtime:** std threads and channels, as in plugii.
-- **Git:** the MVP lands on `main`. After that, feature branches, PRs,
-  Conventional Commits, and a protected `main`.
+- **Git:** commits go straight to `main` until TUI work starts. From the
+  first TUI change on: feature branches, PRs, Conventional Commits, and a
+  protected `main` (decided 2026-10-17).
+- **Order after the MVP** (decided 2026-10-17): the firmware fork and its
+  control channel first, then the TUI, then the rest. Linux first; Windows
+  and macOS wait until the GUI. The core stays portable and Linux-only code
+  stays behind cfg gates.
+- **Firmware fork:** fine to carry, upstream first: freeze reports, then a
+  design discussion for the control channel (decided 2026-10-17).
 
 ## What the firmware allows (GP2040-CE, checked at v0.7.12 and main 8013b41)
 
@@ -189,67 +196,11 @@ crates/gamepadii/src/
   real pad, agents may read and reboot it; any write needs the user's OK and a
   backup first.
 
-## Milestones
+## Roadmap
 
-Order after the MVP (decided 2026-10-17): the firmware fork and control
-channel (8b) come first, then the TUI (5), then the rest. Linux first. Windows
-and macOS wait until the GUI; the core stays portable and Linux-only code
-stays behind cfg gates.
-
-0. **Scaffold** (on `main`): the workspace, LICENSE, README, CLAUDE.md,
-   CHANGELOG, mise.toml with the `check` gate, CI, `git init`, and the GitHub
-   repo.
-1. **`status`**: sysfs discovery and mode detection from VID:PID, with human
-   and JSON output plus waybar. It already works with the pad in XInput.
-2. **Web-config client**: `info` (firmware, board, memory), `config dump`,
-   `backup` / `restore --dry-run`. Fixtures come from the mock and from a
-   live capture.
-3. **Guided mode flow**: `webconfig` (wait for the button press, then open or
-   print the URL), `mode <xinput|keyboard|hid|switch|ps4|…>` (guide into
-   web-config, read-modify-write `inputMode`, reboot, wait, verify), and
-   `reboot <gamepad|webconfig|bootsel>`. This is the MVP; then switch to the
-   PR workflow and protect `main`. Done 2026-10-17. Without the user's OK no
-   write went to the real S16: the write path is tested against the setter
-   model in `transport/mock.rs`, and the live write test is gated on
-   `GAMEPADII_LIVE_WRITE=1`.
-3b. **`display layout`**: pick the OLED button layout that matches the panel,
-   with a read-modify-write on `setDisplayOptions` (first verify how the
-   setter reads each field in v0.7.12) and a read-back to check it.
-   - **Why:** Haute42COSMOX is one firmware for the whole family, so its
-     default "Board Defined" layout (27/31) is the original 12-button one.
-   - **Known model layouts** (`configs/Haute42COSMOX/BoardConfig.h`):
-     Alternate 0 (34/40) is G13/S13; Alternate 2 (36/42) is G16/S16;
-     Alternate 3 is T16/M16/M16+.
-   - **Usage:** `gamepadii display layout s16`.
-   - **Hint:** `info` should flag a 16-button pin mapping on the generic
-     layout and suggest the change.
-4. **Profile library**: KDL bundles with `profile
-   list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
-   sidekick.
-5. **TUI**: status, mode switcher, profile browser with diffs, live
-   button-test view (`getHeldPins`).
-6. **`slots load`**: pack library profiles into the 6 device slots, using
-   the superset keymap for keyboard profiles, and set up the hotkeys.
-7. **PICOBOOT transport**: offline backup/restore and mode change with no
-   web-config.
-8. **Host remapper**: evdev → uinput, with per-app profiles.
-8b. **Firmware fork: fixes and a control channel.** Build the Haute42COSMOX
-   UF2 from `~/Projects/GP2040-CE` (pico-sdk 2.1.1, arm-none-eabi-gcc from
-   pacman).
-   - First, the two freeze fixes from branch `gamepadii/freeze-investigation`.
-   - Then a gamepadii control channel: USB vendor control requests on EP0,
-     caught in `tud_vendor_control_xfer_cb` (`src/usbdriver.cpp:66`) before
-     the active driver sees them. That needs no descriptor change, so consoles
-     don't notice. It provides status, live profile switching, setting the
-     input mode with a reboot, rebooting into web-config or BOOTSEL, and later
-     reading and writing config sections as protobuf.
-   - It is off unless enabled in config. gamepadii detects it and otherwise
-     falls back to stock web-config.
-   - Upstream gets it first: open the freeze issues, then a design discussion
-     for the channel. If upstream declines, we keep our own fork; the firmware
-     changes slowly, so carrying a fork is cheap.
-9. **Site and release**: the Hugo + Hextra docs site, release binaries, AUR.
-10. **Tauri GUI** on top of `gamepadii-core`.
+The roadmap, milestones and open work are tracked in GitHub issues, under the
+epic [#1](https://github.com/rdlu/gamepadii/issues/1). This file keeps the
+facts, decisions and architecture they build on.
 
 ## References
 

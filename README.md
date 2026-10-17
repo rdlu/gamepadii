@@ -8,8 +8,9 @@ built-in web configurator, with as few button presses and reboots as the
 firmware allows.
 
 **Status: pre-release, in development.** `status`, `info`, `backup`,
-`reboot`, `mode` and `webconfig` work so far; the plan and milestones are in
-[docs/PLAN.md](docs/PLAN.md).
+`reboot`, `mode` and `webconfig` work so far. The roadmap is tracked in
+[GitHub issues](https://github.com/rdlu/gamepadii/issues/1), and the design
+notes are in [docs/DESIGN.md](docs/DESIGN.md).
 
 The documentation will live at **<https://gamepadii.dlu.one/>**.
 

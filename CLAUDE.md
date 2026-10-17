@@ -1,8 +1,10 @@
 # gamepadii
 
 Rust CLI (then ratatui TUI, then Tauri GUI) for GP2040-CE gamepads; the
-first target is a Haute42 S16. The agreed plan, with decisions, firmware
-facts and milestones, is in `docs/PLAN.md`: it is the source of truth.
+first target is a Haute42 S16. Decisions, firmware facts, API hazards and
+the architecture are in `docs/DESIGN.md`. Roadmap and design work are
+tracked in GitHub issues (epic #1, https://github.com/rdlu/gamepadii/issues/1,
+and its sub-issues); keep the issue bodies current when decisions change.
 
 ## Commands
 
@@ -52,7 +54,7 @@ every action is pinned to a commit SHA with its version in a comment.
 
 ## Web-config API hazards
 
-The client must guard against these (details in `docs/PLAN.md`):
+The client must guard against these (details in `docs/DESIGN.md`):
 
 - `setGamepadOptions` zeroes every key it isn't sent: always read-modify-write
   the full object (`api::set_gamepad_options`, which also turns the hex USB
@@ -70,7 +72,7 @@ The client must guard against these (details in `docs/PLAN.md`):
   the per-section `get*` endpoints.
 - Never call `/api/getI2CPeripheralMap` either: it runs a live I2C bus scan
   and hangs the S16 the same way. The client reads only from an explicit
-  allowlist of endpoints verified safe (the list is in `docs/PLAN.md`), never
+  allowlist of endpoints verified safe (the list is in `docs/DESIGN.md`), never
   "anything named `get*`".
 
 ## Hardware
