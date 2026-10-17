@@ -1,0 +1,46 @@
+[tools]
+"cargo:cargo-insta" = "latest"
+
+[tasks.fmt]
+description = "Format the code"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Clippy with warnings as errors"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.test]
+description = "Run the test suite"
+run = "cargo test --workspace"
+
+[tasks.check]
+description = "The commit gates: fmt --check, clippy, test"
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo test --workspace",
+]
+
+[tasks.test-live]
+description = "Smoke tests against this machine's sysfs and a plugged-in GP2040-CE pad (read-only)"
+run = "cargo test --workspace --test live -- --ignored --nocapture"
+
+[tasks.review]
+description = "Review pending insta snapshots"
+run = "cargo insta review"
+
+[tasks.status]
+description = "gamepadii status on this machine"
+run = "cargo run -q -- status"
+
+[tasks.install]
+description = "Install the gamepadii binary into ~/.cargo/bin from this checkout"
+run = "cargo install --locked --path crates/gamepadii"
+
+[tasks.outdated]
+description = "Dependencies with newer versions, including major ones"
+run = "cargo update --dry-run --verbose 2>&1 | grep -E 'Updating [^ ]+ v|Unchanged.*available' || echo 'all dependencies up to date'"
+
+[tasks.update]
+description = "Update Cargo.lock within semver, then run the gates"
+run = ["cargo update", { task = "check" }]

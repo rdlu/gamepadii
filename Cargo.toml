@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/gamepadii-core", "crates/gamepadii"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# let-chains are stable from 1.88, and ratatui 0.30 and time 0.3.55 need it
+# too; CI's msrv job builds with exactly this version.
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/rdlu/gamepadii"
+homepage = "https://gamepadii.dlu.one"
+documentation = "https://gamepadii.dlu.one/docs/"
+keywords = ["gp2040-ce", "gamepad", "linux", "cli", "tui"]
+categories = ["command-line-utilities", "hardware-support"]
+
+# Shared versions, pinned in full. Members opt in with `dep.workspace = true`.
+[workspace.dependencies]
+gamepadii-core = { path = "crates/gamepadii-core", version = "0.1.0" }
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Hotplug watching (milestone 3); discovery itself reads sysfs.
+udev = "0.9.3"
+ureq = "3.4.2"
+insta = { version = "1.49.0", features = ["json"] }
+tempfile = "3.27.0"
+
+[profile.release]
+strip = true

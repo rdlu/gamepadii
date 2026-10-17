@@ -1,0 +1,28 @@
+[package]
+name = "gamepadii"
+description = "CLI (and later TUI) for GP2040-CE gamepads: status, input modes, profiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "gamepadii"
+path = "src/main.rs"
+
+[dependencies]
+gamepadii-core.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
