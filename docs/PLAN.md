@@ -55,6 +55,13 @@ reboots as possible.
     stops answering ping, and only a replug brings it back (seen
     2026-10-17). Back up through the per-section `get*` endpoints instead,
     as the web UI does.
+  - **Never call `getI2CPeripheralMap` either.** It runs a live I2C bus scan,
+    and that hung the S16 in the same way. The client keeps an explicit
+    allowlist of endpoints verified as safe to read; a `get*` name alone
+    doesn't make an endpoint safe. Verified safe on the S16 so far:
+    getAddonsOptions, getButtonLayoutDefs, getButtonLayouts, getCustomTheme,
+    getDisplayOptions, getExpansionPins, getFirmwareVersion,
+    getGamepadOptions, getHETriggerCalibration, getHETriggerOptions.
 - **Input mode persists.** It is written to flash and survives replugs. It is
   also selected at boot by holding a mapped button: `inputModeB1..R2`, and on
   newer firmware `bootModeOptions.inputModeMappings`, which also picks the
@@ -81,7 +88,8 @@ reboots as possible.
 ## Profiles live in gamepadii, not on the pad
 
 gamepadii keeps a host-side **profile library** with no size limit, stored
-as TOML in `~/.config/gamepadii/profiles/`. The pad is only a target that
+in `~/.config/gamepadii/profiles/`. The file format is still open: the user
+prefers KDL over TOML, to be decided before milestone 4. The pad is only a target that
 gamepadii writes profiles into. The library is the source of truth, so the
 device's 6 slots and its single keymap don't limit how many profiles you
 have.
@@ -144,7 +152,7 @@ crates/gamepadii/src/
    web-config, read-modify-write `inputMode`, reboot, wait, verify), and
    `reboot <gamepad|webconfig|bootsel>`. This is the MVP; then switch to the
    PR workflow and protect `main`.
-4. **Profile library**: TOML bundles with `profile
+4. **Profile library**: KDL (or TOML) bundles with `profile
    list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
    sidekick.
 5. **TUI**: status, mode switcher, profile browser with diffs, live

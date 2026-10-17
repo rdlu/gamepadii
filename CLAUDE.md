@@ -53,6 +53,10 @@ The client must guard against these (details in `docs/PLAN.md`):
 - Never call `/api/getConfig` on v0.7.12: on the S16 (Haute42COSMOX, build
   0014e4a) it hangs the device's network stack until replugged. Back up via
   the per-section `get*` endpoints.
+- Never call `/api/getI2CPeripheralMap` either: it runs a live I2C bus scan
+  and hangs the S16 the same way. The client reads only from an explicit
+  allowlist of endpoints verified safe (the list is in `docs/PLAN.md`), never
+  "anything named `get*`".
 
 ## Hardware
 
