@@ -391,3 +391,124 @@ fn connect_needs_web_config() {
     assert_eq!(dev.mode, Some(InputMode::Webconfig));
     assert!(client::require_webconfig(&root("s16-webconfig")).is_ok());
 }
+
+// ---- fork firmware: getConfig behind the capability check ----------------
+
+fn fork_dir() -> PathBuf {
+    fixtures().join("api/s16-fork")
+}
+
+/// The paths only fork firmware may be asked for.
+fn asked_for_fork_only(mock: &Mock) -> Vec<&'static str> {
+    mock.requests()
+        .into_iter()
+        .map(|r| r.path)
+        .filter(|p| matches!(*p, "/api/getConfig" | "/api/getI2CPeripheralMap"))
+        .collect()
+}
+
+#[test]
+fn stock_never_gets_asked_for_get_config() {
+    let (client, mock) = s16();
+    assert_eq!(client.fork_fixes(), None);
+    let dir = tempfile::tempdir().unwrap();
+    let report = commands::backup(&client, Some(&dir.path().join("b.json")), captured()).unwrap();
+    assert!(!report.full_config);
+    assert_eq!(report.full_config_evidence, None);
+    assert_eq!(
+        commands::backup_bundle(&client, captured())
+            .unwrap()
+            .full_config,
+        None
+    );
+    commands::info(&client).unwrap();
+    assert!(asked_for_fork_only(&mock).is_empty());
+}
+
+#[test]
+fn stock_with_a_channel_like_reply_still_never_gets_asked() {
+    // Something on EP0 passing for the channel doesn't make a release
+    // build ours.
+    let (client, mock) = s16();
+    let hello = gamepadii_core::channel::Hello {
+        major: 1,
+        minor: 0,
+        caps: gamepadii_core::channel::Caps(0x2f),
+        token: 1,
+        modes: 0xffff,
+    };
+    let client = client.with_hello(hello);
+    assert_eq!(client.fork_fixes(), None);
+    commands::backup_bundle(&client, captured()).unwrap();
+    assert!(asked_for_fork_only(&mock).is_empty());
+}
+
+#[test]
+fn the_mock_hangs_on_get_config_as_stock_does() {
+    // A capability from a fork pad, misused on a stock one: the mock times
+    // out like the real pad, so a test that got there would fail.
+    let (fork, _) = with(Mock::new(fork_dir()));
+    let cap = fork.fork_fixes().unwrap();
+    let (stock, mock) = s16();
+    let err = commands::full_config(&stock, &cap).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    let err = api::fork::get_i2c_peripheral_map(stock.transport(), &cap).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    assert_eq!(
+        asked_for_fork_only(&mock),
+        ["/api/getConfig", "/api/getI2CPeripheralMap"]
+    );
+}
+
+#[test]
+fn fork_builds_back_up_get_config_too() {
+    let (client, mock) = with(Mock::new(fork_dir()));
+    let cap = client.fork_fixes().expect("a known fork build");
+    assert_eq!(cap.evidence(), api::Evidence::KnownBuild);
+    let bundle = commands::backup_bundle(&client, captured()).unwrap();
+    // The per-section reads are the same as on stock, then getConfig, last.
+    assert_eq!(bundle.endpoints.len(), Endpoint::ALL.len());
+    assert_eq!(mock.requests().last().unwrap().path, "/api/getConfig");
+    let full = bundle.full_config.as_ref().unwrap();
+    assert_eq!(full.evidence, api::Evidence::KnownBuild);
+    assert_eq!(full.error, None);
+    let config = full.config.as_ref().unwrap();
+    assert_eq!(config["boardVersion"], "v0.7.12-6-gf507f0b");
+    assert_eq!(config["animationOptions"]["baseAnimationIndex"], 2);
+    assert_eq!(config["animationOptions"]["brightness"], 3);
+    // The file round-trips, and the report says what is in it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.json");
+    let report = commands::backup(&client, Some(&path), captured()).unwrap();
+    assert!(report.full_config);
+    assert_eq!(report.full_config_evidence, Some(api::Evidence::KnownBuild));
+    let back: commands::Bundle = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(back, bundle);
+    // full_config, for the LED commands to come.
+    let v = commands::full_config(&client, &cap).unwrap();
+    assert!(v["animationOptions"].is_object());
+    let i2c = api::fork::get_i2c_peripheral_map(client.transport(), &cap).unwrap();
+    assert_eq!(i2c, json!({"i2c0": {"60": true}}));
+}
+
+#[test]
+fn a_failed_get_config_keeps_the_rest_of_the_backup() {
+    let (client, _) = with(Mock::new(fork_dir()).hang_on("/api/getConfig"));
+    let dir = tempfile::tempdir().unwrap();
+    let report = commands::backup(&client, Some(&dir.path().join("b.json")), captured()).unwrap();
+    assert_eq!(report.endpoints.len(), 21);
+    assert!(!report.full_config);
+    assert_eq!(report.full_config_evidence, Some(api::Evidence::KnownBuild));
+    let err = report.full_config_error.unwrap();
+    assert!(err.contains("timed out"), "{err}");
+}
+
+#[test]
+fn old_backups_without_full_config_still_load() {
+    let (client, _) = s16();
+    let bundle = commands::backup_bundle(&client, captured()).unwrap();
+    let mut v = serde_json::to_value(bundle).unwrap();
+    v.as_object_mut().unwrap().remove("full_config");
+    let back: commands::Bundle = serde_json::from_value(v).unwrap();
+    assert_eq!(back.full_config, None);
+}

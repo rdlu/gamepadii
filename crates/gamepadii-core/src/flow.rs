@@ -1547,13 +1547,16 @@ pub fn through_webconfig<T>(
     work: impl FnOnce(&Client) -> Result<T>,
     done: impl FnOnce(&T) -> String,
 ) -> Result<(T, Option<Trip>)> {
-    visit(env, stay, progress, |c, _| work(c), done)
+    visit(env, stay, false, progress, |c, _| work(c), done)
 }
 
 /// [`through_webconfig`], with the pad as it is in web-config for `work`.
+/// With `hello`, a pad found already in web-config gets a HELLO too, for
+/// [`Client::fork_fixes`] (a trip has had one on the way in).
 fn visit<T>(
     env: &Env,
     stay: bool,
+    hello: bool,
     progress: &mut dyn Progress,
     work: impl FnOnce(&Client, &Device) -> Result<T>,
     done: impl FnOnce(&T) -> String,
@@ -1561,6 +1564,11 @@ fn visit<T>(
     let pad = pick(env.scan.scan())?;
     if pad.mode == Some(InputMode::Webconfig) {
         let client = (env.open)()?;
+        let client = if hello {
+            with_channel(env, client, &pad)
+        } else {
+            client
+        };
         return work(&client, &pad).map(|r| (r, None));
     }
     let probed = if in_gamepad_mode(&pad) {
@@ -1608,7 +1616,7 @@ fn visit<T>(
     })?;
     entered_webconfig(env, &pad, &wc);
     let client = match connect_ready(env, progress) {
-        Ok(c) => c,
+        Ok(c) => c.with_hello(*ch.hello()),
         Err(e) => {
             let e = prefixed(
                 e,
@@ -1660,6 +1668,18 @@ fn visit<T>(
     }
 }
 
+/// `client`, with the HELLO of `wc`'s control channel when it answers one
+/// (it does in web-config too): evidence for [`Client::fork_fixes`].
+fn with_channel(env: &Env, client: Client, wc: &Device) -> Client {
+    match env
+        .control
+        .and_then(|open| channel::probe(open, wc).found())
+    {
+        Some(ch) => client.with_hello(*ch.hello()),
+        None => client,
+    }
+}
+
 /// `gamepadii info` for the pad on USB: [`through_webconfig`] with the
 /// reads, the device cache refreshed from them (the pad's, before the way
 /// back records the running profile in it), and the profile rows labelled
@@ -1676,7 +1696,9 @@ pub fn info(
         failed = store_read(env, cache, wc);
         Ok(info)
     };
-    let (mut info, trip) = visit(env, stay, progress, work, |_| "the pad was read".into())?;
+    let (mut info, trip) = visit(env, stay, false, progress, work, |_| {
+        "the pad was read".into()
+    })?;
     if let Some(e) = &failed {
         progress.step(Step::CacheFailed(e));
     }
@@ -1706,7 +1728,7 @@ pub fn backup(
         }
         Ok(report)
     };
-    let (report, trip) = visit(env, stay, progress, work, |b| {
+    let (report, trip) = visit(env, stay, true, progress, work, |b| {
         format!("the backup is saved in {}", b.path.display())
     })?;
     if let Some(e) = &failed {

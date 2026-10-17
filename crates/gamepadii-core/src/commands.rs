@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::api::{self, Endpoint, FirmwareVersion, MemoryReport};
+use crate::api::{self, Endpoint, Evidence, FirmwareVersion, ForkFixes, MemoryReport};
 use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
@@ -478,7 +478,8 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
 /// Bumped on any breaking change to the backup file format.
 pub const BACKUP_SCHEMA: u32 = 1;
 
-/// A backup file: every allowlisted endpoint's JSON, as the pad sent it.
+/// A backup file: every allowlisted endpoint's JSON, as the pad sent it,
+/// and on fork firmware the whole `getConfig` too.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bundle {
     pub schema: u32,
@@ -489,23 +490,62 @@ pub struct Bundle {
     /// Endpoint name → its JSON, verbatim; `null` when the firmware doesn't
     /// have that endpoint (a 404).
     pub endpoints: BTreeMap<String, Value>,
+    /// `getConfig`, read only from fork builds with the web-config fixes
+    /// ([`ForkFixes`]); `null` on stock firmware, where it hangs the pad.
+    /// Older backups don't have the key.
+    #[serde(default)]
+    pub full_config: Option<FullConfig>,
+}
+
+/// `getConfig` in a backup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FullConfig {
+    /// Why gamepadii asked for it: `known_build` or `control_channel`.
+    pub evidence: Evidence,
+    /// The document as the pad sent it; `null` when the read failed.
+    pub config: Option<Value>,
+    /// Why the read failed (a 503: the pad hadn't the memory for it).
+    pub error: Option<String>,
+}
+
+/// The whole configuration, `getConfig`, from a pad that runs a fork build
+/// with the web-config fixes (only [`Client::fork_fixes`] gives a `cap`):
+/// sections the per-section getters don't have, such as
+/// `animationOptions`, are only here.
+pub fn full_config(client: &Client, cap: &ForkFixes) -> Result<Value> {
+    api::fork::get_config(client.transport(), cap)
 }
 
 /// Reads every endpoint in [`Endpoint::ALL`], one at a time, stopping at the
 /// first transport error (a pad that stops answering should be left alone,
-/// not asked twenty more times).
+/// not asked twenty more times). Then, on a fork build with the fixes
+/// ([`Client::fork_fixes`]), `getConfig`, last: it is the biggest reply,
+/// and a failure there is recorded in the bundle rather than losing the
+/// rest.
 pub fn backup_bundle(client: &Client, now: SystemTime) -> Result<Bundle> {
     let mut endpoints = BTreeMap::new();
     for &ep in Endpoint::ALL {
         let value = api::try_read_raw(client.transport(), ep)?.unwrap_or(Value::Null);
         endpoints.insert(ep.name().to_string(), value);
     }
+    let full_config = client.fork_fixes().map(|cap| {
+        let (config, error) = match full_config(client, &cap) {
+            Ok(v) => (Some(v), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        FullConfig {
+            evidence: cap.evidence(),
+            config,
+            error,
+        }
+    });
     Ok(Bundle {
         schema: BACKUP_SCHEMA,
         gamepadii_version: env!("CARGO_PKG_VERSION").to_string(),
         captured_at: Utc::from_system(now).rfc3339(),
         firmware: client.firmware().into(),
         endpoints,
+        full_config,
     })
 }
 
@@ -519,6 +559,14 @@ pub struct BackupReport {
     pub endpoints: Vec<String>,
     /// The endpoints this firmware doesn't have (saved as `null`).
     pub unavailable: Vec<String>,
+    /// Whether the file has the whole `getConfig` (fork firmware only).
+    pub full_config: bool,
+    /// Why gamepadii read `getConfig`: `known_build` or `control_channel`;
+    /// `null` on stock firmware, where it isn't asked for.
+    pub full_config_evidence: Option<Evidence>,
+    /// Why `getConfig` isn't in the file although the firmware has the
+    /// fixes; `null` otherwise.
+    pub full_config_error: Option<String>,
     pub bytes: u64,
 }
 
@@ -570,6 +618,12 @@ fn backup_to(
         firmware: bundle.firmware.clone(),
         endpoints: names(endpoints),
         unavailable: names(unavailable),
+        full_config: bundle
+            .full_config
+            .as_ref()
+            .is_some_and(|f| f.config.is_some()),
+        full_config_evidence: bundle.full_config.as_ref().map(|f| f.evidence),
+        full_config_error: bundle.full_config.as_ref().and_then(|f| f.error.clone()),
         bytes,
     };
     Ok((report, cache))

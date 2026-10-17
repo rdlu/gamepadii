@@ -1,0 +1,47 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::backup(Style::plain(Format::Json), &fork_backup_report(), None)"
+---
+{
+  "schema": 1,
+  "path": "/backups/s16.json",
+  "captured_at": "2026-10-17T16:57:03Z",
+  "firmware": {
+    "version": "v0.7.12-6-gf507f0b",
+    "board": "Haute42COSMOX",
+    "board_label": "Haute42 COSMOX",
+    "architecture": "rp2040",
+    "build": "f507f0b",
+    "build_type": "Release",
+    "file_name": "GP2040-CE_0.7.12_Haute42COSMOX"
+  },
+  "endpoints": [
+    "getAddonsOptions",
+    "getButtonLayoutDefs",
+    "getButtonLayouts",
+    "getCustomTheme",
+    "getDisplayOptions",
+    "getExpansionPins",
+    "getFirmwareVersion",
+    "getGamepadOptions",
+    "getHETriggerCalibration",
+    "getHETriggerOptions",
+    "getKeyMappings",
+    "getLedOptions",
+    "getMacroAddonOptions",
+    "getMemoryReport",
+    "getPeripheralOptions",
+    "getPinMappings",
+    "getProfileOptions",
+    "getReactiveLEDs",
+    "getSplashImage",
+    "getUsedPins",
+    "getWiiControls"
+  ],
+  "unavailable": [],
+  "full_config": true,
+  "full_config_evidence": "known_build",
+  "full_config_error": null,
+  "bytes": 97764,
+  "trip": null
+}
