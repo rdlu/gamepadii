@@ -11,6 +11,13 @@
 //! missing one (nested `buttonLayoutCustomOptions` ones included) is 0, and
 //! the `bool` fields come back as 1/0. The result is what later GETs
 //! return. Every request is logged so tests can check what was asked for.
+//!
+//! `getConfig` and `getI2CPeripheralMap` time out, as they hang the real
+//! pad, while the firmware version is a bare release tag (stock); on any
+//! other build they are served from the fixture like the rest.
+//!
+//! A fixture directory can be an overlay: a `BASE` file in it names (relative
+//! to it) the directory endpoints it doesn't have come from.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -104,8 +111,23 @@ impl Mock {
         if let Some(v) = self.lock_state().get(name) {
             return Some(v.clone());
         }
-        let bytes = fs::read(self.dir.join(format!("{name}.json"))).ok()?;
+        let bytes = self.fixture(name).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+
+    /// `<name>.json` from the fixture directory, or from its `BASE`.
+    fn fixture(&self, name: &str) -> std::io::Result<Vec<u8>> {
+        read_fixture(&self.dir, &format!("{name}.json"), 4)
+    }
+
+    /// Whether the simulated firmware is a stock release: its version is a
+    /// bare tag, where the fork's are `git describe`d (`v0.7.12-6-gf507f0b`).
+    fn stock(&self) -> bool {
+        let version = self
+            .current("getFirmwareVersion")
+            .and_then(|f| f.get("version")?.as_str().map(str::to_string))
+            .unwrap_or_default();
+        crate::api::fork::described_commit(&version).is_none()
     }
 
     /// Replaces what `GET /api/<name>` returns, as a write on the pad
@@ -146,6 +168,20 @@ impl Mock {
             .insert(getter.to_string(), Value::Object(stored));
         // The firmware echoes the document it parsed.
         Ok(json_reply(doc.to_string().into_bytes()))
+    }
+}
+
+/// `file` in `dir`, else in the directory its `BASE` names, `depth` overlays
+/// deep at most.
+fn read_fixture(dir: &std::path::Path, file: &str, depth: usize) -> std::io::Result<Vec<u8>> {
+    match fs::read(dir.join(file)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && depth > 0 => {
+            match fs::read_to_string(dir.join("BASE")) {
+                Ok(base) => read_fixture(&dir.join(base.trim()), file, depth - 1),
+                Err(_) => Err(e),
+            }
+        }
+        r => r,
     }
 }
 
@@ -270,6 +306,9 @@ impl Transport for Mock {
             return timed_out();
         }
         let name = path.strip_prefix("/api/").unwrap_or(path);
+        if matches!(name, "getConfig" | "getI2CPeripheralMap") && self.stock() {
+            return timed_out();
+        }
         match (method, name) {
             (Method::Post, "reboot") if self.drop_reboot => return timed_out(),
             (Method::Post, "reboot") => {
@@ -298,7 +337,7 @@ impl Transport for Mock {
         if let Some(v) = self.lock_state().get(name) {
             return Ok(json_reply(v.to_string().into_bytes()));
         }
-        match fs::read(self.dir.join(format!("{name}.json"))) {
+        match self.fixture(name) {
             Ok(body) => Ok(json_reply(body)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Reply {
                 status: 404,
