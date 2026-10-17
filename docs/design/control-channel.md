@@ -540,7 +540,14 @@ tests run without hardware and without real sleeps, as they do now. Revisit
      changes), then verify with STATUS
    - `webconfig` and `reboot …`: REBOOT
    - new `profile switch N [--persist]`: SET_PROFILE
+   - `info` and `backup` (anything that needs the HTTP API, until v2):
+     REBOOT(1), the reads, then `/api/reboot {"bootMode":0}` and a check
+     that the pad returns in its mode (`--stay` stays in web-config); on a
+     failure the pad is still sent back, over REBOOT(0) when HTTP is down
    - otherwise, the existing guided web-config flows
+
+   Every STATUS also updates the device cache's running profile, so the
+   key hints in the guided flows follow a RAM-only `profile switch`.
 
    Each command's JSON says which transport it used (`"via": "control" | "webconfig"`).
 5. The channel is also live in web-config mode (NetDriver), so HELLO is a
@@ -735,6 +742,13 @@ Not covered:
 The pre-existing xpad line "unable to receive magic message: -121" appears at
 every XInput enumeration, on stock as well. It is xpad's probe getting a
 0-byte reply, and the channel doesn't change it.
+
+`gamepadii info` and `gamepadii backup` from XInput (the `cc` build,
+2026-10-17): REBOOT(1), the reads, `/api/reboot {"bootMode":0}`, back in
+XInput (confirmed by STATUS) in 4 to 6 s. After a RAM-only switch to
+profile 3, the restart put it back on the saved profile 2, as expected.
+`backup --stay` left it in web-config, and `webconfig --exit` brought it
+back.
 
 With the option off, the `cc-off` build is byte-identical to freeze-fix-rc
 except for the version string (§3.6).

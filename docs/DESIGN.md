@@ -167,6 +167,20 @@ Host side (`gamepadii-core/src/channel/`):
   the CLI's hidden `--mock-channel`.
 - Web-config mode keeps the HTTP path for `mode` (with its backup) and
   `reboot`; the channel there is only probed by `status`.
+- `info` and `backup` from a gamepad mode (`flow::through_webconfig`):
+  REBOOT(1), wait for `cafe:4028` and the HTTP server, read, then
+  `/api/reboot {"bootMode":0}` and check the VID:PID and STATUS show the
+  mode it was in (`--stay` skips the return). On any failure past the
+  REBOOT it still sends the pad back, over the channel if HTTP doesn't
+  answer, and the error says how that went. The restart drops a RAM-only
+  profile; the output notes it rather than switching back (a profile
+  switch changes the live mapping, so it is only done when asked). Decided in #2 (follow-up 3).
+- The device cache (`cache.rs`) records the profile STATUS reports
+  (`running_profile`) beside the saved `profileNumber`: `profile switch`
+  sets it (and the saved one with `--save`), any STATUS refreshes it
+  (written only on a change), and a reboot gamepadii causes clears it. The
+  guide's key hints take the live STATUS profile, else that record, else
+  the saved one. Decided in #2 (follow-up 2).
 
 ## Profiles live in gamepadii, not on the pad
 
@@ -217,9 +231,11 @@ crates/gamepadii-core/src/
   api/           typed endpoint structs + raw serde_json::Value passthrough
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
-  cache.rs       last web-config read per board (~/.cache/gamepadii/<board>.json)
+  cache.rs       last web-config read per board (~/.cache/gamepadii/<board>.json),
+                 plus the profile the channel last reported running
   flow.rs        mode / webconfig / reboot / profile switch over Scan + Clock,
-                 the control channel first, the guided flows as fallback
+                 the control channel first, the guided flows as fallback;
+                 the web-config round trip for info and backup
   sim.rs         a simulated pad (Scan + mock Transport + EP0) for flow tests
   profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
   commands.rs    status, info, backup, profile … → plain data

@@ -34,6 +34,9 @@ gamepadii status --format waybar  one line for a waybar custom module
 gamepadii info                    firmware, board, memory, input mode,
                                   profiles and boot-mode buttons
 gamepadii backup [-o FILE]        every readable setting in one JSON file
+                                  (both from a gamepad mode too, with the
+                                  control channel; --stay stays in
+                                  web-config)
 gamepadii reboot <gamepad|webconfig|bootsel>
                                   restart, wait for the pad on USB, and
                                   check what came back
@@ -72,7 +75,14 @@ press:
 - `profile switch` changes the active pin-mapping profile with no reboot.
   Without `--save` nothing is written to flash, so the pad goes back to its
   saved profile when it restarts (unless something else, such as a hotkey,
-  saves the settings first).
+  saves the settings first). Either way the device cache (below) records
+  which profile the pad runs, so the key hints follow;
+- `info` and `backup` reboot it into web-config, read, then reboot it back
+  (`/api/reboot`) and check it returns in the mode it was in, which takes
+  a few seconds; the output says so ("via the control channel: web-config
+  and back"). `--stay` leaves it in web-config. If anything fails on the
+  way, gamepadii still sends the pad back and says whether that worked. The
+  restart drops a RAM-only profile, and the output notes it.
 
 The channel needs read-write access to the pad's device node
 (`/dev/bus/usb/BBB/DDD`), which is root-only by default. `gamepadii setup
@@ -85,8 +95,8 @@ real Xbox 360, HORI, DualShock or Switch pad. It touches no input device
 
 On stock firmware everything below works as before.
 
-`info` and `backup` talk to the pad's web configurator, so the pad has to
-be in web-config mode (`reboot` too, without the control channel). In a
+`info` and `backup` talk to the pad's web configurator, so without the
+control channel the pad has to be in web-config mode (`reboot` too). In a
 gamepad mode (XInput, Keyboard, ...) stock GP2040-CE has no control
 channel, and they exit with code 5 and say how to switch: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 for 4
 seconds. Those are logical buttons, so on a remapped profile they may be
@@ -122,6 +132,12 @@ gives them, with Xbox labels:
 In profile 2 (SilkSong), S2+B3+B4 are the keys Default calls S2 (Start),
 B3 (X) and R1 (RB).
 ```
+
+The active profile is the saved one as read in web-config, unless the
+control channel has said otherwise since: whenever it answers (`status`,
+`profile switch`, the other commands), the cache records the profile the
+pad runs. A RAM-only `profile switch` changes only that, `--save` the saved
+one too, and a restart gamepadii makes puts it back on the saved one.
 
 Web-config mode has no unique serial (every pad says `123456`), so the cache
 goes by board config, and with several boards the newest one is used.

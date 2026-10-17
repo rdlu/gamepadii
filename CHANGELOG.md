@@ -70,6 +70,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pads' device nodes, with what it grants (the borrowed ids include real
   Xbox 360 and HORI pads); `--install` goes through pkexec.
 - `--no-channel` on every command.
+- `info` and `backup` from a gamepad mode, over the channel: REBOOT into
+  web-config, read, `/api/reboot` back, and a check that the pad returns
+  in the mode it was in. `--stay` leaves it in web-config, `--timeout` sets
+  the wait after each reboot. If anything fails on the way, the pad is
+  still sent back (over the channel when HTTP doesn't answer) and the
+  error says whether that worked. The JSON gains `trip` (`null` when the
+  pad was in web-config already; additive, still schema 1).
+- The device cache records the profile the control channel reports
+  running (`running_profile`, next to the saved `profileNumber`):
+  `profile switch` updates it (RAM-only the running one, `--save` both),
+  any STATUS refreshes it, and a restart gamepadii makes clears it. The
+  key hints use the live STATUS profile when the channel answers, else the
+  cache's.
 
 ### Fixed
 
