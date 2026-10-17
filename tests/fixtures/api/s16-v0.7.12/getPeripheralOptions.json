@@ -1,0 +1,1 @@
+{"peripheral":{"i2c0":{"enabled":true,"sda":0,"scl":1,"speed":400000},"i2c1":{"enabled":false,"sda":-1,"scl":-1,"speed":400000},"spi0":{"enabled":false,"rx":-1,"cs":-1,"sck":-1,"tx":-1},"spi1":{"enabled":false,"rx":-1,"cs":-1,"sck":-1,"tx":-1},"usb0":{"enabled":true,"dp":23,"enable5v":-1,"order":0}}}
