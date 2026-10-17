@@ -91,3 +91,91 @@ fn waybar_not_found() {
     assert_eq!(v["class"], "disconnected");
     assert_eq!(v["text"], output::GLYPH);
 }
+
+/// The web-config commands against the S16 capture
+/// (`tests/fixtures/api/s16-v0.7.12`, described in gamepadii-core's
+/// `tests/api.rs`).
+mod webconfig {
+    use std::path::PathBuf;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use gamepadii::output::{self, Format, Style};
+    use gamepadii_core::client::Client;
+    use gamepadii_core::commands::{self, BackupReport};
+    use gamepadii_core::mode::BootMode;
+    use gamepadii_core::transport::mock::Mock;
+
+    fn s16() -> Client {
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-v0.7.12");
+        Client::open(Box::new(Mock::new(dir))).unwrap()
+    }
+
+    fn info(format: Format) -> String {
+        output::info(Style::plain(format), &commands::info(&s16()).unwrap())
+    }
+
+    /// A report with a fixed path, as if written to `/backups/s16.json`.
+    fn backup_report() -> BackupReport {
+        let dir = tempfile::tempdir().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(1_792_256_223);
+        let mut r = commands::backup(&s16(), Some(&dir.path().join("s16.json")), now).unwrap();
+        r.path = PathBuf::from("/backups/s16.json");
+        r
+    }
+
+    #[test]
+    fn human_info() {
+        insta::assert_snapshot!(info(Format::Human));
+    }
+
+    #[test]
+    fn json_info() {
+        insta::assert_snapshot!(info(Format::Json));
+    }
+
+    #[test]
+    fn human_backup() {
+        insta::assert_snapshot!(output::backup(
+            Style::plain(Format::Human),
+            &backup_report()
+        ));
+    }
+
+    #[test]
+    fn json_backup() {
+        insta::assert_snapshot!(output::backup(Style::plain(Format::Json), &backup_report()));
+    }
+
+    #[test]
+    fn reboot() {
+        let client = s16();
+        let human = |m| {
+            output::reboot(
+                Style::plain(Format::Human),
+                &commands::reboot(&client, m).unwrap(),
+            )
+        };
+        insta::assert_snapshot!(
+            [BootMode::Gamepad, BootMode::Webconfig, BootMode::Bootsel]
+                .map(human)
+                .join("\n")
+        );
+        let v: serde_json::Value = serde_json::from_str(&output::reboot(
+            Style::plain(Format::Json),
+            &commands::reboot(&client, BootMode::Webconfig).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"schema": 1, "host": "mock:s16-v0.7.12", "mode": "webconfig"})
+        );
+    }
+
+    #[test]
+    fn bytes() {
+        assert_eq!(output::bytes(512), "512 B");
+        assert_eq!(output::bytes(19_808), "19.3 KiB");
+        assert_eq!(output::bytes(2_097_152), "2.0 MiB");
+    }
+}

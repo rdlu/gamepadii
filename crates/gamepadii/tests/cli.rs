@@ -40,6 +40,38 @@ fn parses_status_and_sysroot() {
 }
 
 #[test]
+fn parses_web_config_commands() {
+    use gamepadii::cli::RebootArg;
+    let cli = parse(&["--host", "10.0.0.2", "info"]).unwrap();
+    assert_eq!(cli.command, Some(Command::Info));
+    assert_eq!(cli.host.as_deref(), Some("10.0.0.2"));
+    assert_eq!(
+        parse(&["backup", "-o", "x.json"]).unwrap().command,
+        Some(Command::Backup {
+            output: Some("x.json".into())
+        })
+    );
+    assert_eq!(
+        parse(&["backup"]).unwrap().command,
+        Some(Command::Backup { output: None })
+    );
+    for (arg, mode) in [
+        ("gamepad", RebootArg::Gamepad),
+        ("webconfig", RebootArg::Webconfig),
+        ("web-config", RebootArg::Webconfig),
+        ("bootsel", RebootArg::Bootsel),
+    ] {
+        assert_eq!(
+            parse(&["reboot", arg]).unwrap().command,
+            Some(Command::Reboot { mode })
+        );
+    }
+    assert!(parse(&["reboot"]).is_err());
+    assert!(format(&["info", "--format", "waybar"]).is_err());
+    assert_eq!(format(&["backup", "--json"]), Ok(Format::Json));
+}
+
+#[test]
 fn rejects_bad_arguments() {
     assert!(parse(&["status", "--format", "xml"]).is_err());
     assert!(parse(&["bogus"]).is_err());
@@ -74,4 +106,19 @@ fn help_gamepadii() {
 #[test]
 fn help_status() {
     insta::assert_snapshot!(help(&["status"]));
+}
+
+#[test]
+fn help_info() {
+    insta::assert_snapshot!(help(&["info"]));
+}
+
+#[test]
+fn help_backup() {
+    insta::assert_snapshot!(help(&["backup"]));
+}
+
+#[test]
+fn help_reboot() {
+    insta::assert_snapshot!(help(&["reboot"]));
 }

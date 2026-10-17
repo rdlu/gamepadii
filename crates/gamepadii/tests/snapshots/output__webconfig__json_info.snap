@@ -1,0 +1,104 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "info(Format::Json)"
+---
+{
+  "schema": 1,
+  "host": "mock:s16-v0.7.12",
+  "firmware": {
+    "version": "v0.7.12",
+    "board": "Haute42COSMOX",
+    "board_label": "Haute42 COSMOX",
+    "architecture": "rp2040",
+    "build": "0014e4a",
+    "build_type": "Release",
+    "file_name": "GP2040-CE_0.7.12_Haute42COSMOX"
+  },
+  "memory": {
+    "flash_used": 1216444,
+    "flash_total": 2097152,
+    "flash_physical": 2097152,
+    "heap_used": 19808,
+    "heap_total": 121680,
+    "static_allocs": 148656
+  },
+  "input_mode": {
+    "value": 0,
+    "mode": "xinput"
+  },
+  "active_profile": 2,
+  "profiles": [
+    {
+      "number": 1,
+      "label": "Default",
+      "enabled": true,
+      "active": false
+    },
+    {
+      "number": 2,
+      "label": "SilkSong",
+      "enabled": true,
+      "active": true
+    },
+    {
+      "number": 3,
+      "label": "Celeste",
+      "enabled": true,
+      "active": false
+    },
+    {
+      "number": 4,
+      "label": "DKC",
+      "enabled": true,
+      "active": false
+    },
+    {
+      "number": 5,
+      "label": "TGX",
+      "enabled": true,
+      "active": false
+    }
+  ],
+  "boot_buttons": [
+    {
+      "button": "B1",
+      "value": 1,
+      "mode": "switch"
+    },
+    {
+      "button": "B2",
+      "value": 0,
+      "mode": "xinput"
+    },
+    {
+      "button": "B3",
+      "value": 2,
+      "mode": "ps3"
+    },
+    {
+      "button": "B4",
+      "value": 13,
+      "mode": "ps5"
+    },
+    {
+      "button": "L1",
+      "value": -1,
+      "mode": null
+    },
+    {
+      "button": "L2",
+      "value": -1,
+      "mode": null
+    },
+    {
+      "button": "R1",
+      "value": 5,
+      "mode": "xbone"
+    },
+    {
+      "button": "R2",
+      "value": 3,
+      "mode": "keyboard"
+    }
+  ]
+}

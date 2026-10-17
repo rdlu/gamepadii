@@ -1,13 +1,17 @@
 //! Rendering of command results: text for people, the versioned JSON
 //! contract (`"schema": 1`, snake_case keys, explicit `null`s), or one line
 //! of waybar custom-module JSON for `status`.
+//!
+//! Human output is a bold headline, then `label  value` rows with the
+//! labels dimmed and padded to 14 columns; a row with several values
+//! continues on lines indented to the same column.
 
 use std::io::IsTerminal;
 
 use gamepadii_core::Error;
-use gamepadii_core::commands::Status;
+use gamepadii_core::commands::{BackupReport, Firmware, Info, ModeSetting, Reboot, Status};
 use gamepadii_core::discovery::Device;
-use gamepadii_core::mode::{Confidence, InputMode};
+use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use serde::Serialize;
 
 /// Bumped on any breaking change to the JSON output.
@@ -241,4 +245,178 @@ pub fn waybar_error(err: &Error) -> Waybar {
         class: "disconnected".into(),
         alt: "disconnected".into(),
     }
+}
+
+const LABEL: usize = 14;
+
+/// `label  value` rows; a value with several lines is indented to line up.
+fn rows(style: Style, out: &mut String, rows: &[(&str, String)]) {
+    for (label, value) in rows {
+        for (i, line) in value.lines().enumerate() {
+            let label = if i == 0 { *label } else { "" };
+            out.push_str(&format!(
+                "{}{line}\n",
+                style.dim(&format!("{label:<LABEL$}"))
+            ));
+        }
+    }
+}
+
+/// `1.2 MiB`, `19.3 KiB`, `512 B`.
+pub fn bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let f = n as f64;
+    if f >= KIB * KIB {
+        format!("{:.1} MiB", f / (KIB * KIB))
+    } else if f >= KIB {
+        format!("{:.1} KiB", f / KIB)
+    } else {
+        format!("{n} B")
+    }
+}
+
+fn opt_bytes(n: Option<u64>) -> String {
+    n.map_or_else(|| "?".into(), bytes)
+}
+
+/// `Haute42 COSMOX (GP2040-CE v0.7.12)`, as plain text.
+fn firmware_headline(f: &Firmware) -> (String, String) {
+    let board = f
+        .board_label
+        .clone()
+        .or_else(|| f.board.clone())
+        .unwrap_or_else(|| "GP2040-CE pad".into());
+    let version = f.version.as_deref().unwrap_or("unknown version");
+    (board, format!("(GP2040-CE {version})"))
+}
+
+fn setting(s: &ModeSetting) -> String {
+    match (s.mode, s.value) {
+        (Some(m), _) => m.label().to_string(),
+        (None, None | Some(-1)) => "-".into(),
+        (None, Some(v)) => format!("unknown ({v})"),
+    }
+}
+
+pub fn info(style: Style, i: &Info) -> String {
+    if style.format != Format::Human {
+        return json(i);
+    }
+    let (board, version) = firmware_headline(&i.firmware);
+    let mut out = format!("{} {}\n", style.bold(&board), style.dim(&version));
+    let f = &i.firmware;
+    let mut build = Vec::new();
+    if let Some(commit) = &f.build {
+        build.push(format!("build {commit}"));
+    }
+    build.extend(
+        [&f.build_type, &f.architecture]
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
+    let mut firmware = f.version.clone().unwrap_or_else(|| "-".into());
+    if !build.is_empty() {
+        firmware.push_str(&format!(" ({})", build.join(", ")));
+    }
+    let mut r: Vec<(&str, String)> = vec![
+        ("firmware", firmware),
+        ("board", f.board.clone().unwrap_or_else(|| "-".into())),
+    ];
+    if let Some(m) = &i.memory {
+        r.push((
+            "flash",
+            format!(
+                "{} of {} used ({} chip)",
+                opt_bytes(m.flash_used),
+                opt_bytes(m.flash_total),
+                opt_bytes(m.flash_physical)
+            ),
+        ));
+        r.push((
+            "heap",
+            format!(
+                "{} of {} used, {} static",
+                opt_bytes(m.heap_used),
+                opt_bytes(m.heap_total),
+                opt_bytes(m.static_allocs)
+            ),
+        ));
+    }
+    r.push(("input mode", setting(&i.input_mode)));
+    let profiles = i
+        .profiles
+        .iter()
+        .map(|p| {
+            let mut line = format!("{} {}", p.number, p.label.as_deref().unwrap_or("-"));
+            if p.active {
+                line.push_str(" (active)");
+            }
+            if p.enabled == Some(false) {
+                line.push_str(" (disabled)");
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    r.push((
+        "profiles",
+        if profiles.is_empty() {
+            "-".into()
+        } else {
+            profiles
+        },
+    ));
+    let boot = i
+        .boot_buttons
+        .iter()
+        .map(|b| format!("{:<3}{}", b.button, setting(&b.setting)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    r.push(("boot buttons", boot));
+    r.push(("web-config", i.host.clone()));
+    rows(style, &mut out, &r);
+    out
+}
+
+pub fn backup(style: Style, b: &BackupReport) -> String {
+    if style.format != Format::Human {
+        return json(b);
+    }
+    let (board, version) = firmware_headline(&b.firmware);
+    let mut out = format!(
+        "{} {} {}\n",
+        style.bold("Backed up"),
+        style.bold(&board),
+        style.dim(&version)
+    );
+    let total = b.endpoints.len() + b.unavailable.len();
+    let mut r = vec![
+        ("file", b.path.display().to_string()),
+        ("endpoints", format!("{} of {total}", b.endpoints.len())),
+    ];
+    if !b.unavailable.is_empty() {
+        r.push(("not on this fw", b.unavailable.join("\n")));
+    }
+    r.push(("size", bytes(b.bytes)));
+    r.push(("captured", b.captured_at.clone()));
+    rows(style, &mut out, &r);
+    out
+}
+
+pub fn reboot(style: Style, r: &Reboot) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let after = match r.mode {
+        BootMode::Gamepad => "it comes back in its saved input mode".to_string(),
+        BootMode::Webconfig => format!("it comes back at {}/ in a few seconds", r.host),
+        BootMode::Bootsel => "it comes back as the RPI-RP2 USB drive, for flashing".to_string(),
+    };
+    format!(
+        "{} {}\n{}\n",
+        style.bold("Rebooting into"),
+        style.bold(r.mode.label()),
+        style.dim(&after)
+    )
 }

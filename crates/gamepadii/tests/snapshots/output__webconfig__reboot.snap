@@ -1,0 +1,12 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "[BootMode::Gamepad, BootMode::Webconfig,\nBootMode::Bootsel].map(human).join(\"\\n\")"
+---
+Rebooting into gamepad mode
+it comes back in its saved input mode
+
+Rebooting into web-config
+it comes back at mock:s16-v0.7.12/ in a few seconds
+
+Rebooting into BOOTSEL
+it comes back as the RPI-RP2 USB drive, for flashing

@@ -1,0 +1,24 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "info(Format::Human)"
+---
+Haute42 COSMOX (GP2040-CE v0.7.12)
+firmware      v0.7.12 (build 0014e4a, Release, rp2040)
+board         Haute42COSMOX
+flash         1.2 MiB of 2.0 MiB used (2.0 MiB chip)
+heap          19.3 KiB of 118.8 KiB used, 145.2 KiB static
+input mode    XInput
+profiles      1 Default
+              2 SilkSong (active)
+              3 Celeste
+              4 DKC
+              5 TGX
+boot buttons  B1 Nintendo Switch
+              B2 XInput
+              B3 PS3
+              B4 PS5
+              L1 -
+              L2 -
+              R1 Xbox One
+              R2 Keyboard
+web-config    mock:s16-v0.7.12

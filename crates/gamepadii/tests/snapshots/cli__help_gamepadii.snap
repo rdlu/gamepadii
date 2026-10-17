@@ -8,6 +8,9 @@ Usage: gamepadii [OPTIONS] [COMMAND]
 
 Commands:
   status  The pad on USB: input mode (with a confidence), USB ids, bus and port
+  info    Firmware, board, memory, input mode, profiles and boot buttons (needs web-config)
+  backup  Save every readable setting to one JSON file (needs web-config)
+  reboot  Restart the pad into gamepad mode, web-config or BOOTSEL (needs web-config)
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -23,6 +26,9 @@ Options:
 
       --json
           Same as `--format json`
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 
   -h, --help
           Print help (see a summary with '-h')

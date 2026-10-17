@@ -1,0 +1,34 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"reboot\"])"
+---
+Restart the pad into gamepad mode, web-config or BOOTSEL (needs web-config)
+
+Usage: gamepadii reboot [OPTIONS] <MODE>
+
+Arguments:
+  <MODE>
+          Possible values:
+          - gamepad:   The saved input mode (XInput, Keyboard, ...)
+          - webconfig: The web configurator, at 192.168.7.1
+          - bootsel:   The boot ROM's USB drive, for flashing firmware
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` only
+          
+          [default: human]
+
+      --json
+          Same as `--format json`
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+  -h, --help
+          Print help (see a summary with '-h')

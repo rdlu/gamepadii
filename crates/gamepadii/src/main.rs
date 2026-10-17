@@ -4,8 +4,11 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use gamepadii::cli::{self, Cli, Command};
 use gamepadii::output::{self, Format, Style};
+use gamepadii_core::client::{self, Client};
 use gamepadii_core::error::exit;
 use gamepadii_core::sysfs::Root;
+use gamepadii_core::transport::http::Http;
+use gamepadii_core::transport::mock::Mock;
 use gamepadii_core::{Error, commands};
 
 fn main() -> ExitCode {
@@ -32,20 +35,36 @@ fn main() -> ExitCode {
             return ExitCode::from(exit::USAGE);
         }
     };
-    let root = cli.sysroot.map_or_else(Root::live, Root::new);
-    match cli.command {
+    let root = cli.sysroot.clone().map_or_else(Root::live, Root::new);
+    let style = Style::detect(format);
+    match cli.command.clone() {
         None => {
             // No subcommand: usage for now (the TUI will open here on a TTY).
             let _ = Cli::command().print_help();
             ExitCode::from(exit::OK)
         }
-        Some(Command::Status) => {
-            let style = Style::detect(format);
-            finish(
-                format,
-                commands::status(&root).map(|s| output::status(style, &s)),
-            )
-        }
+        Some(Command::Status) => finish(
+            format,
+            commands::status(&root).map(|s| output::status(style, &s)),
+        ),
+        Some(Command::Info) => finish(
+            format,
+            connect(&cli, &root)
+                .and_then(|c| commands::info(&c))
+                .map(|i| output::info(style, &i)),
+        ),
+        Some(Command::Backup { output: path }) => finish(
+            format,
+            connect(&cli, &root)
+                .and_then(|c| commands::backup(&c, path.as_deref(), std::time::SystemTime::now()))
+                .map(|b| output::backup(style, &b)),
+        ),
+        Some(Command::Reboot { mode }) => finish(
+            format,
+            connect(&cli, &root)
+                .and_then(|c| commands::reboot(&c, mode.into()))
+                .map(|r| output::reboot(style, &r)),
+        ),
         Some(Command::Completions { shell }) => {
             cli::completions(shell, &mut std::io::stdout().lock());
             ExitCode::from(exit::OK)
@@ -56,6 +75,20 @@ fn main() -> ExitCode {
                 .map(|()| String::new())
                 .map_err(|e| Error::io(format!("writing man pages into {}", dir.display()), e)),
         ),
+    }
+}
+
+/// The web-config client: `--host` skips the USB check; otherwise the pad
+/// has to be on USB in web-config (with `--mock-api`, the fixture stands in
+/// for its HTTP server).
+fn connect(cli: &Cli, root: &Root) -> gamepadii_core::Result<Client> {
+    match (&cli.mock_api, &cli.host) {
+        (Some(dir), _) => {
+            client::require_webconfig(root)?;
+            Client::open(Box::new(Mock::new(dir)))
+        }
+        (None, Some(host)) => Client::open(Box::new(Http::new(host)?)),
+        (None, None) => Client::connect(root),
     }
 }
 

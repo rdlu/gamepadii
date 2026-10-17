@@ -20,5 +20,8 @@ Options:
       --json
           Same as `--format json`
 
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
   -h, --help
           Print help (see a summary with '-h')
