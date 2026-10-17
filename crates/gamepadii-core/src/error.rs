@@ -15,8 +15,8 @@ pub mod exit {
     pub const USAGE: u8 = 3;
     /// Talking to the device failed (I/O, HTTP, a reply that makes no sense).
     pub const TRANSPORT: u8 = 4;
-    /// The user has to do something on the pad (a button combo), and didn't
-    /// in time.
+    /// The user has to do something on the pad first (a button combo, such
+    /// as switching it into web-config).
     pub const NEEDS_USER: u8 = 5;
 }
 
@@ -33,7 +33,7 @@ pub enum Error {
     },
     /// The device answered, but not in a way we understand.
     Protocol(String),
-    /// Waiting for the user to act on the pad timed out.
+    /// The user has to act on the pad first: the message says what to do.
     NeedsUser(String),
 }
 
@@ -73,7 +73,7 @@ impl fmt::Display for Error {
             Error::Usage(m) => write!(f, "usage: {m}"),
             Error::Io { context, source } => write!(f, "{context}: {source}"),
             Error::Protocol(m) => write!(f, "protocol error: {m}"),
-            Error::NeedsUser(m) => write!(f, "waiting for you: {m}"),
+            Error::NeedsUser(m) => write!(f, "action needed: {m}"),
         }
     }
 }

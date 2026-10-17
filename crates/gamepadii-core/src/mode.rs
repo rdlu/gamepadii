@@ -1,4 +1,5 @@
-//! GP2040-CE input modes and the USB ids each one enumerates with.
+//! GP2040-CE input modes and the USB ids each one enumerates with, and the
+//! boot modes the web-config reboot endpoint takes.
 //!
 //! [`InputMode`] mirrors `InputMode` in GP2040-CE's `proto/enums.proto`
 //! (`INPUT_MODE_CONFIG = 255` is [`InputMode::Webconfig`]) plus BOOTSEL,
@@ -177,6 +178,68 @@ impl FromStr for InputMode {
             .into_iter()
             .find(|m| m.key() == wanted)
             .ok_or_else(|| format!("unknown input mode {s:?}"))
+    }
+}
+
+/// What `POST /api/reboot` restarts the pad into (`BOOT_MODES` in the
+/// firmware's `webconfig.cpp`, which must match the web UI's `Navigation.jsx`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootMode {
+    /// The persisted input mode (XInput, Keyboard, ...).
+    Gamepad,
+    /// The web configurator.
+    Webconfig,
+    /// The RP2040 boot ROM, for flashing.
+    Bootsel,
+}
+
+impl BootMode {
+    pub const ALL: [BootMode; 3] = [BootMode::Gamepad, BootMode::Webconfig, BootMode::Bootsel];
+
+    /// The `bootMode` value the reboot endpoint takes.
+    pub fn api_value(self) -> u8 {
+        match self {
+            BootMode::Gamepad => 0,
+            BootMode::Webconfig => 1,
+            BootMode::Bootsel => 2,
+        }
+    }
+
+    /// The stable key: the JSON value and the CLI name.
+    pub fn key(self) -> &'static str {
+        match self {
+            BootMode::Gamepad => "gamepad",
+            BootMode::Webconfig => "webconfig",
+            BootMode::Bootsel => "bootsel",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BootMode::Gamepad => "gamepad mode",
+            BootMode::Webconfig => "web-config",
+            BootMode::Bootsel => "BOOTSEL",
+        }
+    }
+}
+
+impl fmt::Display for BootMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.key())
+    }
+}
+
+impl FromStr for BootMode {
+    type Err = String;
+
+    /// A [`BootMode::key`], ignoring case and `-` (`web-config`).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let wanted = s.to_ascii_lowercase().replace('-', "");
+        BootMode::ALL
+            .into_iter()
+            .find(|m| m.key() == wanted)
+            .ok_or_else(|| format!("unknown boot mode {s:?}"))
     }
 }
 
@@ -384,6 +447,18 @@ mod tests {
         assert_eq!(InputMode::from_proto(255), Some(InputMode::Webconfig));
         assert_eq!(InputMode::Bootsel.proto_value(), None);
         assert_eq!(InputMode::Switch2Pro.proto_value(), Some(19));
+    }
+
+    #[test]
+    fn boot_modes_match_the_firmware() {
+        let values: Vec<u8> = BootMode::ALL.iter().map(|m| m.api_value()).collect();
+        assert_eq!(values, [0, 1, 2]);
+        for m in BootMode::ALL {
+            assert_eq!(serde_json::to_value(m).unwrap(), m.key());
+            assert_eq!(m.key().parse::<BootMode>(), Ok(m));
+        }
+        assert_eq!("Web-Config".parse(), Ok(BootMode::Webconfig));
+        assert!("usb".parse::<BootMode>().is_err());
     }
 
     #[test]
