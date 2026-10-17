@@ -117,6 +117,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   12-button drawing with a 16-button pin mapping, suggests
   `gamepadii display layout s16`. The JSON gains `display_layout` and
   `hints` (additive, still schema 1).
+- Fork firmware: a capability check for builds of our GP2040-CE fork with
+  the web-config heap/reply and I2C fixes (a known fork commit in the
+  version or `boardBuild`, or the control channel answering HELLO on a
+  build that isn't a bare release tag). On those, `backup` also saves the
+  whole `getConfig` document, as `full_config` in the bundle, and reports
+  it (`full_config`, `full_config_evidence`, `full_config_error` in the
+  JSON, a "full config" row for people). Stock firmware is never asked for
+  `getConfig` or `getI2CPeripheralMap`; the backup there just has
+  `"full_config": null` (additive, still schema 1).
 
 ### Fixed
 
