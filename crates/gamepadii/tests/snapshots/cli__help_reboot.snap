@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"reboot\"])"
 ---
-Restart the pad into gamepad mode, web-config or BOOTSEL (needs web-config)
+Restart the pad into gamepad mode, web-config or BOOTSEL (needs web-config), then wait for it on USB and check what came back
 
 Usage: gamepadii reboot [OPTIONS] <MODE>
 
@@ -24,8 +24,16 @@ Options:
           
           [default: human]
 
+      --no-wait
+          Don't wait for the pad to come back
+
       --json
           Same as `--format json`
+
+      --timeout <SECS>
+          How long to wait for it to come back on USB
+          
+          [default: 10]
 
       --host <HOST>
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1

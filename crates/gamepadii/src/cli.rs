@@ -1,16 +1,19 @@
 //! Command line: `gamepadii status [--format human|json|waybar] [--json]`,
-//! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`, and
-//! `--host HOST` for the web-config ones. Hidden, for packagers:
+//! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
+//! `mode [MODE]`, `webconfig [--open|--exit]`, and `--host HOST` for the
+//! web-config ones. Hidden, for packagers:
 //! `gamepadii completions <shell>` and `gamepadii manpages <dir>`; for
 //! tests: `--sysroot <dir>` and `--mock-api <dir>`.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
-use gamepadii_core::mode::BootMode;
+use gamepadii_core::flow;
+use gamepadii_core::mode::{BootMode, InputMode};
 
 use crate::output::Format;
 
@@ -75,10 +78,53 @@ pub enum Command {
         output: Option<PathBuf>,
     },
     /// Restart the pad into gamepad mode, web-config or BOOTSEL (needs
-    /// web-config).
+    /// web-config), then wait for it on USB and check what came back.
     Reboot {
         #[arg(value_enum)]
         mode: RebootArg,
+        /// Don't wait for the pad to come back.
+        #[arg(long)]
+        no_wait: bool,
+        /// How long to wait for it to come back on USB.
+        #[arg(long, value_name = "SECS", default_value_t = 10)]
+        timeout: u64,
+    },
+    /// Switch the input mode, or with no MODE show the current one and the
+    /// choices. In a gamepad mode it says which buttons to press and waits.
+    Mode {
+        /// The input mode to switch to.
+        #[arg(value_parser = mode_parser())]
+        mode: Option<InputMode>,
+        /// Print the instructions and exit 5 instead of waiting for the
+        /// button press.
+        #[arg(long)]
+        no_wait: bool,
+        /// How long to wait for the button press.
+        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        timeout: u64,
+        /// How long to wait for the pad to come back after the reboot.
+        #[arg(long, value_name = "SECS", default_value_t = 10)]
+        reboot_timeout: u64,
+        /// Don't back up the settings before writing.
+        #[arg(long)]
+        no_backup: bool,
+    },
+    /// Get the pad into web-config and print its URL; in a gamepad mode it
+    /// says which buttons to press and waits.
+    Webconfig {
+        /// Open the URL in the browser (xdg-open).
+        #[arg(long, conflicts_with = "exit")]
+        open: bool,
+        /// Leave web-config: reboot into gamepad mode and wait for it.
+        #[arg(long)]
+        exit: bool,
+        /// Print the instructions and exit 5 instead of waiting.
+        #[arg(long)]
+        no_wait: bool,
+        /// How long to wait for the button press (or, with --exit, for the
+        /// pad to come back).
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
     },
     /// Print a shell completion script, for packagers.
     #[command(hide = true)]
@@ -110,6 +156,24 @@ impl From<RebootArg> for BootMode {
             RebootArg::Bootsel => BootMode::Bootsel,
         }
     }
+}
+
+/// The input modes `mode` takes, with their names as help; `hid` is an
+/// alias for `generic`, and `-` works for `_`.
+fn mode_parser() -> impl TypedValueParser<Value = InputMode> {
+    PossibleValuesParser::new(flow::targets().map(|m| {
+        let v = PossibleValue::new(m.key()).help(m.label());
+        match m {
+            InputMode::Generic => v.alias("hid"),
+            InputMode::SwitchPro => v.alias("switch-pro"),
+            InputMode::Switch2Pro => v.alias("switch2-pro"),
+            _ => v,
+        }
+    }))
+    .map(|s| {
+        let s = if s == "hid" { "generic".into() } else { s };
+        s.parse::<InputMode>().expect("a listed mode")
+    })
 }
 
 impl Cli {

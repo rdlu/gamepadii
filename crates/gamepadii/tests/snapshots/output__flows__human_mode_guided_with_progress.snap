@@ -1,0 +1,22 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"--- stderr\\n{stderr}--- stdout\\n{}\", output::mode(human(), &r))"
+---
+--- stderr
+No write needed: unplug the pad, hold R2 (RT) (only that button) and plug it back in; it starts in Keyboard mode and keeps it.
+In profile 2 (SilkSong), R2 is the key Default calls B4 (Y).
+Or switch it to web-config: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 (Start+X+Y) for 4 seconds while it runs (only those buttons).
+In profile 2 (SilkSong), S2+B3+B4 are the keys Default calls S2 (Start), B3 (X) and R1 (RB).
+Key names come from what gamepadii read on 2026-10-17T16:57:03Z; if the active profile changed since, they may be off.
+waiting for the pad to show up in web-config or Keyboard (up to 60 s)
+backed up to [tmp]/backups/20261017-165704-Haute42COSMOX.json
+saving input mode Keyboard
+rebooting into gamepad mode
+waiting for the pad to come back (up to 10 s)
+--- stdout
+Switched to Keyboard
+was           XInput (045e:028e, likely)
+via           web-config, once you switched it
+saved         inputMode 0 → 3 (read back; nothing else changed)
+backup        /backups/20261017-165703-Haute42COSMOX.json
+now           Keyboard (cafe:0001, confirmed)

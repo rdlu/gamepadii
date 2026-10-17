@@ -1,0 +1,5 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: err.to_string()
+---
+action needed: the pad is in XInput mode. No write needed: unplug the pad, hold B1 (A) (only that button) and plug it back in; it starts in Nintendo Switch mode and keeps it. In profile 2 (SilkSong), B1 is the key Default calls Up. Or switch it to web-config: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 (Start+X+Y) for 4 seconds while it runs (only those buttons). In profile 2 (SilkSong), S2+B3+B4 are the keys Default calls S2 (Start), B3 (X) and R1 (RB). Key names come from what gamepadii read on 2026-10-17T16:57:03Z; if the active profile changed since, they may be off.

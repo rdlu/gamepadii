@@ -1,0 +1,68 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"mode\"])"
+---
+Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it says which buttons to press and waits
+
+Usage: gamepadii mode [OPTIONS] [MODE]
+
+Arguments:
+  [MODE]
+          The input mode to switch to
+
+          Possible values:
+          - xinput:       XInput
+          - switch:       Nintendo Switch
+          - ps3:          PS3
+          - keyboard:     Keyboard
+          - ps4:          PS4
+          - xbone:        Xbox One
+          - mdmini:       Sega Genesis/MegaDrive Mini
+          - neogeo:       NEOGEO mini
+          - pcemini:      PC Engine/Turbografx 16 Mini
+          - egret:        EGRET II mini
+          - astro:        ASTROCITY Mini
+          - psclassic:    Playstation Classic
+          - xboxoriginal: Original Xbox
+          - ps5:          PS5
+          - generic:      Generic HID
+          - switch_pro:   Nintendo Switch Pro
+          - p5general:    P5General
+          - sinput:       SInput
+          - switch2_pro:  Nintendo Switch 2 Pro
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` only
+          
+          [default: human]
+
+      --no-wait
+          Print the instructions and exit 5 instead of waiting for the button press
+
+      --json
+          Same as `--format json`
+
+      --timeout <SECS>
+          How long to wait for the button press
+          
+          [default: 60]
+
+      --reboot-timeout <SECS>
+          How long to wait for the pad to come back after the reboot
+          
+          [default: 10]
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --no-backup
+          Don't back up the settings before writing
+
+  -h, --help
+          Print help (see a summary with '-h')

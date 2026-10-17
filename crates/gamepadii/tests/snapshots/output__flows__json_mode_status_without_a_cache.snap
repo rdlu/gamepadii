@@ -1,0 +1,154 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode_status(json(), &s)"
+---
+{
+  "schema": 1,
+  "current": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "likely",
+    "usb_id": "045e:028e"
+  },
+  "saved": null,
+  "saved_from": null,
+  "cached_at": null,
+  "firmware": null,
+  "modes": [
+    {
+      "mode": "xinput",
+      "label": "XInput",
+      "boot_button": null,
+      "supported": null,
+      "current": true
+    },
+    {
+      "mode": "switch",
+      "label": "Nintendo Switch",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "ps3",
+      "label": "PS3",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "keyboard",
+      "label": "Keyboard",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "ps4",
+      "label": "PS4",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "xbone",
+      "label": "Xbox One",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "mdmini",
+      "label": "Sega Genesis/MegaDrive Mini",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "neogeo",
+      "label": "NEOGEO mini",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "pcemini",
+      "label": "PC Engine/Turbografx 16 Mini",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "egret",
+      "label": "EGRET II mini",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "astro",
+      "label": "ASTROCITY Mini",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "psclassic",
+      "label": "Playstation Classic",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "xboxoriginal",
+      "label": "Original Xbox",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "ps5",
+      "label": "PS5",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "generic",
+      "label": "Generic HID",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "switch_pro",
+      "label": "Nintendo Switch Pro",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "p5general",
+      "label": "P5General",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "sinput",
+      "label": "SInput",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    },
+    {
+      "mode": "switch2_pro",
+      "label": "Nintendo Switch 2 Pro",
+      "boot_button": null,
+      "supported": null,
+      "current": false
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"webconfig\"])"
+---
+Get the pad into web-config and print its URL; in a gamepad mode it says which buttons to press and waits
+
+Usage: gamepadii webconfig [OPTIONS]
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` only
+          
+          [default: human]
+
+      --open
+          Open the URL in the browser (xdg-open)
+
+      --exit
+          Leave web-config: reboot into gamepad mode and wait for it
+
+      --json
+          Same as `--format json`
+
+      --no-wait
+          Print the instructions and exit 5 instead of waiting
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --timeout <SECS>
+          How long to wait for the button press (or, with --exit, for the pad to come back)
+
+  -h, --help
+          Print help (see a summary with '-h')

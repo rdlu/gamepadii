@@ -63,12 +63,56 @@ fn parses_web_config_commands() {
     ] {
         assert_eq!(
             parse(&["reboot", arg]).unwrap().command,
-            Some(Command::Reboot { mode })
+            Some(Command::Reboot {
+                mode,
+                no_wait: false,
+                timeout: 10
+            })
         );
     }
     assert!(parse(&["reboot"]).is_err());
     assert!(format(&["info", "--format", "waybar"]).is_err());
     assert_eq!(format(&["backup", "--json"]), Ok(Format::Json));
+}
+
+#[test]
+fn parses_mode_and_webconfig() {
+    use gamepadii_core::mode::InputMode;
+    let mode = |args: &[&str]| match parse(args).unwrap().command {
+        Some(Command::Mode { mode, .. }) => mode,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(mode(&["mode"]), None);
+    assert_eq!(mode(&["mode", "keyboard"]), Some(InputMode::Keyboard));
+    assert_eq!(mode(&["mode", "hid"]), Some(InputMode::Generic));
+    assert_eq!(mode(&["mode", "switch-pro"]), Some(InputMode::SwitchPro));
+    assert_eq!(mode(&["mode", "switch_pro"]), Some(InputMode::SwitchPro));
+    assert!(parse(&["mode", "webconfig"]).is_err());
+    assert!(parse(&["mode", "bootsel"]).is_err());
+    assert!(parse(&["mode", "xbox"]).is_err());
+    assert_eq!(
+        parse(&["mode", "ps5", "--no-wait", "--timeout", "5", "--no-backup"])
+            .unwrap()
+            .command,
+        Some(Command::Mode {
+            mode: Some(InputMode::Ps5),
+            no_wait: true,
+            timeout: 5,
+            reboot_timeout: 10,
+            no_backup: true,
+        })
+    );
+    assert_eq!(
+        parse(&["webconfig", "--open"]).unwrap().command,
+        Some(Command::Webconfig {
+            open: true,
+            exit: false,
+            no_wait: false,
+            timeout: None,
+        })
+    );
+    assert!(parse(&["webconfig", "--open", "--exit"]).is_err());
+    assert!(format(&["mode", "--format", "waybar"]).is_err());
 }
 
 #[test]
@@ -121,4 +165,14 @@ fn help_backup() {
 #[test]
 fn help_reboot() {
     insta::assert_snapshot!(help(&["reboot"]));
+}
+
+#[test]
+fn help_mode() {
+    insta::assert_snapshot!(help(&["mode"]));
+}
+
+#[test]
+fn help_webconfig() {
+    insta::assert_snapshot!(help(&["webconfig"]));
 }

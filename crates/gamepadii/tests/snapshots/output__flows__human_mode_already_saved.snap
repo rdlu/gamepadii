@@ -1,0 +1,10 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode(human(), &r)"
+---
+Switched to XInput
+was           web-config (cafe:4028, confirmed)
+via           web-config
+saved         XInput already (not written)
+now           XInput (045e:028e, likely)
+note          045e:028e is also used by the Xbox 360 controller and its clones

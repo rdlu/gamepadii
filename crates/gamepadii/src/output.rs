@@ -9,8 +9,10 @@
 use std::io::IsTerminal;
 
 use gamepadii_core::Error;
-use gamepadii_core::commands::{BackupReport, Firmware, Info, ModeSetting, Reboot, Status};
+use gamepadii_core::api::RebootAck;
+use gamepadii_core::commands::{BackupReport, Firmware, Info, ModeSetting, Status};
 use gamepadii_core::discovery::Device;
+use gamepadii_core::flow::{ModeReport, ModeStatus, RebootReport, Seen, Via, WebconfigReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use serde::Serialize;
 
@@ -404,19 +406,190 @@ pub fn backup(style: Style, b: &BackupReport) -> String {
     out
 }
 
-pub fn reboot(style: Style, r: &Reboot) -> String {
+/// `XInput (045e:028e, likely)`.
+fn seen(s: &Seen) -> String {
+    format!("{} ({}, {})", s.label(), s.usb_id, confidence(s.confidence))
+}
+
+fn ack(a: RebootAck) -> &'static str {
+    match a {
+        RebootAck::Confirmed => "accepted",
+        RebootAck::Probable => "no reply (it most likely restarted before answering)",
+    }
+}
+
+pub fn reboot(style: Style, r: &RebootReport) -> String {
     if style.format != Format::Human {
         return json(r);
     }
-    let after = match r.mode {
-        BootMode::Gamepad => "it comes back in its saved input mode".to_string(),
-        BootMode::Webconfig => format!("it comes back at {}/ in a few seconds", r.host),
-        BootMode::Bootsel => "it comes back as the RPI-RP2 USB drive, for flashing".to_string(),
+    let mut out = match &r.after {
+        Some(_) => format!(
+            "{} {}\n",
+            style.bold("Rebooted into"),
+            style.bold(r.mode.label())
+        ),
+        None => {
+            let after = match r.mode {
+                BootMode::Gamepad => "it comes back in its saved input mode".to_string(),
+                BootMode::Webconfig => format!("it comes back at {}/ in a few seconds", r.host),
+                BootMode::Bootsel => {
+                    "it comes back as the RPI-RP2 USB drive, for flashing".to_string()
+                }
+            };
+            format!(
+                "{} {}\n{}\n",
+                style.bold("Rebooting into"),
+                style.bold(r.mode.label()),
+                style.dim(&after)
+            )
+        }
     };
-    format!(
-        "{} {}\n{}\n",
-        style.bold("Rebooting into"),
-        style.bold(r.mode.label()),
-        style.dim(&after)
-    )
+    let mut rw: Vec<(&str, String)> = Vec::new();
+    if r.ack == RebootAck::Probable {
+        rw.push(("request", ack(r.ack).into()));
+    }
+    if let Some(a) = &r.after {
+        let mut line = seen(a);
+        if r.verified == Some(true) {
+            line.push_str(", as expected");
+        }
+        rw.push(("came back as", line));
+    }
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// `inputMode 0 → 3`.
+fn change(c: &gamepadii_core::api::FieldChange) -> String {
+    format!("{} {} → {}", c.key, c.before, c.after)
+}
+
+pub fn mode(style: Style, r: &ModeReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let target = r.target.label();
+    let mut out = match r.via {
+        Via::Already => format!("{} {}\n", style.bold("Already in"), style.bold(target)),
+        _ if r.verified => format!("{} {}\n", style.bold("Switched to"), style.bold(target)),
+        _ => format!("{} {}\n", style.bold("Switching to"), style.bold(target)),
+    };
+    let mut rw: Vec<(&str, String)> = Vec::new();
+    match r.via {
+        Via::Already => rw.push(("usb id", r.before.usb_id.clone())),
+        Via::BootButton => {
+            rw.push(("was", seen(&r.before)));
+            rw.push(("via", "its boot button; nothing written".into()));
+        }
+        Via::WebConfig => {
+            rw.push(("was", seen(&r.before)));
+            rw.push((
+                "via",
+                if r.waited_for_user {
+                    "web-config, once you switched it".into()
+                } else {
+                    "web-config".into()
+                },
+            ));
+            let saved = match (&r.write, r.saved_before) {
+                (Some(w), _) => {
+                    let changes = w.changed.iter().map(change).collect::<Vec<_>>().join(", ");
+                    format!("{changes} (read back; nothing else changed)")
+                }
+                (None, Some(s)) => format!("{} already (not written)", setting(&s)),
+                (None, None) => "-".into(),
+            };
+            rw.push(("saved", saved));
+            if let Some(b) = &r.backup {
+                rw.push(("backup", b.display().to_string()));
+            }
+            if r.reboot == Some(RebootAck::Probable) {
+                rw.push(("reboot", ack(RebootAck::Probable).into()));
+            }
+        }
+    }
+    if r.via != Via::Already {
+        rw.push((
+            "now",
+            r.after.as_ref().map_or_else(|| "not verified".into(), seen),
+        ));
+    }
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn mode_status(style: Style, s: &ModeStatus) -> String {
+    if style.format != Format::Human {
+        return json(s);
+    }
+    let mut out = format!(
+        "{} {}\n",
+        style.bold(&s.current.label()),
+        style.dim(&format!("({})", confidence(s.current.confidence)))
+    );
+    let mut rw: Vec<(&str, String)> = vec![("usb id", s.current.usb_id.clone())];
+    let saved = match (&s.saved, s.saved_from, &s.cached_at) {
+        (Some(m), Some("cache"), Some(at)) => format!("{} (as of {at})", setting(m)),
+        (Some(m), _, _) => setting(m),
+        (None, _, _) => "unknown until the pad has been in web-config once".into(),
+    };
+    rw.push(("saved mode", saved));
+    if let Some(f) = &s.firmware {
+        rw.push(("firmware", f.clone()));
+    }
+    let width = s
+        .modes
+        .iter()
+        .map(|c| c.mode.key().len())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let modes = s
+        .modes
+        .iter()
+        .map(|c| {
+            let mut extra = Vec::new();
+            if c.current {
+                extra.push("current".to_string());
+            }
+            if let Some(b) = c.boot_button {
+                extra.push(format!("boot button {}", b.both()));
+            }
+            if c.supported == Some(false) {
+                extra.push("not in this firmware".into());
+            }
+            let mut line = format!("{:<width$}{}", c.mode.key(), c.label);
+            if !extra.is_empty() {
+                line.push_str(&format!(" ({})", extra.join(", ")));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    rw.push(("modes", modes));
+    rows(style, &mut out, &rw);
+    out.push_str(&style.dim("switch with: gamepadii mode <mode>"));
+    out.push('\n');
+    out
+}
+
+pub fn webconfig(style: Style, r: &WebconfigReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let mut out = format!("{} {}\n", style.bold("Web-config at"), style.bold(&r.url));
+    let via = if r.waited_for_user {
+        "the pad is in web-config now"
+    } else {
+        "the pad was already in web-config"
+    };
+    out.push_str(&style.dim(&format!("{via}; leave it with: gamepadii webconfig --exit")));
+    out.push('\n');
+    out
 }

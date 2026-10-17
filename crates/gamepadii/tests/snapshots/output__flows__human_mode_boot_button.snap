@@ -1,0 +1,9 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode(human(), &r)"
+---
+Switched to PS5
+was           XInput (045e:028e, likely)
+via           its boot button; nothing written
+now           PS4 or PS5 (1532:0401, likely)
+note          1532:0401 is also used by the Razer Panthera arcade stick

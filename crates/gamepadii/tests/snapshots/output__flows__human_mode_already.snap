@@ -1,0 +1,7 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode(human(), &r)"
+---
+Already in XInput
+usb id        045e:028e
+note          045e:028e is also used by the Xbox 360 controller and its clones

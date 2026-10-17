@@ -1,0 +1,26 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\", output::reboot(human(), &r), output::reboot(json(), &r))"
+---
+Rebooted into gamepad mode
+came back as  XInput (045e:028e, likely), as expected
+note          045e:028e is also used by the Xbox 360 controller and its clones
+
+{
+  "schema": 1,
+  "host": "mock:s16-v0.7.12",
+  "mode": "gamepad",
+  "ack": "confirmed",
+  "waited": true,
+  "after": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "likely",
+    "usb_id": "045e:028e"
+  },
+  "expected": "xinput",
+  "verified": true,
+  "note": "045e:028e is also used by the Xbox 360 controller and its clones"
+}

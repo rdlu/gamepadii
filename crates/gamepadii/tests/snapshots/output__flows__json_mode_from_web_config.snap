@@ -1,0 +1,44 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode(json(), &r)"
+---
+{
+  "schema": 1,
+  "target": "keyboard",
+  "via": "web_config",
+  "before": {
+    "mode": "webconfig",
+    "candidates": [
+      "webconfig"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "cafe:4028"
+  },
+  "after": {
+    "mode": "keyboard",
+    "candidates": [
+      "keyboard"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "cafe:0001"
+  },
+  "verified": true,
+  "waited_for_user": false,
+  "saved_before": {
+    "value": 0,
+    "mode": "xinput"
+  },
+  "write": {
+    "changed": [
+      {
+        "key": "inputMode",
+        "before": 0,
+        "after": 3
+      }
+    ],
+    "posted": true
+  },
+  "backup": "/backups/20261017-165703-Haute42COSMOX.json",
+  "reboot": "confirmed",
+  "note": null
+}

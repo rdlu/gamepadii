@@ -3,11 +3,20 @@
 use std::process::Command;
 
 fn gamepadii(args: &[&str]) -> (u8, String, String) {
+    let home = tempfile::tempdir().unwrap();
+    gamepadii_in(home.path(), args)
+}
+
+/// With `$XDG_CACHE_HOME` and `$XDG_DATA_HOME` under `home`, so the device
+/// cache and backups never touch the real ones.
+fn gamepadii_in(home: &std::path::Path, args: &[&str]) -> (u8, String, String) {
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/sysfs/");
     let args: Vec<String> = args.iter().map(|a| a.replace("@", fixtures)).collect();
     let out = Command::new(env!("CARGO_BIN_EXE_gamepadii"))
         .args(&args)
         .env("NO_COLOR", "1")
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("XDG_DATA_HOME", home.join("data"))
         .output()
         .expect("run gamepadii");
     (
@@ -167,6 +176,7 @@ fn backup_default_path_is_under_xdg_data_home() {
     let out = Command::new(env!("CARGO_BIN_EXE_gamepadii"))
         .args(["--sysroot", sysfs, "--mock-api", api, "backup", "--json"])
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_CACHE_HOME", dir.path().join("cache"))
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
@@ -185,4 +195,198 @@ fn web_config_usage_errors_exit_3() {
     assert_eq!(gamepadii(&["reboot"]).0, 3);
     assert_eq!(gamepadii(&["reboot", "usb"]).0, 3);
     assert_eq!(gamepadii(&["info", "--format", "waybar"]).0, 3);
+}
+
+const S16_API: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/api/s16-v0.7.12"
+);
+const SYSFS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/sysfs/");
+
+fn sysfs(name: &str) -> String {
+    format!("{SYSFS}{name}")
+}
+
+#[test]
+fn mode_with_no_argument_lists_the_choices() {
+    let (code, stdout, _) = gamepadii(&["--sysroot", "@s16-xinput", "mode"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("XInput (likely)\n"), "{stdout}");
+    assert!(stdout.contains("keyboard      Keyboard"), "{stdout}");
+}
+
+#[test]
+fn mode_already_there_exits_0() {
+    let (code, stdout, _) = gamepadii(&["--sysroot", "@s16-xinput", "mode", "xinput"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Already in XInput\n"), "{stdout}");
+}
+
+#[test]
+fn mode_no_wait_exits_5_with_instructions() {
+    let (code, stdout, stderr) = gamepadii(&[
+        "--sysroot",
+        "@s16-xinput",
+        "mode",
+        "keyboard",
+        "--no-wait",
+        "--json",
+    ]);
+    assert_eq!(code, 5);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "needs_user");
+    assert!(
+        stderr.contains("S2+B3+B4 (Start+X+Y) for 4 seconds"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn mode_wait_times_out_with_exit_5() {
+    let (code, _, stderr) = gamepadii(&[
+        "--sysroot",
+        "@s16-xinput",
+        "mode",
+        "keyboard",
+        "--timeout",
+        "0",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("stopped waiting after 0 s"), "{stderr}");
+    assert!(stderr.contains("First switch it to web-config"), "{stderr}");
+}
+
+/// In web-config with the mock server: it backs up, writes, reboots, then
+/// times out, since a fixture tree never re-enumerates. The cache and the
+/// backup land under the test's XDG dirs.
+#[test]
+fn mode_from_web_config_writes_then_waits_for_usb() {
+    let home = tempfile::tempdir().unwrap();
+    let (code, _, stderr) = gamepadii_in(
+        home.path(),
+        &[
+            "--sysroot",
+            &sysfs("s16-webconfig"),
+            "--mock-api",
+            S16_API,
+            "mode",
+            "keyboard",
+            "--reboot-timeout",
+            "0",
+        ],
+    );
+    assert_eq!(code, 4, "{stderr}");
+    assert!(stderr.contains("saving input mode Keyboard"), "{stderr}");
+    assert!(
+        stderr.contains("Keyboard is saved and the pad was rebooted"),
+        "{stderr}"
+    );
+    assert!(
+        home.path()
+            .join("cache/gamepadii/Haute42COSMOX.json")
+            .exists()
+    );
+    let backups: Vec<_> = std::fs::read_dir(home.path().join("data/gamepadii/backups"))
+        .unwrap()
+        .collect();
+    assert_eq!(backups.len(), 1);
+}
+
+#[test]
+fn info_saves_the_device_cache() {
+    let home = tempfile::tempdir().unwrap();
+    let (code, _, _) = gamepadii_in(
+        home.path(),
+        &[
+            "--sysroot",
+            &sysfs("s16-webconfig"),
+            "--mock-api",
+            S16_API,
+            "info",
+        ],
+    );
+    assert_eq!(code, 0);
+    let cache = home.path().join("cache/gamepadii/Haute42COSMOX.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(cache).unwrap()).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["gamepad_options"]["profileNumber"], 2);
+    // Then, in XInput, mode names the boot buttons from it.
+    let (code, stdout, _) = gamepadii_in(home.path(), &["--sysroot", &sysfs("s16-xinput"), "mode"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("Keyboard (boot button R2 (RT))"),
+        "{stdout}"
+    );
+    let (code, _, stderr) = gamepadii_in(
+        home.path(),
+        &[
+            "--sysroot",
+            &sysfs("s16-xinput"),
+            "mode",
+            "keyboard",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(code, 5);
+    assert!(
+        stderr.contains("hold R2 (RT) (only that button)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Default calls S2 (Start), B3 (X) and R1 (RB)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn webconfig_prints_the_url_or_needs_the_user() {
+    let (code, stdout, _) = gamepadii(&[
+        "--sysroot",
+        &sysfs("s16-webconfig"),
+        "--mock-api",
+        S16_API,
+        "webconfig",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["url"], "http://192.168.7.1/");
+    let (code, _, stderr) = gamepadii(&["--sysroot", "@s16-xinput", "webconfig", "--no-wait"]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("To switch it to web-config"), "{stderr}");
+}
+
+#[test]
+fn reboot_waits_for_usb() {
+    let args = |extra: &[&str]| {
+        let mut a = vec![
+            "--sysroot".to_string(),
+            sysfs("s16-webconfig"),
+            "--mock-api".into(),
+            S16_API.into(),
+            "reboot".into(),
+            "gamepad".into(),
+        ];
+        a.extend(extra.iter().map(|s| s.to_string()));
+        a
+    };
+    let run = |extra: &[&str]| {
+        let a = args(extra);
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        gamepadii(&a)
+    };
+    let (code, stdout, _) = run(&["--no-wait"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("Rebooting into gamepad mode"),
+        "{stdout}"
+    );
+    // A fixture tree never re-enumerates: the wait times out.
+    let (code, _, stderr) = run(&["--timeout", "0"]);
+    assert_eq!(code, 4);
+    assert!(
+        stderr.contains("hasn't come back on USB after 0 s"),
+        "{stderr}"
+    );
 }

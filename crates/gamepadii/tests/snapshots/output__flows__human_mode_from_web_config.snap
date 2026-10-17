@@ -1,0 +1,10 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode(human(), &r)"
+---
+Switched to Keyboard
+was           web-config (cafe:4028, confirmed)
+via           web-config
+saved         inputMode 0 → 3 (read back; nothing else changed)
+backup        /backups/20261017-165703-Haute42COSMOX.json
+now           Keyboard (cafe:0001, confirmed)

@@ -720,11 +720,8 @@ fn info_and_backup_produce_the_cache() {
     let (_, from_info) = gamepadii_core::commands::info_with_cache(&client, now).unwrap();
     assert_eq!(from_info, s16_cache());
     let dir = tempfile::tempdir().unwrap();
-    let (_, from_backup) = gamepadii_core::commands::backup_with_cache(
-        &client,
-        Some(&dir.path().join("b.json")),
-        now,
-    )
-    .unwrap();
+    let (_, from_backup) =
+        gamepadii_core::commands::backup_with_cache(&client, Some(&dir.path().join("b.json")), now)
+            .unwrap();
     assert_eq!(from_backup, Some(s16_cache()));
 }

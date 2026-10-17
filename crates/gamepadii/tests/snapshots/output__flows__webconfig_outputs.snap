@@ -1,0 +1,20 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\", output::webconfig(human(), &r),\noutput::webconfig(json(), &r))"
+---
+Web-config at http://192.168.7.1/
+the pad was already in web-config; leave it with: gamepadii webconfig --exit
+
+{
+  "schema": 1,
+  "url": "http://192.168.7.1/",
+  "device": {
+    "mode": "webconfig",
+    "candidates": [
+      "webconfig"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "cafe:4028"
+  },
+  "waited_for_user": false
+}

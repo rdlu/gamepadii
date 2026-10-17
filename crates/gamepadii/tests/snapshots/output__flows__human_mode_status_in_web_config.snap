@@ -1,0 +1,28 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "output::mode_status(human(), &s)"
+---
+web-config (confirmed)
+usb id        cafe:4028
+saved mode    XInput
+firmware      v0.7.12
+modes         xinput        XInput (boot button B2 (B))
+              switch        Nintendo Switch (boot button B1 (A))
+              ps3           PS3 (boot button B3 (X))
+              keyboard      Keyboard (boot button R2 (RT))
+              ps4           PS4
+              xbone         Xbox One (boot button R1 (RB))
+              mdmini        Sega Genesis/MegaDrive Mini
+              neogeo        NEOGEO mini
+              pcemini       PC Engine/Turbografx 16 Mini
+              egret         EGRET II mini
+              astro         ASTROCITY Mini
+              psclassic     Playstation Classic
+              xboxoriginal  Original Xbox
+              ps5           PS5 (boot button B4 (Y))
+              generic       Generic HID
+              switch_pro    Nintendo Switch Pro
+              p5general     P5General (not in this firmware)
+              sinput        SInput (not in this firmware)
+              switch2_pro   Nintendo Switch 2 Pro (not in this firmware)
+switch with: gamepadii mode <mode>
