@@ -37,7 +37,13 @@ reboots as possible.
   - since v0.7.12, the reboot-to-webconfig hotkey
 
   The tool therefore *guides* the user ("press S2+B3+B4"), detects the
-  re-enumeration through udev, and carries on from there.
+  re-enumeration by polling sysfs every 200 ms, and carries on from there.
+  In v0.7.12 (`src/gp2040.cpp`) the hotkey only fires when exactly
+  S2+B3+B4 are held (`state.buttons == mask`) for 4 s, after the pad has
+  seen no buttons held; S1+B3+B4 the same way goes to BOOTSEL. At plug-in, S2
+  (with anything else) wins over everything but S1+S2+Up (BOOTSEL), unless
+  `forcedSetupMode` is 2 or 3. All of these are logical buttons, after the
+  active profile's pin mapping.
 - **Web-config mode:**
   - The device enumerates as `CAFE:4028` (RNDIS/ECM). It is reachable at
     192.168.7.1 and its own DHCP server hands out the host address.
@@ -45,7 +51,22 @@ reboots as possible.
     {"bootMode":0|1|2}` returns it to gamepad mode, web-config or BOOTSEL.
 - **API hazards**, which the client must guard against:
   - `setGamepadOptions` zeroes every key it isn't sent, so always do a full
-    read-modify-write.
+    read-modify-write. In detail (v0.7.12 `webconfig.cpp`): every field goes
+    through `readDoc`, which assigns unconditionally, so a missing key is 0
+    (a missing `inputModeB1` becomes XInput, not -1 "none"). The three
+    `usbDesc*` strings are `strncpy`'d from `doc[key]`, a NULL pointer when
+    the key is missing, so they must always be sent. The getter prints
+    `usbVendorID`/`usbProductID` as `%04X` strings, but the setter reads
+    integers, and ArduinoJson 6.21 parses a string as decimal: echoing
+    `"10C4"` back stores 0. The web UI converts them with `hexToInt`, and so
+    does gamepadii. `fnButtonPin` is getter-only. Hotkeys round-trip (the
+    getter folds the dpad mask into `buttonsMask` and the setter splits it
+    out again). The reply echoes the body. The save happens on the next
+    main-loop pass, before a following reboot (which waits 500 ms). A save
+    event clears a pending reboot, so the reboot has to come after the
+    write's reply, never alongside it. gamepadii's `api::write` refuses to
+    post a body that lacks any key the setter reads, then reads the options
+    back and fails on any difference.
   - The server ignores the HTTP method, and a GET to a `set*` endpoint replays
     the previous POST body.
   - POST bodies are capped at 16 KB, and requests must be serialised.
@@ -72,7 +93,18 @@ reboots as possible.
 - **Input mode persists.** It is written to flash and survives replugs. It is
   also selected at boot by holding a mapped button: `inputModeB1..R2`, and on
   newer firmware `bootModeOptions.inputModeMappings`, which also picks the
-  profile.
+  profile. In v0.7.12 (`GP2040::getBootAction`) the held buttons must be
+  exactly that one button (dpad aside); the mode it selects is saved to flash
+  (`Storage::save(true)`) when it differs, so a boot button is a mode change
+  with no write from the host. Only modes 0–15 are in its switch (P5General,
+  SInput and Switch 2 Pro are newer than v0.7.12 anyway), and
+  `forcedSetupMode` 1 or 3 turns it off. gamepadii caches the map (see
+  `cache.rs`), since in gamepad mode it can't be read.
+- **Profiles resolve per pin** (`Storage::setFunctionalPinMappings`): the
+  active profile's action for each GPIO, unless that action or the base
+  profile's is RESERVED or ASSIGNED_TO_ADDON. A disabled profile falls back to
+  the base. gamepadii names a hotkey's keys by what profile 1 (Default, the
+  printed labels) has on the same GPIO.
 - **Profiles:** up to 6 pin-mapping profiles (GPIO → logical button). They can
   be switched live with hotkeys (`LOAD_PROFILE_n`, `NEXT_PROFILE`), with no
   reboot.
@@ -131,13 +163,18 @@ have.
 
 ```
 crates/gamepadii-core/src/
-  discovery.rs   udev scan + hotplug watch → Device { mode, vid_pid, sysfs path, netdev }
+  discovery.rs   sysfs scan → Device { mode, vid_pid, sysfs path, netdev }; Scan trait
+  wait.rs        wait_for(predicate, timeout) over a Clock (ManualClock in tests)
   mode.rs        InputMode / BootMode enums, VID:PID table
   transport/     http.rs (ureq, serialised, retries), mock.rs (fixtures)
   api/           typed endpoint structs + raw serde_json::Value passthrough
-  client.rs      read-modify-write helpers, capability probing, reboot + wait
-  profile.rs     TOML profile files (~/.config/gamepadii/profiles), diff/apply
-  commands.rs    status, info, mode, webconfig, backup, profile … → plain data
+  client.rs      connect, firmware probe
+  buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
+  cache.rs       last web-config read per board (~/.cache/gamepadii/<board>.json)
+  flow.rs        guided mode / webconfig / reboot-and-verify over Scan + Clock
+  sim.rs         a simulated pad (Scan + mock Transport) for flow tests
+  profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
+  commands.rs    status, info, backup, profile … → plain data
 crates/gamepadii/src/
   main.rs cli.rs output.rs tui/{mod,app,ui,keys}.rs
 ```
@@ -162,7 +199,7 @@ stays behind cfg gates.
 0. **Scaffold** (on `main`): the workspace, LICENSE, README, CLAUDE.md,
    CHANGELOG, mise.toml with the `check` gate, CI, `git init`, and the GitHub
    repo.
-1. **`status`**: udev discovery and mode detection from VID:PID, with human
+1. **`status`**: sysfs discovery and mode detection from VID:PID, with human
    and JSON output plus waybar. It already works with the pad in XInput.
 2. **Web-config client**: `info` (firmware, board, memory), `config dump`,
    `backup` / `restore --dry-run`. Fixtures come from the mock and from a
@@ -171,7 +208,10 @@ stays behind cfg gates.
    print the URL), `mode <xinput|keyboard|hid|switch|ps4|…>` (guide into
    web-config, read-modify-write `inputMode`, reboot, wait, verify), and
    `reboot <gamepad|webconfig|bootsel>`. This is the MVP; then switch to the
-   PR workflow and protect `main`.
+   PR workflow and protect `main`. Done 2026-10-17. Without the user's OK no
+   write went to the real S16: the write path is tested against the setter
+   model in `transport/mock.rs`, and the live write test is gated on
+   `GAMEPADII_LIVE_WRITE=1`.
 4. **Profile library**: KDL bundles with `profile
    list/show/diff/apply/pull`, plus example profiles for No Man's Sky and the
    sidekick.
