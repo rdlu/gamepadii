@@ -586,6 +586,44 @@ fn setup_udev_prints_explains_and_installs_into_a_root() {
 }
 
 #[test]
+fn info_and_backup_from_a_gamepad_mode_use_the_channel() {
+    // The channel takes REBOOT, but a static fixture never shows up in
+    // web-config: nothing is read, and the message says where things are.
+    for cmd in ["info", "backup"] {
+        let (code, stdout, stderr) = cc(&[
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "channel",
+            "--json",
+            cmd,
+            "--timeout",
+            "0",
+        ]);
+        assert_eq!(code, 4, "{cmd}: {stderr}");
+        assert!(stderr.contains("rebooting into web-config"), "{stderr}");
+        assert!(stderr.contains("asked for web-config"), "{stderr}");
+        assert!(stderr.contains("nothing was read"), "{stderr}");
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(v["error"]["kind"], "io");
+    }
+    // Without the channel: exit 5 with how to switch, as before.
+    for kind in [&["--mock-channel", "stock"][..], &["--no-channel"]] {
+        let mut args = vec!["--sysroot", "@s16-xinput"];
+        args.extend_from_slice(kind);
+        args.push("info");
+        let (code, _, stderr) = cc(&args);
+        assert_eq!(code, 5, "{kind:?}");
+        assert!(stderr.contains("XInput mode, not web-config"), "{stderr}");
+    }
+    // In web-config the JSON says there was no trip.
+    let (code, stdout, _) = cc(&["--sysroot", "@s16-webconfig", "info", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v["trip"].is_null());
+}
+
+#[test]
 fn profile_switch_keeps_the_cache_and_the_hints_current() {
     let home = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {

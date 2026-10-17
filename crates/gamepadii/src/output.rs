@@ -15,7 +15,7 @@ use gamepadii_core::commands::{
 };
 use gamepadii_core::discovery::Device;
 use gamepadii_core::flow::{
-    ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Via, WebconfigReport,
+    ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via, WebconfigReport,
     WebconfigVia,
 };
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
@@ -350,9 +350,42 @@ fn setting(s: &ModeSetting) -> String {
     }
 }
 
-pub fn info(style: Style, i: &Info) -> String {
+/// A result that needed web-config, with how the pad got there (`null`
+/// when it was there already).
+#[derive(Serialize)]
+struct WithTrip<'a, T: Serialize> {
+    #[serde(flatten)]
+    data: &'a T,
+    trip: Option<&'a Trip>,
+}
+
+/// The rows saying how the pad went to web-config and back.
+fn trip_rows(t: &Trip) -> Vec<(&'static str, String)> {
+    let mut rw = Vec::new();
+    let route = match (t.stayed, t.back_via) {
+        (true, _) => "web-config, and left there",
+        (false, Some(Route::Control)) => "web-config and back (back over the channel too)",
+        (false, _) => "web-config and back",
+    };
+    rw.push(("via", format!("the control channel: {route} ({})", t.host)));
+    rw.push(("was", seen(&t.before)));
+    if !t.stayed {
+        let now = match &t.after {
+            Some(a) if t.verified => format!("{}, as before", seen(a)),
+            Some(a) => seen(a),
+            None => "not verified".into(),
+        };
+        rw.push(("now", now));
+    }
+    if let Some(n) = &t.note {
+        rw.push(("note", n.clone()));
+    }
+    rw
+}
+
+pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
     if style.format != Format::Human {
-        return json(i);
+        return json(&WithTrip { data: i, trip });
     }
     let (board, version) = firmware_headline(&i.firmware);
     let mut out = format!("{} {}\n", style.bold(&board), style.dim(&version));
@@ -427,13 +460,14 @@ pub fn info(style: Style, i: &Info) -> String {
         .join("\n");
     r.push(("boot buttons", boot));
     r.push(("web-config", i.host.clone()));
+    r.extend(trip.map(trip_rows).unwrap_or_default());
     rows(style, &mut out, &r);
     out
 }
 
-pub fn backup(style: Style, b: &BackupReport) -> String {
+pub fn backup(style: Style, b: &BackupReport, trip: Option<&Trip>) -> String {
     if style.format != Format::Human {
-        return json(b);
+        return json(&WithTrip { data: b, trip });
     }
     let (board, version) = firmware_headline(&b.firmware);
     let mut out = format!(
@@ -452,6 +486,7 @@ pub fn backup(style: Style, b: &BackupReport) -> String {
     }
     r.push(("size", bytes(b.bytes)));
     r.push(("captured", b.captured_at.clone()));
+    r.extend(trip.map(trip_rows).unwrap_or_default());
     rows(style, &mut out, &r);
     out
 }

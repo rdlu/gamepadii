@@ -97,15 +97,22 @@ pub enum FormatArg {
 pub enum Command {
     /// The pad on USB: input mode (with a confidence), USB ids, bus and port.
     Status,
-    /// Firmware, board, memory, input mode, profiles and boot buttons
-    /// (needs web-config).
-    Info,
-    /// Save every readable setting to one JSON file (needs web-config).
+    /// Firmware, board, memory, input mode, profiles and boot buttons.
+    /// Needs web-config; in a gamepad mode the control channel takes the
+    /// pad there and back.
+    Info {
+        #[command(flatten)]
+        trip: TripArgs,
+    },
+    /// Save every readable setting to one JSON file. Needs web-config; in a
+    /// gamepad mode the control channel takes the pad there and back.
     Backup {
         /// Where to write it [default:
         /// ~/.local/share/gamepadii/backups/<time>-<board>.json].
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+        #[command(flatten)]
+        trip: TripArgs,
     },
     /// Restart the pad into gamepad mode, web-config or BOOTSEL, then wait
     /// for it on USB and check what came back. Needs web-config, or the
@@ -178,6 +185,18 @@ pub enum Command {
     /// Write the man pages (gamepadii.1, gamepadii-status.1, ...) into DIR, for packagers.
     #[command(hide = true)]
     Manpages { dir: PathBuf },
+}
+
+/// For `info` and `backup` from a gamepad mode, over the control channel.
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+pub struct TripArgs {
+    /// Leave the pad in web-config afterwards instead of rebooting it back
+    /// into its gamepad mode.
+    #[arg(long)]
+    pub stay: bool,
+    /// How long to wait for the pad on USB after each reboot.
+    #[arg(long, value_name = "SECS", default_value_t = 10)]
+    pub timeout: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

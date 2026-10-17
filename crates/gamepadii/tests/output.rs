@@ -112,7 +112,7 @@ mod webconfig {
     }
 
     fn info(format: Format) -> String {
-        output::info(Style::plain(format), &commands::info(&s16()).unwrap())
+        output::info(Style::plain(format), &commands::info(&s16()).unwrap(), None)
     }
 
     /// A report with a fixed path, as if written to `/backups/s16.json`.
@@ -138,13 +138,18 @@ mod webconfig {
     fn human_backup() {
         insta::assert_snapshot!(output::backup(
             Style::plain(Format::Human),
-            &backup_report()
+            &backup_report(),
+            None
         ));
     }
 
     #[test]
     fn json_backup() {
-        insta::assert_snapshot!(output::backup(Style::plain(Format::Json), &backup_report()));
+        insta::assert_snapshot!(output::backup(
+            Style::plain(Format::Json),
+            &backup_report(),
+            None
+        ));
     }
 
     #[test]
@@ -178,7 +183,7 @@ mod flows {
     use gamepadii::output::{self, Format, Style};
     use gamepadii::progress::Reporter;
     use gamepadii_core::cache::{self, DeviceCache};
-    use gamepadii_core::commands::Firmware;
+    use gamepadii_core::commands::{self, Firmware};
     use gamepadii_core::flow::{self, Env, ModeReport, Progress, Silent, Timeouts};
     use gamepadii_core::mode::{BootMode, InputMode};
     use gamepadii_core::sim::{SimPad, UserAction};
@@ -487,6 +492,71 @@ mod flows {
             output::profile_switch(human(), &already),
             output::profile_switch(json(), &ram)
         ));
+    }
+
+    /// `info` and `backup` from XInput: REBOOT into web-config, read,
+    /// `/api/reboot` back. The progress on stderr, then the result.
+    #[test]
+    fn info_and_backup_through_web_config() {
+        let rig = cc(InputMode::Xinput);
+        let mut stderr = Vec::new();
+        let (info, trip) = {
+            let mut p = Reporter::new(&mut stderr, false);
+            rig.run(|env| {
+                flow::through_webconfig(env, false, &mut p, commands::info, |_| String::new())
+            })
+            .unwrap()
+        };
+        let out = rig.dirs.path().join("s16.json");
+        let (mut backup, stayed) = rig
+            .run(|env| {
+                flow::through_webconfig(
+                    env,
+                    true,
+                    &mut Silent,
+                    |c| commands::backup(c, Some(&out), env.clock.wall()),
+                    |_| String::new(),
+                )
+            })
+            .unwrap();
+        backup.path = PathBuf::from("/backups/s16.json");
+        insta::assert_snapshot!(format!(
+            "--- stderr\n{}--- info\n{}--- backup --stay\n{}",
+            String::from_utf8(stderr).unwrap(),
+            output::info(human(), &info, trip.as_ref()),
+            output::backup(human(), &backup, stayed.as_ref())
+        ));
+        let v: Value = serde_json::from_str(&output::info(json(), &info, trip.as_ref())).unwrap();
+        insta::assert_snapshot!(serde_json::to_string_pretty(&v["trip"]).unwrap());
+    }
+
+    /// What `info` says when the trip goes wrong: the pad is sent back
+    /// whenever it can be, and the message says so.
+    #[test]
+    fn info_through_web_config_failures() {
+        let run = |pad: SimPad| {
+            let rig = Rig::new(pad);
+            let err = rig
+                .run(|env| {
+                    flow::through_webconfig(env, false, &mut Silent, commands::info, |_| {
+                        "the pad was read".to_string()
+                    })
+                })
+                .unwrap_err();
+            format!("exit {}: {err}", err.exit_code())
+        };
+        let channel = || SimPad::new(s16_dir(), InputMode::Xinput).with_channel();
+        insta::assert_snapshot!(
+            [
+                run(SimPad::new(s16_dir(), InputMode::Xinput)),
+                run(channel().channel(|c| c.forced_setup = 2)),
+                run(channel().stays_away()),
+                run(channel().server_down()),
+                run(channel().stays_away_after(1)),
+                run(channel().come_back_as(InputMode::Ps3)),
+            ]
+            .join("\n")
+        );
     }
 
     #[test]

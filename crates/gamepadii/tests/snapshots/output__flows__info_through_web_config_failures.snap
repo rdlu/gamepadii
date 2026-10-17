@@ -1,0 +1,10 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "[run(SimPad::new(s16_dir(), InputMode::Xinput)),\nrun(channel().channel(|c| c.forced_setup = 2)), run(channel().stays_away()),\nrun(channel().server_down()), run(channel().stays_away_after(1)),\nrun(channel().come_back_as(InputMode::Ps3)),].join(\"\\n\")"
+---
+exit 5: action needed: the pad is in XInput mode, not web-config. To switch: hold S2 (Start) while plugging the pad in, or hold S2+B3+B4 for 4 seconds while it runs; these are logical buttons, so the active profile's mapping decides which keys they are. Then run this again
+exit 3: usage: the pad refused a reboot into web-config: its forced setup mode locks web-config
+exit 4: asked for web-config and the pad was rebooted: it hasn't come back on USB after 10 s; nothing was read. If it shows up in web-config later, `gamepadii reboot gamepad` sends it back
+exit 4: the pad is in web-config, but its web configurator didn't answer: GET http://192.168.7.1/api/getFirmwareVersion: no route (sim); the pad was sent back and is in XInput mode again
+exit 4: the pad was read, but on the way back: asked for XInput and the pad was rebooted: it hasn't come back on USB after 10 s
+exit 1: check failed: the pad was read, but on the way back: the pad came back as PS3 (054c:0268), not XInput

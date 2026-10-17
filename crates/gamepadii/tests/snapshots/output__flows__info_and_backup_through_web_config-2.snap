@@ -1,0 +1,29 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "serde_json::to_string_pretty(&v[\"trip\"]).unwrap()"
+---
+{
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "before": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "045e:028e"
+  },
+  "profile": 2,
+  "stayed": false,
+  "back_via": "web_config",
+  "after": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "045e:028e"
+  },
+  "verified": true,
+  "note": null
+}

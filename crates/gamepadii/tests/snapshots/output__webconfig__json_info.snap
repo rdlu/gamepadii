@@ -100,5 +100,6 @@ expression: "info(Format::Json)"
       "value": 3,
       "mode": "keyboard"
     }
-  ]
+  ],
+  "trip": null
 }

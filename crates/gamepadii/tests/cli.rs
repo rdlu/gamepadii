@@ -1,7 +1,7 @@
 //! Argument parsing and `--help`, with no device involved.
 
 use clap::Parser;
-use gamepadii::cli::{Cli, Command, FormatArg};
+use gamepadii::cli::{Cli, Command, FormatArg, TripArgs};
 use gamepadii::output::Format;
 
 fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
@@ -43,17 +43,39 @@ fn parses_status_and_sysroot() {
 fn parses_web_config_commands() {
     use gamepadii::cli::RebootArg;
     let cli = parse(&["--host", "10.0.0.2", "info"]).unwrap();
-    assert_eq!(cli.command, Some(Command::Info));
+    let back = TripArgs {
+        stay: false,
+        timeout: 10,
+    };
+    assert_eq!(cli.command, Some(Command::Info { trip: back.clone() }));
     assert_eq!(cli.host.as_deref(), Some("10.0.0.2"));
     assert_eq!(
         parse(&["backup", "-o", "x.json"]).unwrap().command,
         Some(Command::Backup {
-            output: Some("x.json".into())
+            output: Some("x.json".into()),
+            trip: back.clone()
         })
     );
     assert_eq!(
-        parse(&["backup"]).unwrap().command,
-        Some(Command::Backup { output: None })
+        parse(&["backup", "--stay", "--timeout", "30"])
+            .unwrap()
+            .command,
+        Some(Command::Backup {
+            output: None,
+            trip: TripArgs {
+                stay: true,
+                timeout: 30
+            }
+        })
+    );
+    assert_eq!(
+        parse(&["info", "--stay"]).unwrap().command,
+        Some(Command::Info {
+            trip: TripArgs {
+                stay: true,
+                timeout: 10
+            }
+        })
     );
     for (arg, mode) in [
         ("gamepad", RebootArg::Gamepad),

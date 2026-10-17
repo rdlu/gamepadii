@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
-use gamepadii::cli::{self, Cli, Command, MockChannel, ProfileCommand, SetupCommand};
+use gamepadii::cli::{self, Cli, Command, MockChannel, ProfileCommand, SetupCommand, TripArgs};
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
 use gamepadii_core::cache::{self, DeviceCache};
@@ -59,26 +59,33 @@ fn main() -> ExitCode {
             commands::status_with(&root, control, cache::cache_dir().as_deref())
                 .map(|s| output::status(style, &s)),
         ),
-        Some(Command::Info) => finish(
-            format,
-            connect(&cli, &root)
-                .and_then(|c| commands::info_with_cache(&c, SystemTime::now()))
-                .map(|(i, cache)| {
+        Some(Command::Info { trip }) => {
+            let work = |c: &Client| {
+                let (info, cache) = commands::info_with_cache(c, SystemTime::now())?;
+                save_cache(&cache);
+                Ok(info)
+            };
+            let result = with_webconfig(&cli, &root, control, format, &trip, work, |_| {
+                "the pad was read".to_string()
+            })
+            .map(|(i, t)| output::info(style, &i, t.as_ref()));
+            finish(format, result)
+        }
+        Some(Command::Backup { output: path, trip }) => {
+            let work = |c: &Client| {
+                let (report, cache) =
+                    commands::backup_with_cache(c, path.as_deref(), SystemTime::now())?;
+                if let Some(cache) = cache {
                     save_cache(&cache);
-                    output::info(style, &i)
-                }),
-        ),
-        Some(Command::Backup { output: path }) => finish(
-            format,
-            connect(&cli, &root)
-                .and_then(|c| commands::backup_with_cache(&c, path.as_deref(), SystemTime::now()))
-                .map(|(b, cache)| {
-                    if let Some(cache) = cache {
-                        save_cache(&cache);
-                    }
-                    output::backup(style, &b)
-                }),
-        ),
+                }
+                Ok(report)
+            };
+            let result = with_webconfig(&cli, &root, control, format, &trip, work, |b| {
+                format!("the backup is saved in {}", b.path.display())
+            })
+            .map(|(b, t)| output::backup(style, &b, t.as_ref()));
+            finish(format, result)
+        }
         Some(Command::Reboot {
             mode,
             no_wait,
@@ -209,6 +216,32 @@ fn main() -> ExitCode {
                 .map_err(|e| Error::io(format!("writing man pages into {}", dir.display()), e)),
         ),
     }
+}
+
+/// Runs `work` against the web configurator: at `--host` as it is;
+/// otherwise the pad on USB, which the control channel takes into
+/// web-config and back when it is in a gamepad mode.
+fn with_webconfig<T>(
+    cli: &Cli,
+    root: &Root,
+    control: Option<&OpenControl<'_>>,
+    format: Format,
+    trip: &TripArgs,
+    work: impl FnOnce(&Client) -> gamepadii_core::Result<T>,
+    done: impl FnOnce(&T) -> String,
+) -> gamepadii_core::Result<(T, Option<flow::Trip>)> {
+    if cli.host.is_some() {
+        return connect(cli, root).and_then(|c| work(&c)).map(|r| (r, None));
+    }
+    let timeouts = Timeouts {
+        reboot: Duration::from_secs(trip.timeout),
+        ..Timeouts::default()
+    };
+    let clock = SystemClock::new();
+    let open = || open(cli);
+    let env = env(cli, root, &clock, &open, control, timeouts, false);
+    let mut progress = reporter(format);
+    flow::through_webconfig(&env, trip.stay, &mut progress, work, done)
 }
 
 /// The web-config client: `--host` skips the USB check; otherwise the pad

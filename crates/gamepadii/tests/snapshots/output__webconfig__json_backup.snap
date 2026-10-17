@@ -1,6 +1,6 @@
 ---
 source: crates/gamepadii/tests/output.rs
-expression: "output::backup(Style::plain(Format::Json), &backup_report())"
+expression: "output::backup(Style::plain(Format::Json), &backup_report(), None)"
 ---
 {
   "schema": 1,
@@ -39,5 +39,6 @@ expression: "output::backup(Style::plain(Format::Json), &backup_report())"
     "getWiiControls"
   ],
   "unavailable": [],
-  "bytes": 63735
+  "bytes": 63735,
+  "trip": null
 }

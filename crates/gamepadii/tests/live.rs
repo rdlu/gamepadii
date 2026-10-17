@@ -44,7 +44,7 @@ fn webconfig() -> Option<Client> {
 fn info_reads_the_pad() {
     let Some(client) = webconfig() else { return };
     let info = commands::info(&client).expect("info");
-    print!("{}", output::info(Style::plain(Format::Human), &info));
+    print!("{}", output::info(Style::plain(Format::Human), &info, None));
     assert!(info.firmware.version.is_some());
     assert!(!info.profiles.is_empty());
 }
@@ -57,7 +57,10 @@ fn backup_reads_every_allowlisted_endpoint() {
     let path = dir.path().join("live.json");
     let report =
         commands::backup(&client, Some(&path), std::time::SystemTime::now()).expect("backup");
-    print!("{}", output::backup(Style::plain(Format::Human), &report));
+    print!(
+        "{}",
+        output::backup(Style::plain(Format::Human), &report, None)
+    );
     assert!(path.exists());
     assert!(!report.endpoints.is_empty());
 }

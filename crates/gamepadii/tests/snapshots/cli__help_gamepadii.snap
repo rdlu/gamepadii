@@ -8,8 +8,8 @@ Usage: gamepadii [OPTIONS] [COMMAND]
 
 Commands:
   status     The pad on USB: input mode (with a confidence), USB ids, bus and port
-  info       Firmware, board, memory, input mode, profiles and boot buttons (needs web-config)
-  backup     Save every readable setting to one JSON file (needs web-config)
+  info       Firmware, board, memory, input mode, profiles and boot buttons. Needs web-config; in a gamepad mode the control channel takes the pad there and back
+  backup     Save every readable setting to one JSON file. Needs web-config; in a gamepad mode the control channel takes the pad there and back
   reboot     Restart the pad into gamepad mode, web-config or BOOTSEL, then wait for it on USB and check what came back. Needs web-config, or the control channel in a gamepad mode
   mode       Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
   webconfig  Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
