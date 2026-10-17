@@ -1,0 +1,31 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}{}\", run(channel().channel(|c| c.active = 3)),\nrun(channel().channel(|c| { c.active = 3; c.enabled_profiles &= !0b100; })))"
+---
+--- stderr
+rebooting into web-config
+waiting for the pad to come back in web-config (up to 10 s)
+rebooting into gamepad mode
+waiting for the pad to come back (up to 10 s)
+switching back to profile 3 (RAM only)
+--- rows
+via           the control channel: web-config and back (/dev/bus/usb/003/007)
+was           XInput (045e:028e, confirmed)
+now           XInput (045e:028e, confirmed), as before
+note          restored profile 3 Celeste (RAM only) after the restart
+--- json
+restored_profile: 3
+--- stderr
+rebooting into web-config
+waiting for the pad to come back in web-config (up to 10 s)
+rebooting into gamepad mode
+waiting for the pad to come back (up to 10 s)
+switching back to profile 3 (RAM only)
+warning: profile 3 not restored after the restart: usage: the pad refused profile 3: that profile is disabled
+--- rows
+via           the control channel: web-config and back (/dev/bus/usb/003/007)
+was           XInput (045e:028e, confirmed)
+now           XInput (045e:028e, confirmed), as before
+note          it ran profile 3 before, not saved; the restart put it back on its saved profile 2, and switching back failed (usage: the pad refused profile 3: that profile is disabled); `gamepadii profile switch 3` tries again
+--- json
+restored_profile: null

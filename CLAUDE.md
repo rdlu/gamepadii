@@ -91,6 +91,10 @@ which writes `inputMode`. Live tests that reboot or write skip unless
 channel ones also need `GAMEPADII_LIVE_CHANNEL=1`. Over the channel,
 SET_INPUT_MODE and `profile switch --save` write flash, and even a RAM-only
 `profile switch` changes the live mapping: treat all three as writes.
+The one exception, allowed by the user: after a web-config round trip
+(`info`/`backup` over the channel), gamepadii itself switches back, RAM only,
+to a profile the restart dropped; running `info`/`backup` needs no extra OK
+for that.
 Never run `gamepadii setup udev --install` for the user; it goes through
 pkexec and is theirs to approve.
 

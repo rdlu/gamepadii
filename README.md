@@ -82,7 +82,9 @@ press:
   a few seconds; the output says so ("via the control channel: web-config
   and back"). `--stay` leaves it in web-config. If anything fails on the
   way, gamepadii still sends the pad back and says whether that worked. The
-  restart drops a RAM-only profile, and the output notes it.
+  restart drops a RAM-only profile; gamepadii switches back to it (RAM
+  only, nothing saved) and says so, or warns if that failed. With `--stay`
+  it only notes that the profile was dropped.
 
 The channel needs read-write access to the pad's device node
 (`/dev/bus/usb/BBB/DDD`), which is root-only by default. `gamepadii setup

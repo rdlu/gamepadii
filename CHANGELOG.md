@@ -77,6 +77,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still sent back (over the channel when HTTP doesn't answer) and the
   error says whether that worked. The JSON gains `trip` (`null` when the
   pad was in web-config already; additive, still schema 1).
+- After that trip, a RAM-only profile the restart dropped is switched back
+  to (SET_PROFILE, RAM only, checked with STATUS, and recorded in the
+  device cache): "restored profile 3 Celeste (RAM only) after the restart".
+  If that fails, the note says the profile was dropped and why, with a
+  warning on stderr; the exit code stays 0, since the read worked. With
+  `--stay` nothing is switched and the note says the profile was dropped.
+  `trip` gains `restored_profile` (the number, or `null`; additive, still
+  schema 1).
 - The device cache records the profile the control channel reports
   running (`running_profile`, next to the saved `profileNumber`):
   `profile switch` updates it (RAM-only the running one, `--save` both),

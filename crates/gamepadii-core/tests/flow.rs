@@ -69,6 +69,10 @@ impl Progress for Log {
             Step::Writing(m) => self.other.push(format!("writing {m}")),
             Step::Rebooting(m) => self.other.push(format!("rebooting {m}")),
             Step::CacheFailed(e) => self.other.push(format!("cache failed: {e}")),
+            Step::RestoringProfile(n) => self.other.push(format!("restoring profile {n}")),
+            Step::RestoreFailed { profile, error } => self
+                .other
+                .push(format!("profile {profile} not restored: {error}")),
         }
     }
 }
@@ -1542,16 +1546,144 @@ fn a_locked_web_config_changes_nothing() {
 }
 
 #[test]
-fn the_trip_drops_a_ram_only_profile_and_says_so() {
+fn the_trip_restores_a_ram_only_profile() {
     let rig = Rig::cc(InputMode::Xinput).with_cache();
     switch(&rig, "3", false).unwrap();
-    let (_, trip) = info_trip(&rig, false, &mut Log::default()).unwrap();
-    let note = trip.unwrap().note.unwrap();
+    let mut log = Log::default();
+    let (_, trip) = info_trip(&rig, false, &mut log).unwrap();
+    let t = trip.unwrap();
+    assert_eq!(t.profile, Some(3));
+    assert_eq!(t.restored_profile, Some(3));
+    assert!(t.verified);
+    assert_eq!(
+        t.note.as_deref(),
+        Some("restored profile 3 Celeste (RAM only) after the restart")
+    );
+    assert_eq!(
+        log.other,
+        [
+            "rebooting webconfig",
+            "rebooting gamepad",
+            "restoring profile 3"
+        ]
+    );
+    let fw = rig.pad.firmware();
+    assert_eq!((fw.active, fw.saved_profile), (3, 2), "RAM only");
+    assert_eq!(saved_profile(&rig), 2, "flash untouched");
+    assert!(rig.writes().is_empty());
+    // SET_PROFILE(3) by the switch, REBOOT(1), SET_PROFILE(3) RAM only:
+    // the pad went back over HTTP.
+    assert_eq!(rig.channel_commands(), [0x10, 0x11, 0x10]);
+    let last = rig
+        .pad
+        .control_log()
+        .into_iter()
+        .rfind(|s| !s.setup.is_in())
+        .unwrap();
+    assert_eq!(&last.data[last.data.len() - 2..], [3, 0], "persist = 0");
+    let c = cached(&rig);
+    assert_eq!(c.active_profile(), Some(3));
+    assert_eq!(c.saved_profile(), Some(2));
+}
+
+#[test]
+fn a_failed_restore_is_a_warning_and_the_old_note() {
+    // The pad runs profile 3, which a restart can't get back to: the
+    // firmware refuses it as disabled.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.active = 3;
+                c.enabled_profiles &= !0b100;
+            }),
+    )
+    .with_cache();
+    let mut log = Log::default();
+    let (_, trip) = info_trip(&rig, false, &mut log).unwrap();
+    let t = trip.unwrap();
+    assert_eq!(t.restored_profile, None);
+    assert!(t.verified);
+    let note = t.note.unwrap();
     assert!(
-        note.contains(
-            "it ran profile 3 before, not saved; the restart put it back on its saved profile 2"
+        note.starts_with(
+            "it ran profile 3 before, not saved; the restart put it back on its saved \
+             profile 2, and switching back failed (usage: the pad refused profile 3: that \
+             profile is disabled)"
         ),
         "{note}"
+    );
+    assert!(
+        note.ends_with("`gamepadii profile switch 3` tries again"),
+        "{note}"
+    );
+    assert_eq!(
+        log.other.last().unwrap(),
+        "profile 3 not restored: usage: the pad refused profile 3: that profile is disabled"
+    );
+    assert_eq!(rig.pad.firmware().active, 2);
+    assert_eq!(cached(&rig).active_profile(), Some(2));
+    // A channel without SET_PROFILE: the same, with its reason.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.active = 3;
+                c.caps = gamepadii_core::channel::Caps(
+                    gamepadii_core::channel::sim::V1_CAPS
+                        & !gamepadii_core::channel::Caps::SET_PROFILE,
+                );
+            }),
+    );
+    let (_, trip) = info_trip(&rig, false, &mut Log::default()).unwrap();
+    let t = trip.unwrap();
+    assert_eq!(t.restored_profile, None);
+    let note = t.note.unwrap();
+    assert!(
+        note.contains("control channel has no SET_PROFILE"),
+        "{note}"
+    );
+}
+
+#[test]
+fn the_saved_profile_needs_no_restore() {
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    let mut log = Log::default();
+    let (_, trip) = info_trip(&rig, false, &mut log).unwrap();
+    let t = trip.unwrap();
+    assert_eq!(
+        (t.profile, t.restored_profile, t.note),
+        (Some(2), None, None)
+    );
+    assert_eq!(rig.channel_commands(), [0x11], "no SET_PROFILE");
+    assert!(!log.other.iter().any(|l| l.contains("restor")));
+}
+
+#[test]
+fn stay_drops_a_ram_only_profile_and_says_so() {
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "3", false).unwrap();
+    let (_, trip) = info_trip(&rig, true, &mut Log::default()).unwrap();
+    let t = trip.unwrap();
+    assert_eq!(t.restored_profile, None);
+    let note = t.note.unwrap();
+    assert!(
+        note.starts_with("left in web-config at http://192.168.7.1/"),
+        "{note}"
+    );
+    assert!(
+        note.contains(
+            "; it ran profile 3 before, not saved; the restart put it back on its saved \
+             profile 2 (`gamepadii profile switch 3` switches again once it is back in a \
+             gamepad mode)"
+        ),
+        "{note}"
+    );
+    assert_eq!(rig.pad.mode(), Some(InputMode::Webconfig));
+    assert_eq!(
+        rig.channel_commands(),
+        [0x10, 0x11],
+        "no restore in web-config"
     );
     assert_eq!(rig.pad.firmware().active, 2);
     assert_eq!(cached(&rig).active_profile(), Some(2));

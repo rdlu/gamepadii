@@ -173,8 +173,14 @@ Host side (`gamepadii-core/src/channel/`):
   mode it was in (`--stay` skips the return). On any failure past the
   REBOOT it still sends the pad back, over the channel if HTTP doesn't
   answer, and the error says how that went. The restart drops a RAM-only
-  profile; the output notes it rather than switching back (a profile
-  switch changes the live mapping, so it is only done when asked). Decided in #2 (follow-up 3).
+  profile (STATUS before ≠ STATUS after): gamepadii switches back to it with
+  a RAM-only SET_PROFILE, checks STATUS, updates the cache and notes
+  "restored profile N (RAM only)" (`trip.restored_profile`). That puts back
+  the mapping the user had, so the user allowed it as automatic; flash is
+  never touched. A failed restore is a warning (stderr and the note), not
+  an error: the read worked. With `--stay` nothing is switched (the pad
+  stays in web-config); the note says the profile was dropped. Decided in
+  #2 (follow-up 3; the restore decided later).
 - The device cache (`cache.rs`) records the profile STATUS reports
   (`running_profile`) beside the saved `profileNumber`: `profile switch`
   sets it (and the saved one with `--save`), any STATUS refreshes it

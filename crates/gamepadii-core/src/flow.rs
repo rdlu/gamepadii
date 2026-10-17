@@ -101,6 +101,14 @@ pub enum Step<'a> {
     Rebooting(BootMode),
     /// The device cache could not be written (not fatal).
     CacheFailed(&'a Error),
+    /// A restart dropped the RAM-only profile it ran: switching back to it
+    /// (RAM only).
+    RestoringProfile(u8),
+    /// That failed (not fatal: the trip's note says so too).
+    RestoreFailed {
+        profile: u8,
+        error: &'a Error,
+    },
 }
 
 pub trait Progress {
@@ -1426,6 +1434,10 @@ pub struct Trip {
     pub before: Seen,
     /// The profile it ran before (from STATUS).
     pub profile: Option<u8>,
+    /// The profile switched back to (RAM only, over the channel) when the
+    /// restart had dropped it: it ran a profile it hadn't saved. `null`
+    /// when nothing needed restoring, restoring failed, or with `--stay`.
+    pub restored_profile: Option<u8>,
     /// `--stay`: it was left in web-config.
     pub stayed: bool,
     /// How it was sent back: `web_config` (`/api/reboot {"bootMode":0}`), or
@@ -1505,6 +1517,7 @@ pub fn through_webconfig<T>(
         host: ch.node(),
         before,
         profile: probed.profile(),
+        restored_profile: None,
         stayed: stay,
         back_via: None,
         after: None,
@@ -1563,10 +1576,14 @@ pub fn through_webconfig<T>(
         }
     };
     if stay {
-        trip.note = Some(format!(
+        let mut note = format!(
             "left in web-config at {}; leave it with: gamepadii webconfig --exit",
             env.url
-        ));
+        );
+        if let Some(dropped) = dropped_in_webconfig(env, &wc, &probed.firmware, trip.profile) {
+            note.push_str(&format!("; {dropped}"));
+        }
+        trip.note = Some(note);
         return Ok((result, Some(trip)));
     }
     match go_back(
@@ -1583,6 +1600,28 @@ pub fn through_webconfig<T>(
             &format!("{}, but on the way back", done(&result)),
         )),
     }
+}
+
+/// With `--stay`: what the restart did to a RAM-only profile `before`, as
+/// STATUS reports it in web-config (the channel answers there too).
+fn dropped_in_webconfig(
+    env: &Env,
+    wc: &Device,
+    fw: &Firmware,
+    before: Option<u8>,
+) -> Option<String> {
+    let p = before?;
+    let st = channel_after_reboot(env, wc)?.status().ok()?;
+    let dir = env.cache_dir.as_deref();
+    let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+    (st.profile != p).then(|| {
+        format!(
+            "it ran profile {p} before, not saved; the restart put it back on its saved \
+             profile {} (`gamepadii profile switch {p}` switches again once it is back in a \
+             gamepad mode)",
+            st.profile
+        )
+    })
 }
 
 /// After `e` in web-config: sends the pad back and returns `e`, saying
@@ -1694,17 +1733,88 @@ fn go_back(
         }
         trip.after = Some(confirmed(&got, now));
         if let Some(p) = trip.profile.filter(|p| *p != st.profile) {
-            trip.note = Some(format!(
-                "it ran profile {p} before, not saved; the restart put it back on its \
-                 saved profile {} (`gamepadii profile switch {p}` switches again)",
-                st.profile
-            ));
+            trip.note = Some(restore_profile(env, &ch, fw, p, st.profile, trip, progress));
         }
     } else {
         trip.note = got.note.clone();
     }
     trip.verified = was.is_some();
     Ok(())
+}
+
+/// The restart put the pad back on its `saved` profile, dropping the
+/// RAM-only `p` it ran before: switches back to `p`, RAM only (flash is
+/// untouched), checks STATUS and records it in the cache. The trip's note
+/// either way; a failure is also a warning, but not an error: what the trip
+/// was for has worked.
+fn restore_profile(
+    env: &Env,
+    ch: &Channel,
+    fw: &Firmware,
+    p: u8,
+    saved: u8,
+    trip: &mut Trip,
+    progress: &mut dyn Progress,
+) -> String {
+    progress.step(Step::RestoringProfile(p));
+    let dir = env.cache_dir.as_deref();
+    let result = ch
+        .set_profile(p, false)
+        .and_then(|()| match applied(env, ch, p) {
+            Some(st) if st.profile == p => Ok(()),
+            Some(st) => {
+                let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+                Err(Error::CheckFailed(format!(
+                    "the pad accepted profile {p}, but STATUS shows profile {}",
+                    st.profile
+                )))
+            }
+            None => Err(Error::Protocol(format!(
+                "the pad took profile {p} but hasn't applied it after 1 s"
+            ))),
+        });
+    match result {
+        Ok(()) => {
+            if let Some(e) = commands::remember_profile(dir, fw, p, false, env.clock.wall()) {
+                progress.step(Step::CacheFailed(&e));
+            }
+            trip.restored_profile = Some(p);
+            let name = ProfileName {
+                number: p,
+                label: ch.string(proto::string::profile_label(p)).ok().flatten(),
+            };
+            format!(
+                "restored profile {} (RAM only) after the restart",
+                name.display()
+            )
+        }
+        Err(e) => {
+            progress.step(Step::RestoreFailed {
+                profile: p,
+                error: &e,
+            });
+            format!(
+                "it ran profile {p} before, not saved; the restart put it back on its saved \
+                 profile {saved}, and switching back failed ({e}); `gamepadii profile switch \
+                 {p}` tries again"
+            )
+        }
+    }
+}
+
+/// STATUS once the pad has applied a switch to profile `n` (the main loop
+/// remaps the pins on its next pass, well under 1 ms), or to another
+/// profile; `None` when it still hasn't after 1 s.
+fn applied(env: &Env, ch: &Channel, n: u8) -> Option<channel::Status> {
+    wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(20),
+            timeout: Duration::from_secs(1),
+        },
+        || ch.status().ok().filter(|s| s.profile != n || !s.pending()),
+        |_| {},
+    )
 }
 
 /// Which profile `profile switch` goes to.
@@ -1869,17 +1979,7 @@ pub fn profile_switch(
     // The hints follow the switch: RAM-only changes the running profile,
     // --save the saved one too.
     remember(n, save, progress);
-    // The main loop remaps the pins on its next pass (well under 1 ms).
-    let done = wait_for(
-        env.clock,
-        Poll {
-            interval: Duration::from_millis(20),
-            timeout: Duration::from_secs(1),
-        },
-        || ch.status().ok().filter(|s| s.profile != n || !s.pending()),
-        |_| {},
-    );
-    let Some(after) = done else {
+    let Some(after) = applied(env, &ch, n) else {
         report.applied = false;
         report.note = Some("the pad took the switch but hasn't applied it after 1 s".into());
         return Ok(report);

@@ -104,6 +104,12 @@ impl<W: Write> Progress for Reporter<W> {
             Step::Writing(m) => self.line(&format!("saving input mode {}", m.label())),
             Step::Rebooting(m) => self.line(&format!("rebooting into {}", m.label())),
             Step::CacheFailed(e) => self.line(&format!("warning: device cache not saved: {e}")),
+            Step::RestoringProfile(n) => {
+                self.line(&format!("switching back to profile {n} (RAM only)"))
+            }
+            Step::RestoreFailed { profile, error } => self.line(&format!(
+                "warning: profile {profile} not restored after the restart: {error}"
+            )),
         }
     }
 }

@@ -530,6 +530,42 @@ mod flows {
         insta::assert_snapshot!(serde_json::to_string_pretty(&v["trip"]).unwrap());
     }
 
+    /// A RAM-only profile the restart dropped: switched back to, or a
+    /// warning when that fails. The progress on stderr, then the rows the
+    /// trip adds and the JSON.
+    #[test]
+    fn info_restores_a_ram_only_profile() {
+        let run = |pad: SimPad| {
+            let rig = Rig::new(pad);
+            let mut stderr = Vec::new();
+            let (info, trip) = {
+                let mut p = Reporter::new(&mut stderr, false);
+                rig.run(|env| {
+                    flow::through_webconfig(env, false, &mut p, commands::info, |_| String::new())
+                })
+                .unwrap()
+            };
+            let human = output::info(human(), &info, trip.as_ref());
+            let rows = &human[human.find("via ").unwrap()..];
+            let v: Value =
+                serde_json::from_str(&output::info(json(), &info, trip.as_ref())).unwrap();
+            format!(
+                "--- stderr\n{}--- rows\n{rows}--- json\nrestored_profile: {}\n",
+                String::from_utf8(stderr).unwrap(),
+                v["trip"]["restored_profile"]
+            )
+        };
+        let channel = || SimPad::new(s16_dir(), InputMode::Xinput).with_channel();
+        insta::assert_snapshot!(format!(
+            "{}{}",
+            run(channel().channel(|c| c.active = 3)),
+            run(channel().channel(|c| {
+                c.active = 3;
+                c.enabled_profiles &= !0b100;
+            }))
+        ));
+    }
+
     /// What `info` says when the trip goes wrong: the pad is sent back
     /// whenever it can be, and the message says so.
     #[test]

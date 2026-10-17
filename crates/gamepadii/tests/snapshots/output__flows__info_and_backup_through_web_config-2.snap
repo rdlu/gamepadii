@@ -14,6 +14,7 @@ expression: "serde_json::to_string_pretty(&v[\"trip\"]).unwrap()"
     "usb_id": "045e:028e"
   },
   "profile": 2,
+  "restored_profile": null,
   "stayed": false,
   "back_via": "web_config",
   "after": {
