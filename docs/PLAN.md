@@ -58,10 +58,17 @@ reboots as possible.
   - **Never call `getI2CPeripheralMap` either.** It runs a live I2C bus scan,
     and that hung the S16 in the same way. The client keeps an explicit
     allowlist of endpoints verified as safe to read; a `get*` name alone
-    doesn't make an endpoint safe. Verified safe on the S16 so far:
-    getAddonsOptions, getButtonLayoutDefs, getButtonLayouts, getCustomTheme,
+    doesn't make an endpoint safe. Verified safe on the S16 so far (the
+    allowlist in `gamepadii-core/src/api/mod.rs`): getAddonsOptions,
+    getButtonLayoutDefs, getButtonLayouts, getCustomTheme,
     getDisplayOptions, getExpansionPins, getFirmwareVersion,
-    getGamepadOptions, getHETriggerCalibration, getHETriggerOptions.
+    getGamepadOptions, getHETriggerCalibration, getHETriggerOptions,
+    getKeyMappings, getLedOptions, getMacroAddonOptions, getMemoryReport,
+    getPeripheralOptions, getPinMappings, getProfileOptions,
+    getReactiveLEDs, getSplashImage, getUsedPins, getWiiControls. Their
+    responses are the fixtures in `tests/fixtures/api/s16-v0.7.12/`.
+    `getHeldPins` blocks until a button is pressed and stays out of the
+    read path; it gets its own function with the button test.
 - **Input mode persists.** It is written to flash and survives replugs. It is
   also selected at boot by holding a mapped button: `inputModeB1..R2`, and on
   newer firmware `bootModeOptions.inputModeMappings`, which also picks the
