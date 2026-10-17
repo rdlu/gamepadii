@@ -62,6 +62,8 @@ The client must guard against these (details in `docs/PLAN.md`):
 - The server ignores the HTTP method: never GET a `set*` endpoint (it replays
   the previous POST body).
 - Serialise requests (one at a time); POST bodies are capped at 16 KB.
+- lwIP's httpd matches `Content-Length:` case-sensitively; requests must use
+  that exact casing (we use our own HTTP/1.0 client for this).
 - `resetSettings` is a destructive GET: never call it.
 - Never call `/api/getConfig` on v0.7.12: on the S16 (Haute42COSMOX, build
   0014e4a) it hangs the device's network stack until replugged. Back up via

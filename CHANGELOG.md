@@ -52,6 +52,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the endpoints known to hang or wipe the pad (`getConfig`,
   `getI2CPeripheralMap`, `resetSettings`) impossible to request.
 
+### Fixed
+
+- Writes (`setGamepadOptions`, so `gamepadii mode` in web-config) failed
+  with "Peer disconnected": lwIP's httpd matches `Content-Length:`
+  case-sensitively and ureq sends lowercase header names, so the pad
+  dropped every POST with a body. The transport is now a small HTTP/1.0
+  client that sends the headers with their exact casing.
+
 ### Changed
 
 - Backups and the device cache keep each endpoint's keys in the pad's order

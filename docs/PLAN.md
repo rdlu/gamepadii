@@ -166,7 +166,7 @@ crates/gamepadii-core/src/
   discovery.rs   sysfs scan → Device { mode, vid_pid, sysfs path, netdev }; Scan trait
   wait.rs        wait_for(predicate, timeout) over a Clock (ManualClock in tests)
   mode.rs        InputMode / BootMode enums, VID:PID table
-  transport/     http.rs (ureq, serialised, retries), mock.rs (fixtures)
+  transport/     http.rs (own HTTP/1.0 client, serialised), mock.rs (fixtures)
   api/           typed endpoint structs + raw serde_json::Value passthrough
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
