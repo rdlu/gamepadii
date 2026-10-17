@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[])"
 ---
-CLI (and later TUI) for GP2040-CE gamepads: status, input modes, profiles
+CLI and TUI for GP2040-CE gamepads: status, input modes, profiles
 
 Usage: gamepadii [OPTIONS] [COMMAND]
 
@@ -14,6 +14,7 @@ Commands:
   mode       Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
   webconfig  Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
   profile    Pin-mapping profiles on the pad
+  tui        The terminal UI: the pad, its input modes and profiles, web-config and backups. `gamepadii` with no command opens it on a terminal
   display    The pad's OLED display
   setup      One-time setup of this machine
   help       Print this message or the help of the given subcommand(s)

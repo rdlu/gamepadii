@@ -409,15 +409,21 @@ impl Guide {
     }
 }
 
-fn pick(devices: Vec<Device>) -> Result<Device> {
-    let webconfig = devices
+/// Which of `devices` the flows act on: the one in web-config, else the
+/// first. Front ends show that one.
+pub fn picked(devices: &[Device]) -> Option<usize> {
+    devices
         .iter()
-        .position(|d| d.mode == Some(InputMode::Webconfig));
-    match webconfig {
-        Some(i) => Ok(devices.into_iter().nth(i).expect("index from position")),
-        None => devices.into_iter().next().ok_or_else(|| {
-            Error::NotFound("no GP2040-CE device on USB (is it plugged in?)".into())
-        }),
+        .position(|d| d.mode == Some(InputMode::Webconfig))
+        .or((!devices.is_empty()).then_some(0))
+}
+
+fn pick(devices: Vec<Device>) -> Result<Device> {
+    match picked(&devices) {
+        Some(i) => Ok(devices.into_iter().nth(i).expect("index from picked")),
+        None => Err(Error::NotFound(
+            "no GP2040-CE device on USB (is it plugged in?)".into(),
+        )),
     }
 }
 

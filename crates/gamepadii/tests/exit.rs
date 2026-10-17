@@ -68,6 +68,21 @@ fn usage_errors_exit_3() {
 }
 
 #[test]
+fn no_command_off_a_terminal_prints_usage() {
+    let (code, stdout, _) = gamepadii(&[]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Usage: gamepadii"), "{stdout}");
+}
+
+#[test]
+fn tui_off_a_terminal_exits_3() {
+    let (code, stdout, stderr) = gamepadii(&["tui"]);
+    assert_eq!(code, 3);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("needs a terminal"), "{stderr}");
+}
+
+#[test]
 fn help_and_version_exit_0() {
     assert_eq!(gamepadii(&["--help"]).0, 0);
     let (code, stdout, _) = gamepadii(&["--version"]);

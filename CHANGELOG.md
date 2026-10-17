@@ -91,6 +91,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any STATUS refreshes it, and a restart gamepadii makes clears it. The
   key hints use the live STATUS profile when the channel answers, else the
   cache's.
+- `status` JSON: `control_channel.profiles`, the enabled profiles with
+  their labels (additive, still schema 1).
+- The TUI (first cut, #4): `gamepadii` with no command on a terminal, or
+  `gamepadii tui`. One screen with the pad's status (mode, confidence,
+  firmware, board, running profile, the control channel), the input modes
+  (⏎ switches after a prompt, through the `mode` flow), the profiles (⏎
+  switches RAM only, `S` saves after a prompt), `w` into web-config and
+  back, `b` backup, `r` refresh and a `?` help overlay. Vim keys and
+  arrows. The flows run on a worker thread, with their progress and
+  button-press guides on screen; USB is watched once a second for
+  hotplug. Off a terminal, `gamepadii` still prints usage and `gamepadii
+  tui` exits 3.
 - `gamepadii display layout [MODEL | --left N --right N]`: the OLED's
   button drawing. Haute42 pads (Haute42COSMOX) take their model (`s16`,
   `g16`, `s13`, `m16+`, `e16`, ...) or the layout (`default`,

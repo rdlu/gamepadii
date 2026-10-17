@@ -8,6 +8,7 @@ use gamepadii::cli::{
 };
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
+use gamepadii::tui::worker::WithEnv;
 use gamepadii_core::cache::{self, DeviceCache};
 use gamepadii_core::channel::sim::{SimChannel, Standalone};
 use gamepadii_core::channel::{ControlTransport, OpenControl, UsbError};
@@ -51,11 +52,13 @@ fn main() -> ExitCode {
     let control = control_opener(&cli, &root);
     let control = control.as_deref();
     match cli.command.clone() {
+        None if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() => tui(&cli),
         None => {
-            // No subcommand: usage for now (the TUI will open here on a TTY).
+            // Not a terminal (a pipe, a script): usage, as before the TUI.
             let _ = Cli::command().print_help();
             ExitCode::from(exit::OK)
         }
+        Some(Command::Tui) => tui(&cli),
         Some(Command::Status) => finish(
             format,
             commands::status_with(&root, control, cache::cache_dir().as_deref())
@@ -256,6 +259,41 @@ fn main() -> ExitCode {
                 .map(|()| String::new())
                 .map_err(|e| Error::io(format!("writing man pages into {}", dir.display()), e)),
         ),
+    }
+}
+
+/// The TUI, with the flows' environment built on its worker thread from
+/// the same flags as every other command.
+fn tui(cli: &Cli) -> ExitCode {
+    if !(std::io::stdout().is_terminal() && std::io::stdin().is_terminal()) {
+        eprintln!(
+            "gamepadii: the TUI needs a terminal; the commands work anywhere (gamepadii --help)"
+        );
+        return ExitCode::from(exit::USAGE);
+    }
+    let cli = cli.clone();
+    let with_env: WithEnv = Box::new(move |backup, f| {
+        let root = cli.sysroot.clone().map_or_else(Root::live, Root::new);
+        let control = control_opener(&cli, &root);
+        let clock = SystemClock::new();
+        let open = || open(&cli);
+        let env = env(
+            &cli,
+            &root,
+            &clock,
+            &open,
+            control.as_deref(),
+            Timeouts::default(),
+            backup,
+        );
+        f(&env);
+    });
+    match gamepadii::tui::run(with_env) {
+        Ok(()) => ExitCode::from(exit::OK),
+        Err(e) => {
+            eprintln!("gamepadii: the terminal UI failed: {e}");
+            ExitCode::from(exit::TRANSPORT)
+        }
     }
 }
 

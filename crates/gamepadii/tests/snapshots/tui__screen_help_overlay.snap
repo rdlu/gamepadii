@@ -1,0 +1,34 @@
+---
+source: crates/gamepadii/tests/tui.rs
+expression: "render(&mut app, 100, 30)"
+---
+ gamepadii GP2040-CE pads                                                              watching USB
+┌ Pad ─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ XInput (confirmed)                                                                               │
+│ usb id      045e:028e                                                                            │
+│ ┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │ Move                                                                                         │ │
+│ │   j  ↓              down                                                                     │ │
+│ │   k  ↑              up                                                                       │ │
+│ │   gg  Home          top                                                                      │ │
+│ │   G  End            bottom                                                                   │ │
+└─│   h  l  ←  →  Tab   the other list (input modes, profiles)                                   │─┘
+┌ │                                                                                              │─┐
+│ │ The pad                                                                                      │ │
+│ │   ⏎                 switch to the selected mode (asks first: it saves) or profile (RAM only) │ │
+│ │   S                 switch to the selected profile and save it (asks first)                  │ │
+│ │   w                 reboot into web-config, or back to the gamepad mode                      │ │
+│ │   b                 back up every setting                                                    │ │
+│ │   r                 read the pad again                                                       │ │
+│ │                                                                                              │ │
+│ │ Other                                                                                        │ │
+│ │   ?                 this help                                                                │ │
+│ │   Esc               close a popup, else clear the last result                                │ │
+│ │   q                 close a popup, else quit                                                 │ │
+│ │   :q⏎  Ctrl-c       quit                                                                     │ │
+│ │                                                                                              │ │
+└─│ Every action is also a command: gamepadii mode, profile switch, webconfig, backup.           │─┘
+┌ └──────────────────────────────────────────────────────────────────────────────────────────────┘─┐
+│ nothing done yet                                                                                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                 ⏎ switch  S save  w web-config  b backup  r refresh  ? help  q quit

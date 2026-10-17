@@ -1,7 +1,6 @@
 # gamepadii
 
-A Linux CLI for GP2040-CE gamepads, with a ratatui TUI and a Tauri GUI to
-follow. It finds the pad on USB, tells which input mode it is in (XInput,
+A Linux CLI and TUI for GP2040-CE gamepads, with a Tauri GUI to follow. It finds the pad on USB, tells which input mode it is in (XInput,
 Keyboard, HID, Switch, PS4/PS5, web-config, BOOTSEL, ...), and will switch
 modes and apply profiles (pin mappings, keyboard keymaps) without the
 built-in web configurator, with as few button presses and reboots as the
@@ -9,7 +8,8 @@ firmware allows.
 
 **Status: pre-release, in development.** `status`, `info`, `backup`,
 `reboot`, `mode`, `webconfig`, `profile switch` and `setup udev` work so
-far. The roadmap is tracked in
+far, and a first TUI (`gamepadii` on a terminal) covers status, modes,
+profiles, web-config and backups. The roadmap is tracked in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1), and the design
 notes are in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -28,6 +28,8 @@ or `mise run install` in a clone.
 ## Commands
 
 ```text
+gamepadii                         the TUI, on a terminal (usage otherwise)
+gamepadii tui                     the same, explicitly
 gamepadii status                  the pad: input mode, USB ids, bus and port
 gamepadii status --json           the same as JSON ("schema": 1)
 gamepadii status --format waybar  one line for a waybar custom module
@@ -63,6 +65,31 @@ gamepadii setup udev [--print|--install]
 ```
 
 `--no-channel` (any command) leaves the control channel alone.
+
+### The TUI
+
+`gamepadii` with no command opens it when stdout is a terminal. One
+screen shows the pad (what `status` says: mode and confidence, firmware,
+board, the running profile, the control channel or its absence), the
+input modes and the pad's profiles, the last result, and a status line
+with what is running. Every action is a command too, and runs the same
+code:
+
+```text
+j k  ↓ ↑  gg G       move in the list; h l ← → Tab: the other list
+⏎ on a mode          switch to it (asks first: it saves the mode)
+⏎ on a profile       switch to it, RAM only (needs the control channel)
+S on a profile       switch to it and save it (asks first)
+w                    into web-config, or back to the gamepad mode
+b                    back up every setting
+r                    read the pad again
+?                    every key;  q quit (asks while something runs)
+```
+
+Reboots and waits run on a worker thread, so the screen keeps up; when a
+flow needs a button press (stock firmware), the result panel says which.
+It watches USB once a second and picks up a pad plugged in, out, or back
+after a reboot.
 
 ### The control channel
 

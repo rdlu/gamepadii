@@ -1,8 +1,9 @@
 //! Command line: `gamepadii status [--format human|json|waybar] [--json]`,
 //! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
-//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `setup udev
-//! [--print|--install]`, `--host HOST` for the
+//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `tui` (also
+//! no command on a terminal), `setup udev [--print|--install]`, `--host HOST`
+//! for the
 //! web-config ones and `--no-channel` to leave the control channel alone.
 //! Hidden, for packagers: `gamepadii completions <shell>` and `gamepadii
 //! manpages <dir>`; for tests: `--sysroot <dir>`, `--mock-api <dir>` and
@@ -22,7 +23,8 @@ use gamepadii_core::mode::{BootMode, InputMode};
 use crate::output::Format;
 
 /// GP2040-CE gamepads from the command line: status, input modes, profiles.
-#[derive(Debug, Parser)]
+/// With no command on a terminal, it opens the TUI.
+#[derive(Debug, Clone, Parser)]
 #[command(name = "gamepadii", version, about, long_about = None)]
 pub struct Cli {
     /// Output format.
@@ -173,6 +175,9 @@ pub enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// The terminal UI: the pad, its input modes and profiles, web-config
+    /// and backups. `gamepadii` with no command opens it on a terminal.
+    Tui,
     /// The pad's OLED display.
     Display {
         #[command(subcommand)]
