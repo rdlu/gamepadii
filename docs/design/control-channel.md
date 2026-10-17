@@ -1,6 +1,8 @@
 # Milestone 8b: a GP2040-CE control channel
 
-Status: design draft (2026-10-17). Nothing has been built, flashed or committed.
+Status: v1 implemented in the firmware fork, branch `gamepadii/control-channel`
+(2026-10-17). Decisions from issue #2 are folded in (§9). Deviations from the
+draft are listed in §3.6, "Changes during implementation". v2 (§3.5) is next.
 
 Firmware read at `v0.7.12` (the S16's build, `0014e4a`), at our branch
 `gamepadii/freeze-investigation` (v0.7.12 + freeze fixes) and at `main`
@@ -16,7 +18,7 @@ the rest), gamepadii should be able to:
 - read status
 - switch the active profile
 - set the input mode
-- reboot into gamepad, web-config or BOOTSEL
+- reboot into gamepad or web-config (not BOOTSEL; decided in #2, §9)
 
 It should do all of this with no button press. That removes the guided
 "press S2+B3+B4" step from `mode`, `webconfig` and `reboot`.
@@ -213,7 +215,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x02` | IN | STATUS | 0 | reply: 16 bytes (§3.3) | v1 |
 | `0x03` | IN | STRING | string id | reply: raw string, ≤ 63 bytes | v1 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
-| `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config, 2 BOOTSEL, the same as `/api/reboot`) | v1 |
+| `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
@@ -268,7 +270,7 @@ Capability bits:
 | 1 | STRING |
 | 2 | SET_PROFILE |
 | 3 | REBOOT (gamepad / web-config) |
-| 4 | REBOOT to BOOTSEL |
+| 4 | REBOOT to BOOTSEL (reserved; never set, see §9) |
 | 5 | SET_INPUT_MODE |
 | 6 | CFG_READ |
 | 7 | CFG_WRITE |
@@ -284,7 +286,7 @@ Bits 8–31 are reserved.
 | 2 | u8 | active profile (`profileNumber`, 1–6) |
 | 3 | u8 | enabled-profile bitmap (bit 0 is profile 1, always set) |
 | 4 | u8 | `forcedSetupOptions.mode` |
-| 5 | u8 | flags: bit 0 set when the profile change is not yet applied (`profileNumber != lastReinitProfileNumber`) |
+| 5 | u8 | flags: bit 0 set when the profile change is not yet applied (`profileNumber != lastReinitProfileNumber`); bit 1 set once a REBOOT or SET_INPUT_MODE has been accepted and the reboot is pending (§3.6) |
 | 6 | u16 | sequence number of the last OUT command |
 | 8 | u8 | command id of the last OUT command |
 | 9 | u8 | result of the last OUT command (below) |
@@ -329,8 +331,9 @@ work. It only sets RAM state and raises events, which the main loop acts on.
   - If the mode is web-config and `forcedSetupMode` is 2 or 3, the result is
     LOCKED. That lock exists to keep people out of web-config, and the
     channel must not be a way around it.
-  - BOOTSEL is allowed only when capability bit 4 is compiled in (it is in
-    our fork).
+  - BOOTSEL (2) is refused with UNSUPPORTED, and capability bit 4 is never
+    set (decision 2 in #2). gamepadii reaches BOOTSEL through REBOOT(1) and
+    then `/api/reboot {"bootMode":2}`.
   - The reboot happens at least 500 ms after the status stage, so the host
     always sees its ACK before the device drops off the bus.
 - **SET_INPUT_MODE:**
@@ -373,6 +376,66 @@ This lets `profile apply` and `backup` work with no web-config at all.
 - The `.proto` files must match between host and firmware. The host ships the
   firmware's `proto/` for each supported version and checks the version
   string first.
+
+### 3.6 Changes during implementation
+
+None of these changes the layout of a setup packet, a payload or a reply in
+§3.1–§3.3. They pin down behaviour the draft left open, plus one added flag
+bit. A host written against the draft keeps working.
+
+1. **BOOTSEL removed** (decision in #2). REBOOT(2) is refused with
+   UNSUPPORTED and capability bit 4 is never set. v1 capabilities on the fork
+   are `0x0000002F` (STATUS, STRING, SET_PROFILE, REBOOT, SET_INPUT_MODE).
+2. **New STATUS flag, bit 1: reboot pending.** Set once a REBOOT or
+   SET_INPUT_MODE has been accepted. From then on every OUT command fails
+   with **BUSY** (7) until the device reboots, so a second command can't race
+   the pending save or reboot (a save event would otherwise reset the reboot
+   mode to DEFAULT, §2.4).
+3. **HELLO mode bitmap** on v0.7.12 is `0x0000FFFF` (InputMode 0–15; every
+   mode `DriverManager::setup()` knows). `INPUT_MODE_CONFIG` (255) is never in
+   it.
+4. **Session token:** made on the first HELLO after boot (`time_us_32()`
+   XOR an FNV-1a hash of the board's unique id, through the murmur3
+   finaliser) and then stays the same for the whole boot, so several host
+   processes can share it. It is never 0.
+5. **Match rule, exactly:** `bRequest == 0x47`, `wIndex >> 8 == 0x50`,
+   `bmRequestType` is exactly `0xC0` or `0x40`, and, *for a known command*,
+   the direction agrees. A known command in the wrong direction (for
+   example HELLO sent as OUT) is not ours and goes to the driver. An
+   *unknown* command with our magic (including the v2 ids `0x20–0x23`) is
+   ours and STALLs.
+6. **Lengths:**
+   - any matched request with `wLength > 64` STALLs in SETUP;
+   - IN replies are truncated to `wLength` (normal USB);
+   - an OUT payload must be at least 8 bytes (the header), else it STALLs in
+     SETUP; it must also cover the command's arguments (SET_PROFILE 10,
+     REBOOT 9, SET_INPUT_MODE 10), else BAD_LENGTH; **bytes past the
+     arguments are ignored**, so later minors can append fields.
+7. **What STATUS records for a failed OUT:**
+   - rejected in SETUP (`wLength` < 8 or > 64, or an unknown OUT command):
+     `last_cmd` = the command byte, `last_seq` = 0 (the payload was never
+     read), `last_result` = BAD_LENGTH, or UNSUPPORTED for an unknown command;
+   - rejected in DATA: `last_seq` from the payload, and the checks run in
+     this order: token (BAD_TOKEN), pending reboot (BUSY), argument length
+     (BAD_LENGTH), argument values (BAD_ARG / LOCKED / UNSUPPORTED /
+     PROFILE_DISABLED).
+   IN commands never touch these fields.
+8. **Argument checks:** SET_PROFILE needs profile 1–6 and persist 0/1
+   (else BAD_ARG), then `Storage::setProfile()` (false → PROFILE_DISABLED).
+   SET_INPUT_MODE's `reserved` byte is ignored; a mode ≥ 32 or not in the
+   bitmap is UNSUPPORTED. REBOOT's mode > 2 is BAD_ARG.
+9. **STRING:** an unknown id STALLs. An empty value (an unnamed profile, or
+   profile `n` beyond `gpioMappingsSets_count`) is a 0-byte reply. Values are
+   cut at 63 bytes; profile labels are at most 16.
+10. **Web-config mode** (decision in #2): the channel answers there too;
+    STATUS byte 1 is 255. SET_PROFILE changes the RAM profile there as well,
+    and SET_INPUT_MODE from web-config saves and reboots to the new gamepad
+    mode.
+11. **CMake:** `-DGP2040_CONTROL_CHANNEL=ON` adds `src/controlchannel.cpp`
+    and the compile definition to the target only. With it off, the build is
+    byte-identical to the freeze-fix build apart from the embedded version
+    string (checked: 22 differing bytes, all in the two version strings;
+    identical size and identical `tud_vendor_control_xfer_cb`).
 
 ## 4. Firmware implementation
 
@@ -619,22 +682,74 @@ requests.
    in the `cc` build. The pad must work as before; with no descriptor change
    nothing is expected to differ.
 
-## 9. Open questions
+### 8.1 Results, v1 on the S16 (2026-10-17)
 
-1. **Runtime gate in the fork:** compile time only, as proposed, or also a
-   flag in flash? The proposal avoids `.proto` collisions until upstream
-   picks a field.
-2. **BOOTSEL over the channel:** on in our fork? It's a "brick-looking"
-   state for a casual user, but very handy for the flash loop.
-3. **Lock policy:** is honouring `forcedSetupMode` for REBOOT(web-config) and
-   SET_INPUT_MODE right?
-4. **`persist` default for `profile switch`:** RAM-only, so no flash wear but
-   lost on replug, or persisted, to match the hotkeys?
-5. **Should the channel answer in web-config mode too?** It makes detection
-   uniform. It costs nothing, but it is one more thing to explain upstream.
-6. **Is v2 (config sections over EP0) worth it** before milestone 7
-   (PICOBOOT)? Both remove web-config from `profile apply`. PICOBOOT needs a
-   reboot into BOOTSEL; v2 doesn't.
-7. **Is a udev rule that grants `uaccess` on borrowed VID:PIDs (real Xbox 360
-   and Hori pads) acceptable**, or should the rule be opt-in
-   (`gamepadii udev-rule --install`)?
+Builds: `cc-testboot` (v0.7.12-7-g1008647-testboot) for the loop, then `cc`
+(v0.7.12-6-gf507f0b, the release-style build). Client:
+`GP2040-CE-builds/tools/ccprobe.py` (raw `USBDEVFS_CONTROL`). Logs are in
+`GP2040-CE-builds/results/cc/`.
+
+| Check | Web-config (rndis_host) | XInput (xpad) | Keyboard (usbhid) |
+|---|---|---|---|
+| HELLO: magic, nonce echo, 1.0, caps `0x2F`, modes `0xFFFF` | ok | ok | ok |
+| STATUS (`input_mode` 255 / 0 / 3, profile 2, enabled `0x1F`) | ok | ok | ok |
+| STRING 1–4 and `0x11–0x16` (`Default`, `SilkSong`, `Celeste`, `DKC`, `TGX`, empty) | ok | ok | ok |
+| 2000 to 5000 × (HELLO + STATUS + STRING): errors, driver still bound | 0, yes | 0, yes | 0, yes |
+| Foreign requests, same result as stock (below) | yes | yes | yes |
+| Negative cases (`ccprobe.py negative`): 16 STALL, with the expected result and seq in STATUS; a HELLO with wLength 4 returns the first 4 bytes | ok | ok | ok |
+| SET_PROFILE RAM-only (2→1→3→2) | — | ok, applied before the next STATUS (flag 0 already) | ok |
+| RAM-only switch, then REBOOT(0), comes back on the stored profile | — | ok (profile 2) | — |
+| SET_PROFILE persist=1 (2→1, reboot, 1→2, reboot) | — | ok | — |
+| OUT command after an accepted REBOOT gets BUSY (STATUS flag bit 1) | — | ok | — |
+| SET_INPUT_MODE: XInput→Keyboard (`cafe:0001`) →XInput, stored profile kept | — | ok | ok |
+| REBOOT(0) from web-config gives a gamepad mode; REBOOT(1) from a gamepad mode gives `cafe:4028` | ok | ok | — |
+| STATUS polled during a persist save | — | 200 polls, max 7 ms, no errors | — |
+
+Foreign requests (`ccprobe.py foreign`): the xpad probe `C1 01 0100`, a wrong
+magic (`C0 47` with wIndex `0x5101` or `0x0001`), an interface-recipient
+`C1 47 5001`, `C0 46 5001`, `C0 01`, XSM3 `C1 81 wIndex 0103`, MS OS `C0 20 0004`,
+a known OUT id sent as IN (`C0 47 5010`), a known IN id sent as OUT
+(`40 47 5001`), and `41 47 5010`.
+
+- **XInput:** the results match stock freeze-fix-rc exactly. Every IN gets 0
+  bytes except XSM3 `0x81`, which returns the same 29-byte serial on both
+  builds; the OUTs are ACKed.
+- **Web-config:** everything STALLs, on stock and on cc alike.
+- **Keyboard:** everything STALLs, which is what KeyboardDriver does on stock
+  too. No stock capture was taken in Keyboard mode, because that would have
+  needed another mode switch.
+- **On stock freeze-fix-rc:** HELLO gets a 0-byte reply in XInput and a STALL
+  in web-config, so detection reports "no channel" in both.
+
+Not covered:
+- **usbmon:** it needs root on this machine, so the comparisons above are
+  ioctl outcomes, not packet captures.
+- **evtest and input report rate:** not checked. There was nobody to press
+  buttons, and xpad sends no events without input. The driver stayed bound,
+  and the kernel log gained no new lines during the loops.
+- **LOCKED path:** not exercised, because setting `forcedSetupMode` would be a
+  settings write.
+- **SET_INPUT_MODE sent from web-config:** not exercised.
+- **HID, Switch, PS4, XBOne modes:** not exercised.
+
+The pre-existing xpad line "unable to receive magic message: -121" appears at
+every XInput enumeration, on stock as well. It is xpad's probe getting a
+0-byte reply, and the channel doesn't change it.
+
+With the option off, the `cc-off` build is byte-identical to freeze-fix-rc
+except for the version string (§3.6).
+
+## 9. Decisions (issue #2, 2026-10-17)
+
+1. **Gate:** compile time only in our fork (`GP2040_CONTROL_CHANNEL`). The
+   upstream proposal gets a runtime flag as well, default off (§4).
+2. **No REBOOT to BOOTSEL** over the channel. Flashing is occasional;
+   gamepadii goes REBOOT(1) → web-config → `/api/reboot {"bootMode":2}`.
+3. **Honour `forcedSetupMode`** for REBOOT(web-config) and SET_INPUT_MODE
+   (LOCKED).
+4. **`profile switch` is RAM-only by default**; `--save` sends persist=1.
+5. **The channel answers in web-config mode too**, for uniform detection.
+6. **v2** (config sections over the channel, §3.5) comes next, before
+   milestone 7 (PICOBOOT, #7). Not in v1.
+7. **The udev rule is opt-in**, through `gamepadii setup udev`, which explains
+   what it grants (the borrowed VID:PIDs include real Xbox 360 and Hori pads).
