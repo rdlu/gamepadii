@@ -3,11 +3,27 @@
 //! which boot button selects a mode and which physical keys the hotkeys
 //! are on in the active profile.
 //!
-//! One file per board config: `$XDG_CACHE_HOME/gamepadii/<board>.json`
-//! (`~/.cache/gamepadii/Haute42COSMOX.json`). Web-config mode reports no
-//! unique serial (every pad says `123456`), so two pads with the same
-//! board config share a file, and in a gamepad mode, where the board isn't
-//! known at all, the newest file is used. The hints say how old they are.
+//! One file per pad: `$XDG_CACHE_HOME/gamepadii/<board>-<serial>.json`
+//! (`~/.cache/gamepadii/Haute42COSMOX-0C0FFEE.json`). Web-config reports no
+//! unique serial (every pad says `123456`), but XInput and Xbox One build
+//! theirs from the RP2040's unique id ([`PadId`]), so the pad is told
+//! apart by the serial it had in a gamepad mode. gamepadii learns which pad
+//! is in web-config when it sees it go there: it records the serial it saw
+//! just before against that web-config enumeration (bus, port and device
+//! number, which a replug or a reboot changes), in
+//! `webconfig-sessions.json`. A read it can't attribute (the pad was put
+//! into web-config by hand, or from a mode with no unique serial) is kept
+//! by board config, `<board>.json`, as before, and is attributed when
+//! gamepadii sees that same enumeration leave web-config into a mode with
+//! a serial. Files from before this (`<board>.json`, no `pad`) still load;
+//! the first read attributed to a pad of that board replaces them.
+//!
+//! Lookups take what is known ([`Key`]): the board (from the control
+//! channel or the pad) and the pad. The pad's own file wins, however old;
+//! otherwise the newest that can be this pad (a board file, or a pad seen
+//! in another mode, whose serial can't be compared), never one of a pad
+//! known to be another (same mode, another serial). The hints say how old
+//! they are.
 //!
 //! The control channel can't read the settings, but its STATUS says which
 //! profile the pad runs. Whenever it answers (`status`, the flows, `profile
@@ -29,7 +45,9 @@ use crate::buttons::Profiles;
 use crate::channel::Hello;
 use crate::client::Client;
 use crate::commands::{self, Bundle, Firmware};
+use crate::discovery::Device;
 use crate::error::{Error, Result};
+use crate::mode::InputMode;
 use crate::timestamp::Utc;
 
 /// Bumped on any breaking change to the cache file.
@@ -51,6 +69,78 @@ pub struct DeviceCache {
     /// (`profileNumber` in `gamepad_options`). Absent in older files.
     #[serde(default)]
     pub running_profile: Option<RunningProfile>,
+    /// The pad this was read from, when gamepadii knows; `null` keeps it by
+    /// board config only. Absent in older files.
+    #[serde(default)]
+    pub pad: Option<PadId>,
+    /// The web-config enumeration a read gamepadii couldn't attribute was
+    /// taken in, to attribute it when the pad is seen leaving web-config;
+    /// `null` otherwise. Absent in older files.
+    #[serde(default)]
+    pub read_in: Option<Enumeration>,
+}
+
+/// A pad, told apart from others with the same board config by the USB
+/// serial a gamepad mode builds from the RP2040's unique id. The serial
+/// differs between modes, so the mode is part of it.
+///
+/// In v0.7.12 (`headers/drivers/*/*Descriptors.h`): XInput sends `"0"` and
+/// three bytes of the unique id in hex (`0C0FFEE`), Xbox One eight letters
+/// from all eight bytes and then `8ABCDEFGH`. Every other mode sends none
+/// (Keyboard, HID, Switch, PS3, PS4/PS5, ...) or a fixed one (web-config
+/// `123456`, Switch Pro `000000000001`, SInput and Switch 2 Pro theirs).
+/// `usbDescOverride` replaces XInput's with the user's string, which only
+/// counts when it still looks like one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PadId {
+    pub serial: String,
+    pub mode: InputMode,
+}
+
+impl PadId {
+    /// `d`'s id, when it is in a mode whose serial is unique per board.
+    pub fn of(d: &Device) -> Option<Self> {
+        let serial = d.serial.as_deref()?.trim();
+        let mode = d.mode?;
+        let unique = match mode {
+            InputMode::Xinput => {
+                serial.len() == 7
+                    && serial.starts_with('0')
+                    && serial
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+            }
+            InputMode::Xbone => {
+                serial.len() == 17
+                    && serial.ends_with("8ABCDEFGH")
+                    && serial.bytes().take(8).all(|b| b.is_ascii_uppercase())
+            }
+            _ => false,
+        };
+        unique.then(|| Self {
+            serial: serial.to_string(),
+            mode,
+        })
+    }
+}
+
+/// One enumeration of a device: the same bus, port and device number. A
+/// replug or a reboot gets a new device number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Enumeration {
+    pub bus: u16,
+    pub port: String,
+    pub devnum: u16,
+}
+
+impl Enumeration {
+    pub fn of(d: &Device) -> Option<Self> {
+        Some(Self {
+            bus: d.bus?,
+            port: d.port.clone(),
+            devnum: d.devnum?,
+        })
+    }
 }
 
 /// A profile the pad was seen running, from the control channel's STATUS.
@@ -90,6 +180,8 @@ impl DeviceCache {
             pin_mappings,
             profile_options,
             running_profile: None,
+            pad: None,
+            read_in: None,
         }
     }
 
@@ -104,6 +196,8 @@ impl DeviceCache {
             pin_mappings: get("getPinMappings")?,
             profile_options: get("getProfileOptions")?,
             running_profile: None,
+            pad: None,
+            read_in: None,
         })
     }
 
@@ -160,10 +254,74 @@ impl DeviceCache {
         Some(Profiles::new(base, alts))
     }
 
+    /// Says which pad this was read from: the one gamepadii saw go into
+    /// the web-config enumeration `wc` (see [`identify`]), else that
+    /// enumeration, to attribute it later.
+    pub fn attribute(&mut self, dir: Option<&Path>, wc: &Device) {
+        self.pad = identify(dir, wc);
+        self.read_in = match self.pad {
+            Some(_) => None,
+            None => Enumeration::of(wc),
+        };
+    }
+
+    /// `Haute42COSMOX-0C0FFEE.json` for a known pad, else
     /// `Haute42COSMOX.json`.
     pub fn file_name(&self) -> String {
-        format!("{}.json", commands::board_slug(&self.firmware))
+        let board = self.board();
+        match &self.pad {
+            Some(p) => {
+                let serial: String = p
+                    .serial
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                format!("{board}-{serial}.json")
+            }
+            None => format!("{board}.json"),
+        }
     }
+
+    /// The board config, as [`commands::board_slug`].
+    pub fn board(&self) -> String {
+        commands::board_slug(&self.firmware)
+    }
+}
+
+/// What a lookup knows about the pad: its board config (as
+/// [`commands::board_slug`]) and which pad it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Key {
+    pub board: Option<String>,
+    pub pad: Option<PadId>,
+}
+
+impl Key {
+    /// The board from `fw` (when it names one), the pad as given.
+    pub fn new(fw: &Firmware, pad: Option<PadId>) -> Self {
+        Self {
+            board: fw.board.as_ref().map(|_| commands::board_slug(fw)),
+            pad,
+        }
+    }
+
+    /// Only the board (`Haute42COSMOX`).
+    pub fn board(board: &str) -> Self {
+        Self {
+            board: Some(board.to_string()),
+            pad: None,
+        }
+    }
+}
+
+/// Which pad `d` is: from its serial in a gamepad mode that has a unique
+/// one, or, in web-config, from the session recorded when gamepadii saw it
+/// go there ([`record_session`]).
+pub fn identify(dir: Option<&Path>, d: &Device) -> Option<PadId> {
+    if d.mode == Some(InputMode::Webconfig) {
+        return session_pad(dir?, d);
+    }
+    PadId::of(d)
 }
 
 /// `$XDG_CACHE_HOME/gamepadii` (`~/.cache/gamepadii`); `None` without a
@@ -178,62 +336,197 @@ pub fn cache_dir() -> Option<PathBuf> {
     Some(base.join("gamepadii"))
 }
 
-/// Writes the cache into `dir`, replacing that board's last one.
+/// Writes the cache into `dir`, replacing that pad's (or, unattributed,
+/// that board's) last one. The first cache attributed to a pad replaces
+/// the board's file from before pads were told apart.
 pub fn store(dir: &Path, cache: &DeviceCache) -> Result<PathBuf> {
     let path = dir.join(cache.file_name());
     commands::write_json(cache, &path)?;
+    if cache.pad.is_some() {
+        let legacy = dir.join(format!("{}.json", cache.board()));
+        if read(&legacy).is_some_and(|c| c.pad.is_none() && c.read_in.is_none()) {
+            let _ = fs::remove_file(legacy);
+        }
+    }
     Ok(path)
 }
 
-/// `board`'s cache (by [`commands::board_slug`]), if there is one.
-pub fn load(dir: &Path, board: &str) -> Option<DeviceCache> {
-    let b = fs::read(dir.join(format!("{board}.json"))).ok()?;
+fn read(path: &Path) -> Option<DeviceCache> {
+    let b = fs::read(path).ok()?;
     serde_json::from_slice::<DeviceCache>(&b)
         .ok()
         .filter(|c| c.schema == CACHE_SCHEMA)
 }
 
-/// `board`'s cache when the board is known, else the newest.
-pub fn load_for(dir: &Path, board: Option<&str>) -> Option<DeviceCache> {
-    board
-        .and_then(|b| load(dir, b))
-        .or_else(|| load_latest(dir))
+/// `board`'s unattributed cache (`<board>.json`, by
+/// [`commands::board_slug`]), if there is one.
+pub fn load(dir: &Path, board: &str) -> Option<DeviceCache> {
+    read(&dir.join(format!("{board}.json")))
 }
 
-/// Applies `f` to `board`'s cache and writes it back when `f` changed it.
-/// No cache for that board (it was never seen in web-config) is not an
-/// error: there is nothing to keep current.
-pub fn update(dir: &Path, board: &str, f: impl FnOnce(&mut DeviceCache) -> bool) -> Result<()> {
-    let Some(mut c) = load(dir, board) else {
+/// Every readable cache in `dir`, with its file.
+fn all(dir: &Path) -> Vec<(PathBuf, DeviceCache)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| read(&p).map(|c| (p, c)))
+        .collect();
+    // Ties on `captured_at` go the same way on every filesystem.
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+fn newest<'a>(
+    it: impl Iterator<Item = &'a (PathBuf, DeviceCache)>,
+) -> Option<&'a (PathBuf, DeviceCache)> {
+    it.max_by(|a, b| a.1.captured_at.cmp(&b.1.captured_at))
+}
+
+/// The cache for `key`, and its file (see the module doc): the pad's own;
+/// else the newest that can be this pad, on its board when the board is
+/// known (and, as before pads were told apart, on any board when that
+/// board has none).
+fn resolve(dir: &Path, key: &Key) -> Option<(PathBuf, DeviceCache)> {
+    let all = all(dir);
+    let on_board = |c: &DeviceCache| key.board.as_ref().is_none_or(|b| c.board() == *b);
+    if let Some(p) = &key.pad
+        && let Some(own) = newest(
+            all.iter()
+                .filter(|(_, c)| on_board(c) && c.pad.as_ref() == Some(p)),
+        )
+    {
+        return Some(own.clone());
+    }
+    // Another pad's own cache: seen in the same mode, with another serial.
+    let other = |c: &DeviceCache| match (&c.pad, &key.pad) {
+        (Some(theirs), Some(ours)) => theirs.mode == ours.mode && theirs.serial != ours.serial,
+        _ => false,
+    };
+    let maybe: Vec<_> = all.iter().filter(|(_, c)| !other(c)).collect();
+    newest(maybe.iter().copied().filter(|(_, c)| on_board(c)))
+        .or_else(|| newest(maybe.into_iter()))
+        .cloned()
+}
+
+/// The cache for this pad (see the module doc); `None` when there is none
+/// it can be.
+pub fn load_for(dir: &Path, key: &Key) -> Option<DeviceCache> {
+    resolve(dir, key).map(|(_, c)| c)
+}
+
+/// Applies `f` to the cache [`load_for`] gives `key` and writes it back
+/// when `f` changed it. No cache (the pad was never seen in web-config) is
+/// not an error: there is nothing to keep current. Neither is knowing
+/// neither the board nor the pad: nothing is touched then.
+pub fn update(dir: &Path, key: &Key, f: impl FnOnce(&mut DeviceCache) -> bool) -> Result<()> {
+    if key.board.is_none() && key.pad.is_none() {
+        return Ok(());
+    }
+    let Some((path, mut c)) = resolve(dir, key) else {
         return Ok(());
     };
     if f(&mut c) {
-        store(dir, &c)?;
+        commands::write_json(&c, &path)?;
     }
     Ok(())
 }
 
 /// Records what the control channel said: the pad runs profile `n`
 /// (saved too with `saved`, after `profile switch --save`).
-pub fn record_profile(dir: &Path, board: &str, n: u8, saved: bool, now: SystemTime) -> Result<()> {
-    update(dir, board, |c| c.set_profile(n, saved, now))
+pub fn record_profile(dir: &Path, key: &Key, n: u8, saved: bool, now: SystemTime) -> Result<()> {
+    update(dir, key, |c| c.set_profile(n, saved, now))
 }
 
 /// Records that gamepadii restarted the pad (it runs its saved profile).
-pub fn record_restart(dir: &Path, board: &str) -> Result<()> {
-    update(dir, board, DeviceCache::restarted)
+pub fn record_restart(dir: &Path, key: &Key) -> Result<()> {
+    update(dir, key, DeviceCache::restarted)
 }
 
 /// The newest readable cache in `dir` (by `captured_at`), if any.
 pub fn load_latest(dir: &Path) -> Option<DeviceCache> {
-    let entries = fs::read_dir(dir).ok()?;
-    entries
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| fs::read(e.path()).ok())
-        .filter_map(|b| serde_json::from_slice::<DeviceCache>(&b).ok())
-        .filter(|c| c.schema == CACHE_SCHEMA)
-        .max_by(|a, b| a.captured_at.cmp(&b.captured_at))
+    newest(all(dir).iter()).map(|(_, c)| c.clone())
+}
+
+/// Which pad gamepadii saw go into each web-config enumeration, by
+/// `bus-port`: `$XDG_CACHE_HOME/gamepadii/webconfig-sessions.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sessions {
+    pub schema: u32,
+    pub ports: BTreeMap<String, Session>,
+}
+
+/// The pad, as it was seen just before it came back as the web-config
+/// enumeration `webconfig`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub pad: PadId,
+    pub webconfig: Enumeration,
+}
+
+pub const SESSIONS_FILE: &str = "webconfig-sessions.json";
+
+fn sessions(dir: &Path) -> Sessions {
+    fs::read(dir.join(SESSIONS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Sessions>(&b).ok())
+        .filter(|s| s.schema == CACHE_SCHEMA)
+        .unwrap_or_default()
+}
+
+/// gamepadii saw `pad` (in a gamepad mode) come back as `wc`, in
+/// web-config: until `wc` re-enumerates, it is that pad. Replaces what
+/// that port had.
+pub fn record_session(dir: &Path, pad: &PadId, wc: &Device) -> Result<()> {
+    let Some(at) = Enumeration::of(wc) else {
+        return Ok(());
+    };
+    let mut s = sessions(dir);
+    let port = format!("{}-{}", at.bus, at.port);
+    let session = Session {
+        pad: pad.clone(),
+        webconfig: at,
+    };
+    if s.ports.get(&port) == Some(&session) {
+        return Ok(());
+    }
+    s.schema = CACHE_SCHEMA;
+    s.ports.insert(port, session);
+    commands::write_json(&s, &dir.join(SESSIONS_FILE)).map(|_| ())
+}
+
+/// The pad gamepadii saw go into the web-config enumeration `wc`, if it
+/// did (and `wc` hasn't re-enumerated since).
+pub fn session_pad(dir: &Path, wc: &Device) -> Option<PadId> {
+    let at = Enumeration::of(wc)?;
+    sessions(dir)
+        .ports
+        .into_values()
+        .find(|s| s.webconfig == at)
+        .map(|s| s.pad)
+}
+
+/// gamepadii saw the web-config enumeration `wc` leave as `pad`: the reads
+/// it couldn't attribute, taken in `wc`, were that pad's. Moves them to
+/// the pad's file.
+pub fn adopt(dir: &Path, wc: &Device, pad: &PadId) -> Result<()> {
+    let Some(at) = Enumeration::of(wc) else {
+        return Ok(());
+    };
+    for (path, mut c) in all(dir) {
+        if c.pad.is_none() && c.read_in.as_ref() == Some(&at) {
+            c.pad = Some(pad.clone());
+            c.read_in = None;
+            let new = store(dir, &c)?;
+            if new != path {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Stores `cache` when there is a directory for it. The cache is a

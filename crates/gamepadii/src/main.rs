@@ -76,17 +76,19 @@ fn main() -> ExitCode {
             finish(format, result)
         }
         Some(Command::Backup { output: path, trip }) => {
-            let work = |c: &Client| {
-                let (report, cache) =
-                    commands::backup_with_cache(c, path.as_deref(), SystemTime::now())?;
-                if let Some(cache) = cache {
-                    save_cache(&cache);
-                }
-                Ok(report)
-            };
-            let result = with_webconfig(&cli, &root, control, format, &trip, work, |b| {
-                format!("the backup is saved in {}", b.path.display())
-            })
+            let result = match &cli.host {
+                Some(_) => connect(&cli, &root).and_then(|c| {
+                    let (report, cache) =
+                        commands::backup_with_cache(&c, path.as_deref(), SystemTime::now())?;
+                    if let Some(cache) = cache {
+                        save_cache(&cache);
+                    }
+                    Ok((report, None))
+                }),
+                None => on_usb(&cli, &root, control, format, &trip, |env, progress| {
+                    flow::backup(env, path.as_deref(), trip.stay, progress)
+                }),
+            }
             .map(|(b, t)| output::backup(style, &b, t.as_ref()));
             finish(format, result)
         }
@@ -222,28 +224,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs `work` against the web configurator: at `--host` as it is;
-/// otherwise the pad on USB, which the control channel takes into
-/// web-config and back when it is in a gamepad mode.
-fn with_webconfig<T>(
-    cli: &Cli,
-    root: &Root,
-    control: Option<&OpenControl<'_>>,
-    format: Format,
-    trip: &TripArgs,
-    work: impl FnOnce(&Client) -> gamepadii_core::Result<T>,
-    done: impl FnOnce(&T) -> String,
-) -> gamepadii_core::Result<(T, Option<flow::Trip>)> {
-    if cli.host.is_some() {
-        return connect(cli, root).and_then(|c| work(&c)).map(|r| (r, None));
-    }
-    on_usb(cli, root, control, format, trip, |env, progress| {
-        flow::through_webconfig(env, trip.stay, progress, work, done)
-    })
-}
-
 /// Runs a trip through web-config (`info`, `backup`) against the pad on
-/// USB, with the progress on stderr.
+/// USB, with the progress on stderr. (`--host` reaches the web
+/// configurator as it is, with no trip, and keeps the cache by board: the
+/// pad there can't be told apart.)
 fn on_usb<T>(
     cli: &Cli,
     root: &Root,
@@ -429,7 +413,8 @@ fn reporter(format: Format) -> Reporter<std::io::Stderr> {
     Reporter::new(std::io::stderr(), spinner)
 }
 
-/// The device cache is a convenience: a failure is a warning.
+/// The device cache, read through `--host`, is a convenience: a failure is
+/// a warning.
 fn save_cache(c: &DeviceCache) {
     if let Some(dir) = cache::cache_dir()
         && let Err(e) = cache::store(&dir, c)
