@@ -87,7 +87,8 @@ pub enum Reply {
     Scanned(Vec<Device>),
     Status {
         status: Result<Status>,
-        /// The device cache of the pad's board (else the newest one), for
+        /// The pad's device cache (see `cache`: by its serial, else its
+        /// board, else the newest that can be it), for
         /// the firmware of a pad without the channel.
         cache: Option<Box<DeviceCache>>,
     },
@@ -170,44 +171,29 @@ pub fn perform(env: &Env, job: &Job, note: &mut dyn FnMut(Note)) -> Reply {
 fn status(env: &Env) -> Reply {
     let cache_dir = env.cache_dir.as_deref();
     let status = commands::status_with(env.scan, env.control, cache_dir);
-    let board = status.as_ref().ok().and_then(|s| {
-        let i = flow::picked(
-            &s.devices
-                .iter()
-                .map(|d| d.device.clone())
-                .collect::<Vec<_>>(),
-        )?;
-        let c = s.devices[i].control_channel.as_ref()?;
-        c.firmware.board.clone()
+    // The picked pad's cache: by its serial (or web-config session) and,
+    // from the channel, its board.
+    let key = status.as_ref().ok().and_then(|s| {
+        let devices: Vec<_> = s.devices.iter().map(|d| d.device.clone()).collect();
+        let d = &s.devices[flow::picked(&devices)?];
+        let fw = d
+            .control_channel
+            .as_ref()
+            .map(|c| c.firmware.clone())
+            .unwrap_or_default();
+        Some(cache::Key::new(&fw, cache::identify(cache_dir, &d.device)))
     });
     let cache = cache_dir
-        .and_then(|dir| match &board {
-            Some(b) => cache::load_for(dir, Some(b)),
-            None => cache::load_latest(dir),
-        })
+        .and_then(|dir| cache::load_for(dir, &key.unwrap_or_default()))
         .map(Box::new);
     Reply::Status { status, cache }
 }
 
-/// `backup`, into the backups directory, and the device cache refreshed
-/// from it (as the CLI does).
+/// `backup`, into the backups directory, through web-config and back, with
+/// the pad's device cache refreshed from it (as the CLI does).
 fn backup(env: &Env, progress: &mut dyn Progress) -> Result<String> {
-    let now = env.clock.wall();
-    let work = |c: &gamepadii_core::client::Client| {
-        let (report, cache) = match &env.backups_dir {
-            Some(dir) => commands::backup_in_dir(c, dir, now)?,
-            None => commands::backup_with_cache(c, None, now)?,
-        };
-        if let Some(cache) = cache {
-            // The cache is a convenience: a failure isn't the backup's.
-            let _ = cache::store_quietly(env.cache_dir.as_deref(), &cache);
-        }
-        Ok(report)
-    };
-    flow::through_webconfig(env, false, progress, work, |b| {
-        format!("the backup is saved in {}", b.path.display())
-    })
-    .map(|(b, trip)| output::backup(human(), &b, trip.as_ref()))
+    flow::backup(env, None, false, progress)
+        .map(|(b, trip)| output::backup(human(), &b, trip.as_ref()))
 }
 
 /// Starts the worker. It runs one job at a time, in order, and stops when

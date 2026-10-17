@@ -27,35 +27,47 @@ expression: "info(Format::Json)"
     "mode": "xinput"
   },
   "active_profile": 2,
+  "saved_profile": 2,
+  "running_profile": null,
   "profiles": [
     {
       "number": 1,
       "label": "Default",
       "enabled": true,
+      "saved": false,
+      "running": null,
       "active": false
     },
     {
       "number": 2,
       "label": "SilkSong",
       "enabled": true,
+      "saved": true,
+      "running": null,
       "active": true
     },
     {
       "number": 3,
       "label": "Celeste",
       "enabled": true,
+      "saved": false,
+      "running": null,
       "active": false
     },
     {
       "number": 4,
       "label": "DKC",
       "enabled": true,
+      "saved": false,
+      "running": null,
       "active": false
     },
     {
       "number": 5,
       "label": "TGX",
       "enabled": true,
+      "saved": false,
+      "running": null,
       "active": false
     }
   ],

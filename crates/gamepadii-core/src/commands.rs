@@ -89,9 +89,10 @@ fn probe_status(
             Ok(r) => {
                 confirm(&mut device, &r);
                 remember(cache_dir, &ch, &r.firmware);
+                let key = cache::Key::new(&r.firmware, cache::identify(cache_dir, &device));
                 let _ = remember_profile(
                     cache_dir,
-                    &r.firmware,
+                    &key,
                     r.active_profile.number,
                     false,
                     SystemTime::now(),
@@ -140,23 +141,23 @@ pub fn remember(cache_dir: Option<&Path>, ch: &Channel, fw: &Firmware) {
 }
 
 /// Keeps the device cache's running profile current: the channel says the
-/// pad runs profile `n` (saved too, with `saved`). The cache is a
+/// pad (`key`) runs profile `n` (saved too, with `saved`). The cache is a
 /// convenience, so a failure is returned for a warning at most.
 pub fn remember_profile(
     cache_dir: Option<&Path>,
-    fw: &Firmware,
+    key: &cache::Key,
     n: u8,
     saved: bool,
     now: SystemTime,
 ) -> Option<Error> {
-    cache::record_profile(cache_dir?, &board_slug(fw), n, saved, now).err()
+    cache::record_profile(cache_dir?, key, n, saved, now).err()
 }
 
-/// The pad was restarted by gamepadii: the cache's running profile is the
-/// saved one again (best effort).
-pub fn remember_restart(cache_dir: Option<&Path>, fw: &Firmware) {
+/// The pad (`key`) was restarted by gamepadii: the cache's running profile
+/// is the saved one again (best effort).
+pub fn remember_restart(cache_dir: Option<&Path>, key: &cache::Key) {
     if let Some(dir) = cache_dir {
-        let _ = cache::record_restart(dir, &board_slug(fw));
+        let _ = cache::record_restart(dir, key);
     }
 }
 
@@ -333,6 +334,15 @@ pub struct Profile {
     pub number: u32,
     pub label: Option<String>,
     pub enabled: Option<bool>,
+    /// The saved profile (`profileNumber`): what the pad starts in.
+    pub saved: bool,
+    /// The profile the pad runs, as the control channel's STATUS reported
+    /// it after the reads (back in the gamepad mode, after any restore);
+    /// `null` when nothing reported it. A RAM-only `profile switch` makes
+    /// this differ from `saved`.
+    pub running: Option<bool>,
+    /// The same as `saved`, kept for older readers: web-config only knows
+    /// the saved profile.
     pub active: bool,
 }
 
@@ -355,8 +365,16 @@ pub struct Info {
     pub memory: Option<Memory>,
     /// The persisted input mode: what the pad boots into in gamepad mode.
     pub input_mode: ModeSetting,
-    /// The active profile's number.
+    /// The saved profile's number (`profileNumber`); the same as
+    /// `saved_profile`, kept for older readers.
     pub active_profile: Option<i64>,
+    /// The saved profile's number: what the pad starts in.
+    pub saved_profile: Option<i64>,
+    /// The profile the pad runs, from the control channel's STATUS once
+    /// the trip through web-config is over; `null` when nothing reported
+    /// it (no channel, no trip, or STATUS failed). Never guessed from the
+    /// saved one.
+    pub running_profile: Option<u8>,
     pub profiles: Vec<Profile>,
     pub boot_buttons: Vec<BootButton>,
     /// The OLED's button layout; `null` when the firmware has no
@@ -364,6 +382,17 @@ pub struct Info {
     pub display_layout: Option<display::Current>,
     /// Suggestions for the user (the OLED layout, for now).
     pub hints: Vec<String>,
+}
+
+impl Info {
+    /// Labels the profile the pad runs, as STATUS reported it (`None`:
+    /// unknown, and every row's `running` is `null`).
+    pub fn set_running(&mut self, n: Option<u8>) {
+        self.running_profile = n;
+        for p in &mut self.profiles {
+            p.running = n.map(|n| p.number == u32::from(n));
+        }
+    }
 }
 
 /// [`Info`] for the pad behind `client` (six reads).
@@ -397,6 +426,8 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
             number,
             label: p.profile_label.clone(),
             enabled: p.enabled,
+            saved: active == Some(i64::from(number)),
+            running: None,
             active: active == Some(i64::from(number)),
         })
         .collect();
@@ -426,6 +457,8 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
         memory: memory.as_ref().map(Memory::from),
         input_mode: ModeSetting::new(options.input_mode),
         active_profile: active,
+        saved_profile: active,
+        running_profile: None,
         profiles,
         boot_buttons,
         display_layout,

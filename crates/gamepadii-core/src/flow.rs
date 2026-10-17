@@ -23,7 +23,7 @@ use serde::Serialize;
 
 use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
 use crate::buttons::{Button, Combo};
-use crate::cache::{self, DeviceCache};
+use crate::cache::{self, DeviceCache, Key, PadId};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::{self, Client};
 use crate::commands::{self, Firmware, ModeSetting, ProfileName};
@@ -438,21 +438,14 @@ struct Probed {
     /// Why the channel couldn't be used, when that is worth saying in the
     /// guide.
     hint: Option<String>,
-    /// The board config from the channel's strings (for the cache).
-    firmware: Firmware,
+    /// The pad's device cache: the board config from the channel's
+    /// strings, and the pad from its serial (or its web-config session).
+    key: Key,
     /// STATUS, when the channel answered it.
     status: Option<channel::Status>,
 }
 
 impl Probed {
-    /// The board's cache file name, when the channel said.
-    fn board(&self) -> Option<String> {
-        self.firmware
-            .board
-            .as_ref()
-            .map(|_| commands::board_slug(&self.firmware))
-    }
-
     /// The profile the pad runs, from STATUS.
     fn profile(&self) -> Option<u8> {
         self.status.as_ref().map(|s| s.profile)
@@ -464,11 +457,19 @@ impl Probed {
 /// recorded in the cache dir, so a later `EACCES` gets the udev hint, and
 /// the profile STATUS reports is kept in the device cache.
 fn channel(env: &Env, d: &Device) -> Probed {
+    let pad = cache::identify(env.cache_dir.as_deref(), d);
+    let unprobed = Probed {
+        key: Key {
+            board: None,
+            pad: pad.clone(),
+        },
+        ..Probed::default()
+    };
     let Some(open) = env.control else {
-        return Probed::default();
+        return unprobed;
     };
     if d.mode == Some(InputMode::Bootsel) {
-        return Probed::default();
+        return unprobed;
     }
     let hint = match channel::probe(open, d) {
         Probe::Found(ch) => {
@@ -478,16 +479,16 @@ fn channel(env: &Env, d: &Device) -> Probed {
                 ..Firmware::default()
             };
             commands::remember(env.cache_dir.as_deref(), &ch, &firmware);
+            let key = Key::new(&firmware, pad);
             let status = ch.status().ok();
             if let Some(st) = &status {
                 let dir = env.cache_dir.as_deref();
-                let _ =
-                    commands::remember_profile(dir, &firmware, st.profile, false, env.clock.wall());
+                let _ = commands::remember_profile(dir, &key, st.profile, false, env.clock.wall());
             }
             return Probed {
                 ch: Some(ch),
                 hint: None,
-                firmware,
+                key,
                 status,
             };
         }
@@ -500,16 +501,29 @@ fn channel(env: &Env, d: &Device) -> Probed {
         Probe::Newer { major, .. } => Some(format!("{}.", commands::newer_protocol(major))),
         Probe::NoAccess { .. } | Probe::Absent(_) => None,
     };
-    Probed {
-        hint,
-        ..Probed::default()
+    Probed { hint, ..unprobed }
+}
+
+/// The cache for the guide: this pad's (see `cache`).
+fn guide_cache(env: &Env, p: &Probed) -> Option<DeviceCache> {
+    cache::load_for(env.cache_dir.as_deref()?, &p.key)
+}
+
+/// gamepadii saw `from` (in a gamepad mode) come back as `wc`, in
+/// web-config: records which pad that is, so what is read there goes into
+/// its cache.
+fn entered_webconfig(env: &Env, from: &Device, wc: &Device) {
+    if let (Some(dir), Some(pad)) = (env.cache_dir.as_deref(), PadId::of(from)) {
+        let _ = cache::record_session(dir, &pad, wc);
     }
 }
 
-/// The cache for the guide: the board's when the channel named it, else
-/// the newest.
-fn guide_cache(env: &Env, p: &Probed) -> Option<DeviceCache> {
-    cache::load_for(env.cache_dir.as_deref()?, p.board().as_deref())
+/// gamepadii saw `wc` (in web-config) come back as `got`, in a gamepad
+/// mode: what it read there and couldn't attribute was `got`'s.
+fn left_webconfig(env: &Env, wc: &Device, got: &Device) {
+    if let (Some(dir), Some(pad)) = (env.cache_dir.as_deref(), PadId::of(got)) {
+        let _ = cache::adopt(dir, wc, &pad);
+    }
 }
 
 /// The channel on a pad that has just re-enumerated. udev may need a
@@ -542,11 +556,11 @@ fn running(st: &channel::Status) -> Option<InputMode> {
     InputMode::from_proto(st.input_mode.into())
 }
 
-/// The options from the cache, for the `usbOverrideID` check.
-fn cached_options(env: &Env) -> Option<api::GamepadOptions> {
+/// The options from the pad's cache, for the `usbOverrideID` check.
+fn cached_options(env: &Env, key: &Key) -> Option<api::GamepadOptions> {
     env.cache_dir
         .as_deref()
-        .and_then(cache::load_latest)
+        .and_then(|d| cache::load_for(d, key))
         .and_then(|c| c.options())
 }
 
@@ -625,13 +639,27 @@ fn connect_ready(env: &Env, progress: &mut dyn Progress) -> Result<Client> {
     .ok_or_else(|| last.expect("wait_for tried at least once"))
 }
 
-/// Refreshes the cache from a connected pad; returns it.
-fn refresh_cache(env: &Env, client: &Client, progress: &mut dyn Progress) -> Result<DeviceCache> {
+/// Refreshes the cache from a connected pad (`wc`, in web-config);
+/// returns it.
+fn refresh_cache(
+    env: &Env,
+    client: &Client,
+    wc: &Device,
+    progress: &mut dyn Progress,
+) -> Result<DeviceCache> {
     let c = DeviceCache::capture(client, env.clock.wall())?;
-    if let Some(e) = cache::store_quietly(env.cache_dir.as_deref(), &c) {
+    if let Some(e) = store_read(env, c.clone(), wc) {
         progress.step(Step::CacheFailed(&e));
     }
     Ok(c)
+}
+
+/// Keeps a cache read from `wc` (in web-config), attributed to its pad
+/// when gamepadii knows which one it is; a failure is for a warning.
+fn store_read(env: &Env, mut c: DeviceCache, wc: &Device) -> Option<Error> {
+    let dir = env.cache_dir.as_deref();
+    c.attribute(dir, wc);
+    cache::store_quietly(dir, &c)
 }
 
 /// `(major, minor, patch)` from `v0.7.12`.
@@ -767,7 +795,7 @@ pub fn mode(
             .as_ref()
             .filter(|c| c.caps().has(Caps::SET_INPUT_MODE))
         {
-            return via_control(env, target, &pad, ch, &probed.firmware, progress);
+            return via_control(env, target, &pad, ch, &probed.key, progress);
         }
     }
     if pad.mode == Some(InputMode::Webconfig) {
@@ -796,6 +824,7 @@ pub fn mode(
     )
     .ok_or_else(|| gave_up(env.timeouts.user, &guide))?;
     if got.mode == Some(InputMode::Webconfig) {
+        entered_webconfig(env, &pad, &got);
         return via_webconfig(env, target, &got, (&pad).into(), true, progress);
     }
     Ok(ModeReport {
@@ -829,7 +858,7 @@ fn via_control(
     target: InputMode,
     pad: &Device,
     ch: &Channel,
-    fw: &Firmware,
+    key: &Key,
     progress: &mut dyn Progress,
 ) -> Result<ModeReport> {
     if !ch.hello().boots(target) {
@@ -860,13 +889,13 @@ fn via_control(
     }
     progress.step(Step::Writing(target));
     let ack = ch.set_input_mode(target)?;
-    commands::remember_restart(env.cache_dir.as_deref(), fw);
+    commands::remember_restart(env.cache_dir.as_deref(), key);
     progress.step(Step::Rebooting(BootMode::Gamepad));
     report.via = Via::Control;
     report.after = None;
     report.verified = false;
     report.reboot = Some(ack);
-    if let Some(ids) = cached_options(env).and_then(|o| custom_ids(&o, target)) {
+    if let Some(ids) = cached_options(env, key).and_then(|o| custom_ids(&o, target)) {
         report.note = Some(format!(
             "usbOverrideID is on, so it comes back as {ids}, which gamepadii can't \
              recognise; not verified"
@@ -895,7 +924,7 @@ fn via_control(
         Some(ch) => {
             let st = ch.status()?;
             let dir = env.cache_dir.as_deref();
-            let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+            let _ = commands::remember_profile(dir, key, st.profile, false, env.clock.wall());
             let now = running(&st);
             if now != Some(target) {
                 return Err(Error::CheckFailed(format!(
@@ -937,7 +966,7 @@ fn via_webconfig(
             target.label()
         )));
     }
-    let cached = refresh_cache(env, &client, progress)?;
+    let cached = refresh_cache(env, &client, pad, progress)?;
     let options = cached
         .options()
         .ok_or_else(|| Error::Protocol("getGamepadOptions: unexpected shape".into()))?;
@@ -1005,6 +1034,7 @@ fn via_webconfig(
             target.label()
         )));
     }
+    left_webconfig(env, pad, &got);
     report.after = Some((&got).into());
     report.verified = true;
     report.note = got.note.clone();
@@ -1064,7 +1094,10 @@ pub fn mode_status(env: &Env, progress: &mut dyn Progress) -> Result<ModeStatus>
     }
     let (cache, from) = if pad.mode == Some(InputMode::Webconfig) {
         let client = connect_ready(env, progress)?;
-        (Some(refresh_cache(env, &client, progress)?), Some("pad"))
+        (
+            Some(refresh_cache(env, &client, &pad, progress)?),
+            Some("pad"),
+        )
     } else {
         let c = guide_cache(env, &probed);
         let from = c.as_ref().map(|_| "cache");
@@ -1141,7 +1174,7 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
     } else if let Some(ch) = probed.ch.as_ref().filter(|c| c.caps().has(Caps::REBOOT)) {
         progress.step(Step::Rebooting(BootMode::Webconfig));
         ch.reboot(BootMode::Webconfig)?;
-        commands::remember_restart(env.cache_dir.as_deref(), &probed.firmware);
+        commands::remember_restart(env.cache_dir.as_deref(), &probed.key);
         let got = wait_reenumerated(
             env,
             &pad,
@@ -1151,6 +1184,7 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
             |d| d.mode == Some(InputMode::Webconfig),
         )
         .ok_or_else(|| not_back(env.timeouts.reboot, "asked for web-config"))?;
+        entered_webconfig(env, &pad, &got);
         (got, WebconfigVia::Control)
     } else {
         let cache = guide_cache(env, &probed);
@@ -1173,11 +1207,12 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
             |d| d.mode == Some(InputMode::Webconfig),
         )
         .ok_or_else(|| gave_up(env.timeouts.user, &guide))?;
+        entered_webconfig(env, &pad, &got);
         (got, WebconfigVia::User)
     };
     // The cache is a bonus: a pad whose server isn't up yet still has a URL.
     if let Ok(client) = connect_ready(env, progress) {
-        let _ = refresh_cache(env, &client, progress);
+        let _ = refresh_cache(env, &client, &pad, progress);
     }
     Ok(WebconfigReport {
         url: env.url.clone(),
@@ -1231,7 +1266,7 @@ pub fn reboot_pad(
         Probed::default()
     };
     match probed.ch.as_ref().filter(|c| c.caps().has(Caps::REBOOT)) {
-        Some(ch) => reboot_via_control(env, &pad, ch, &probed.firmware, mode, wait, progress),
+        Some(ch) => reboot_via_control(env, &pad, ch, &probed.key, mode, wait, progress),
         None => Err(not_in_webconfig(&pad, probed.hint)),
     }
 }
@@ -1250,7 +1285,7 @@ fn reboot_via_control(
     env: &Env,
     pad: &Device,
     ch: &Channel,
-    fw: &Firmware,
+    key: &Key,
     mode: BootMode,
     wait: bool,
     progress: &mut dyn Progress,
@@ -1258,7 +1293,7 @@ fn reboot_via_control(
     if mode == BootMode::Bootsel && !ch.caps().has(Caps::REBOOT_BOOTSEL) {
         progress.step(Step::Rebooting(BootMode::Webconfig));
         ch.reboot(BootMode::Webconfig)?;
-        commands::remember_restart(env.cache_dir.as_deref(), fw);
+        commands::remember_restart(env.cache_dir.as_deref(), key);
         wait_reenumerated(
             env,
             pad,
@@ -1294,7 +1329,7 @@ fn reboot_via_control(
     };
     progress.step(Step::Rebooting(mode));
     let ack = ch.reboot(mode)?;
-    commands::remember_restart(env.cache_dir.as_deref(), fw);
+    commands::remember_restart(env.cache_dir.as_deref(), key);
     let report = RebootReport {
         host: ch.node(),
         mode,
@@ -1307,7 +1342,7 @@ fn reboot_via_control(
         note: None,
     };
     let custom = match mode {
-        BootMode::Gamepad => cached_options(env)
+        BootMode::Gamepad => cached_options(env, key)
             .zip(expected)
             .and_then(|(o, m)| custom_ids(&o, m)),
         _ => None,
@@ -1344,7 +1379,9 @@ pub fn reboot(
     };
     progress.step(Step::Rebooting(mode));
     let ack = api::reboot(client.transport(), mode)?;
-    commands::remember_restart(env.cache_dir.as_deref(), &client.firmware().into());
+    let dir = env.cache_dir.as_deref();
+    let pad = before.as_ref().and_then(|d| cache::identify(dir, d));
+    commands::remember_restart(dir, &Key::new(&client.firmware().into(), pad));
     let mut report = RebootReport {
         host: client.host(),
         mode,
@@ -1409,6 +1446,11 @@ fn watch_reboot(
         accept,
     )
     .ok_or_else(|| not_back(env.timeouts.reboot, &format!("asked for {}", mode.label())))?;
+    if before.mode == Some(InputMode::Webconfig) && in_gamepad_mode(&got) {
+        left_webconfig(env, before, &got);
+    } else if in_gamepad_mode(before) && got.mode == Some(InputMode::Webconfig) {
+        entered_webconfig(env, before, &got);
+    }
     report.waited = true;
     report.after = Some((&got).into());
     report.note = got.note.clone();
@@ -1444,6 +1486,10 @@ pub struct Trip {
     /// restart had dropped it: it ran a profile it hadn't saved. `null`
     /// when nothing needed restoring, restoring failed, or with `--stay`.
     pub restored_profile: Option<u8>,
+    /// The profile STATUS shows once the trip is over: back in the gamepad
+    /// mode (after any restore), or in web-config with `--stay`. `null`
+    /// when the channel didn't answer then.
+    pub running_profile: Option<u8>,
     /// `--stay`: it was left in web-config.
     pub stayed: bool,
     /// How it was sent back: `web_config` (`/api/reboot {"bootMode":0}`), or
@@ -1501,10 +1547,21 @@ pub fn through_webconfig<T>(
     work: impl FnOnce(&Client) -> Result<T>,
     done: impl FnOnce(&T) -> String,
 ) -> Result<(T, Option<Trip>)> {
+    visit(env, stay, progress, |c, _| work(c), done)
+}
+
+/// [`through_webconfig`], with the pad as it is in web-config for `work`.
+fn visit<T>(
+    env: &Env,
+    stay: bool,
+    progress: &mut dyn Progress,
+    work: impl FnOnce(&Client, &Device) -> Result<T>,
+    done: impl FnOnce(&T) -> String,
+) -> Result<(T, Option<Trip>)> {
     let pad = pick(env.scan.scan())?;
     if pad.mode == Some(InputMode::Webconfig) {
         let client = (env.open)()?;
-        return work(&client).map(|r| (r, None));
+        return work(&client, &pad).map(|r| (r, None));
     }
     let probed = if in_gamepad_mode(&pad) {
         channel(env, &pad)
@@ -1524,6 +1581,7 @@ pub fn through_webconfig<T>(
         before,
         profile: probed.profile(),
         restored_profile: None,
+        running_profile: None,
         stayed: stay,
         back_via: None,
         after: None,
@@ -1532,7 +1590,7 @@ pub fn through_webconfig<T>(
     };
     progress.step(Step::Rebooting(BootMode::Webconfig));
     ch.reboot(BootMode::Webconfig)?;
-    commands::remember_restart(env.cache_dir.as_deref(), &probed.firmware);
+    commands::remember_restart(env.cache_dir.as_deref(), &probed.key);
     let wc = wait_reenumerated(
         env,
         &pad,
@@ -1548,6 +1606,7 @@ pub fn through_webconfig<T>(
              `gamepadii reboot gamepad` sends it back",
         )
     })?;
+    entered_webconfig(env, &pad, &wc);
     let client = match connect_ready(env, progress) {
         Ok(c) => c,
         Err(e) => {
@@ -1559,14 +1618,14 @@ pub fn through_webconfig<T>(
                 env,
                 &wc,
                 None,
-                &probed.firmware,
+                &probed.key,
                 &mut trip,
                 e,
                 progress,
             ));
         }
     };
-    let result = match work(&client) {
+    let result = match work(&client, &wc) {
         Ok(r) => r,
         Err(e) => {
             let e = prefixed(e, "in web-config");
@@ -1574,7 +1633,7 @@ pub fn through_webconfig<T>(
                 env,
                 &wc,
                 Some(&client),
-                &probed.firmware,
+                &probed.key,
                 &mut trip,
                 e,
                 progress,
@@ -1586,20 +1645,13 @@ pub fn through_webconfig<T>(
             "left in web-config at {}; leave it with: gamepadii webconfig --exit",
             env.url
         );
-        if let Some(dropped) = dropped_in_webconfig(env, &wc, &probed.firmware, trip.profile) {
+        if let Some(dropped) = dropped_in_webconfig(env, &wc, &probed.key, &mut trip) {
             note.push_str(&format!("; {dropped}"));
         }
         trip.note = Some(note);
         return Ok((result, Some(trip)));
     }
-    match go_back(
-        env,
-        &wc,
-        Some(&client),
-        &probed.firmware,
-        &mut trip,
-        progress,
-    ) {
+    match go_back(env, &wc, Some(&client), &probed.key, &mut trip, progress) {
         Ok(()) => Ok((result, Some(trip))),
         Err(e) => Err(prefixed(
             e,
@@ -1608,18 +1660,70 @@ pub fn through_webconfig<T>(
     }
 }
 
-/// With `--stay`: what the restart did to a RAM-only profile `before`, as
-/// STATUS reports it in web-config (the channel answers there too).
-fn dropped_in_webconfig(
+/// `gamepadii info` for the pad on USB: [`through_webconfig`] with the
+/// reads, the device cache refreshed from them (the pad's, before the way
+/// back records the running profile in it), and the profile rows labelled
+/// with the one STATUS shows once the trip is over (`null` without a trip:
+/// the channel isn't asked in web-config).
+pub fn info(
     env: &Env,
-    wc: &Device,
-    fw: &Firmware,
-    before: Option<u8>,
-) -> Option<String> {
-    let p = before?;
+    stay: bool,
+    progress: &mut dyn Progress,
+) -> Result<(commands::Info, Option<Trip>)> {
+    let mut failed = None;
+    let work = |c: &Client, wc: &Device| {
+        let (info, cache) = commands::info_with_cache(c, env.clock.wall())?;
+        failed = store_read(env, cache, wc);
+        Ok(info)
+    };
+    let (mut info, trip) = visit(env, stay, progress, work, |_| "the pad was read".into())?;
+    if let Some(e) = &failed {
+        progress.step(Step::CacheFailed(e));
+    }
+    info.set_running(trip.as_ref().and_then(|t| t.running_profile));
+    Ok((info, trip))
+}
+
+/// `gamepadii backup` for the pad on USB: [`through_webconfig`] with the
+/// bundle written to `output` (else into `env.backups_dir` when it has one,
+/// as the TUI's does, else the default path), and the device cache
+/// refreshed from it, as [`info`] does.
+pub fn backup(
+    env: &Env,
+    output: Option<&Path>,
+    stay: bool,
+    progress: &mut dyn Progress,
+) -> Result<(commands::BackupReport, Option<Trip>)> {
+    let mut failed = None;
+    let work = |c: &Client, wc: &Device| {
+        let now = env.clock.wall();
+        let (report, cache) = match (output, &env.backups_dir) {
+            (None, Some(dir)) => commands::backup_in_dir(c, dir, now)?,
+            _ => commands::backup_with_cache(c, output, now)?,
+        };
+        if let Some(cache) = cache {
+            failed = store_read(env, cache, wc);
+        }
+        Ok(report)
+    };
+    let (report, trip) = visit(env, stay, progress, work, |b| {
+        format!("the backup is saved in {}", b.path.display())
+    })?;
+    if let Some(e) = &failed {
+        progress.step(Step::CacheFailed(e));
+    }
+    Ok((report, trip))
+}
+
+/// With `--stay`: the profile STATUS reports in web-config (the channel
+/// answers there too) goes into `trip.running_profile`; what the restart
+/// did to a RAM-only profile it ran before, if anything.
+fn dropped_in_webconfig(env: &Env, wc: &Device, key: &Key, trip: &mut Trip) -> Option<String> {
     let st = channel_after_reboot(env, wc)?.status().ok()?;
+    trip.running_profile = Some(st.profile);
     let dir = env.cache_dir.as_deref();
-    let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+    let _ = commands::remember_profile(dir, key, st.profile, false, env.clock.wall());
+    let p = trip.profile?;
     (st.profile != p).then(|| {
         format!(
             "it ran profile {p} before, not saved; the restart put it back on its saved \
@@ -1636,13 +1740,13 @@ fn back_after(
     env: &Env,
     wc: &Device,
     client: Option<&Client>,
-    fw: &Firmware,
+    key: &Key,
     trip: &mut Trip,
     e: Error,
     progress: &mut dyn Progress,
 ) -> Error {
     let was = trip.before.label();
-    match go_back(env, wc, client, fw, trip, progress) {
+    match go_back(env, wc, client, key, trip, progress) {
         Ok(()) => suffixed(
             e,
             &format!("; the pad was sent back and is in {was} mode again"),
@@ -1664,7 +1768,7 @@ fn go_back(
     env: &Env,
     wc: &Device,
     client: Option<&Client>,
-    fw: &Firmware,
+    key: &Key,
     trip: &mut Trip,
     progress: &mut dyn Progress,
 ) -> Result<()> {
@@ -1693,10 +1797,10 @@ fn go_back(
         }
     };
     trip.back_via = Some(via);
-    commands::remember_restart(env.cache_dir.as_deref(), fw);
+    commands::remember_restart(env.cache_dir.as_deref(), key);
     let was = trip.before.mode;
     let custom = options
-        .or_else(|| cached_options(env))
+        .or_else(|| cached_options(env, key))
         .zip(was)
         .and_then(|(o, m)| custom_ids(&o, m));
     if let Some(ids) = custom {
@@ -1716,6 +1820,7 @@ fn go_back(
         in_gamepad_mode,
     )
     .ok_or_else(|| not_back(env.timeouts.reboot, &format!("asked for {label}")))?;
+    left_webconfig(env, wc, &got);
     trip.after = Some((&got).into());
     if let Some(m) = was
         && !shows(m, &got)
@@ -1726,11 +1831,12 @@ fn go_back(
             got.usb_id()
         )));
     }
-    if let Some(ch) = channel_after_reboot(env, &got) {
-        let st = ch.status()?;
+    let back = channel_after_reboot(env, &got);
+    let status = back.as_ref().map(Channel::status);
+    if let (Some(ch), Some(Ok(st))) = (&back, status.as_ref()) {
         let dir = env.cache_dir.as_deref();
-        let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
-        let now = running(&st);
+        let _ = commands::remember_profile(dir, key, st.profile, false, env.clock.wall());
+        let now = running(st);
         if was.is_some() && now != was {
             return Err(Error::CheckFailed(format!(
                 "the pad came back, but says it runs {}, not {label}",
@@ -1738,9 +1844,16 @@ fn go_back(
             )));
         }
         trip.after = Some(confirmed(&got, now));
+        trip.running_profile = Some(st.profile);
         if let Some(p) = trip.profile.filter(|p| *p != st.profile) {
-            trip.note = Some(restore_profile(env, &ch, fw, p, st.profile, trip, progress));
+            trip.note = Some(restore_profile(env, ch, key, p, st.profile, trip, progress));
         }
+    } else if let Some(Err(e)) = status {
+        // The VID:PID checked out; which profile it runs is unknown.
+        trip.note = Some(format!(
+            "the control channel didn't answer STATUS once the pad was back ({e}), so \
+             which profile it runs is unknown"
+        ));
     } else {
         trip.note = got.note.clone();
     }
@@ -1756,7 +1869,7 @@ fn go_back(
 fn restore_profile(
     env: &Env,
     ch: &Channel,
-    fw: &Firmware,
+    key: &Key,
     p: u8,
     saved: u8,
     trip: &mut Trip,
@@ -1769,22 +1882,27 @@ fn restore_profile(
         .and_then(|()| match applied(env, ch, p) {
             Some(st) if st.profile == p => Ok(()),
             Some(st) => {
-                let _ = commands::remember_profile(dir, fw, st.profile, false, env.clock.wall());
+                trip.running_profile = Some(st.profile);
+                let _ = commands::remember_profile(dir, key, st.profile, false, env.clock.wall());
                 Err(Error::CheckFailed(format!(
                     "the pad accepted profile {p}, but STATUS shows profile {}",
                     st.profile
                 )))
             }
-            None => Err(Error::Protocol(format!(
-                "the pad took profile {p} but hasn't applied it after 1 s"
-            ))),
+            None => {
+                trip.running_profile = None;
+                Err(Error::Protocol(format!(
+                    "the pad took profile {p} but hasn't applied it after 1 s"
+                )))
+            }
         });
     match result {
         Ok(()) => {
-            if let Some(e) = commands::remember_profile(dir, fw, p, false, env.clock.wall()) {
+            if let Some(e) = commands::remember_profile(dir, key, p, false, env.clock.wall()) {
                 progress.step(Step::CacheFailed(&e));
             }
             trip.restored_profile = Some(p);
+            trip.running_profile = Some(p);
             let name = ProfileName {
                 number: p,
                 label: ch.string(proto::string::profile_label(p)).ok().flatten(),
@@ -1925,9 +2043,10 @@ pub fn profile_switch(
         board: ch.string(proto::string::BOARD).ok().flatten(),
         ..Firmware::default()
     };
+    let key = Key::new(&firmware, cache::identify(env.cache_dir.as_deref(), &pad));
     let remember = |n: u8, saved: bool, progress: &mut dyn Progress| {
         let dir = env.cache_dir.as_deref();
-        if let Some(e) = commands::remember_profile(dir, &firmware, n, saved, env.clock.wall()) {
+        if let Some(e) = commands::remember_profile(dir, &key, n, saved, env.clock.wall()) {
             progress.step(Step::CacheFailed(&e));
         }
     };

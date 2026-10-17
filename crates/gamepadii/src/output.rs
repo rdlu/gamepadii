@@ -435,11 +435,16 @@ pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
         .iter()
         .map(|p| {
             let mut line = format!("{} {}", p.number, p.label.as_deref().unwrap_or("-"));
-            if p.active {
-                line.push_str(" (active)");
-            }
-            if p.enabled == Some(false) {
-                line.push_str(" (disabled)");
+            let tags: Vec<&str> = [
+                (p.saved, "saved"),
+                (p.running == Some(true), "running"),
+                (p.enabled == Some(false), "disabled"),
+            ]
+            .into_iter()
+            .filter_map(|(on, tag)| on.then_some(tag))
+            .collect();
+            if !tags.is_empty() {
+                line.push_str(&format!(" ({})", tags.join(", ")));
             }
             line
         })
@@ -465,6 +470,14 @@ pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
     }
     r.push(("web-config", i.host.clone()));
     r.extend(trip.map(trip_rows).unwrap_or_default());
+    // A trip went over the channel, so the pad could have said which
+    // profile it runs; say so when it didn't, rather than leave it out.
+    if trip.is_some() && i.running_profile.is_none() {
+        r.push((
+            "running",
+            "unknown: the control channel didn't report the profile after the trip".into(),
+        ));
+    }
     for h in &i.hints {
         r.push(("hint", h.clone()));
     }

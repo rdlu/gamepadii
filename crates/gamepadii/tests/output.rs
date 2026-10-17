@@ -502,10 +502,7 @@ mod flows {
         let mut stderr = Vec::new();
         let (info, trip) = {
             let mut p = Reporter::new(&mut stderr, false);
-            rig.run(|env| {
-                flow::through_webconfig(env, false, &mut p, commands::info, |_| String::new())
-            })
-            .unwrap()
+            rig.run(|env| flow::info(env, false, &mut p)).unwrap()
         };
         let out = rig.dirs.path().join("s16.json");
         let (mut backup, stayed) = rig
@@ -540,28 +537,41 @@ mod flows {
             let mut stderr = Vec::new();
             let (info, trip) = {
                 let mut p = Reporter::new(&mut stderr, false);
-                rig.run(|env| {
-                    flow::through_webconfig(env, false, &mut p, commands::info, |_| String::new())
-                })
-                .unwrap()
+                rig.run(|env| flow::info(env, false, &mut p)).unwrap()
             };
             let human = output::info(human(), &info, trip.as_ref());
-            let rows = &human[human.find("via ").unwrap()..];
+            let rows = &human[human.find("profiles ").unwrap()..];
             let v: Value =
                 serde_json::from_str(&output::info(json(), &info, trip.as_ref())).unwrap();
             format!(
-                "--- stderr\n{}--- rows\n{rows}--- json\nrestored_profile: {}\n",
+                "--- stderr\n{}--- rows\n{rows}--- json\nrestored_profile: {}\n\
+                 saved_profile: {}\nrunning_profile: {}\nrunning: {}\n",
                 String::from_utf8(stderr).unwrap(),
-                v["trip"]["restored_profile"]
+                v["trip"]["restored_profile"],
+                v["saved_profile"],
+                v["running_profile"],
+                v["profiles"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p["running"].to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             )
         };
         let channel = || SimPad::new(s16_dir(), InputMode::Xinput).with_channel();
         insta::assert_snapshot!(format!(
-            "{}{}",
+            "{}{}{}",
             run(channel().channel(|c| c.active = 3)),
             run(channel().channel(|c| {
                 c.active = 3;
                 c.enabled_profiles &= !0b100;
+            })),
+            // No STATUS: the running profile is unknown, and says so.
+            run(channel().channel(|c| {
+                c.caps = gamepadii_core::channel::Caps(
+                    gamepadii_core::channel::sim::V1_CAPS & !gamepadii_core::channel::Caps::STATUS,
+                );
             }))
         ));
     }

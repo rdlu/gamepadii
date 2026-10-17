@@ -141,6 +141,17 @@ reboots as possible.
   CAFE:4028, BOOTSEL 2E8A:0003. The full table is in the research notes.
   Several of these IDs belong to other vendors' devices too, so confirm through
   the API, a stored serial, or the sysfs path.
+- **USB serials** (v0.7.12, `headers/drivers/*/*Descriptors.h`): only
+  XInput and Xbox One build theirs from the RP2040's unique id. XInput sends
+  `"0"` plus bytes 5–7 of the id in hex (`0C0FFEE`; `usbDescOverride`
+  replaces it with the user's `usbDescVersion`), Xbox One a letter per
+  byte (`'A' + b % 25`) and then `8ABCDEFGH`. Web-config always says
+  `123456`, Switch Pro `000000000001`; SInput and Switch 2 Pro send fixed
+  strings, and Keyboard, HID, Switch, PS3, PS4/PS5 and the rest have no
+  serial. The two unique serials are different strings for the same pad,
+  so neither can be derived from the other. The control channel (v1)
+  exposes no id either: the HELLO token mixes the unique id in, but it is
+  random per boot.
 - **BOOTSEL / PICOBOOT:** the config lives at 0x101F8000 (32 KB, nanopb
   `Config`, followed by a 12-byte footer of `{size, crc32, magic 0xD2F1E365}`).
   This allows an offline backup and a mode change with no network.
@@ -198,13 +209,36 @@ Host side (`gamepadii-core/src/channel/`):
   never touched. A failed restore is a warning (stderr and the note), not
   an error: the read worked. With `--stay` nothing is switched (the pad
   stays in web-config); the note says the profile was dropped. Decided in
-  #2 (follow-up 3; the restore decided later).
+  #2 (follow-up 3; the restore decided later). `info` labels its profile
+  rows `saved` (`profileNumber`, all web-config knows) and `running` (the
+  STATUS taken after the trip, `trip.running_profile`); without a trip, or
+  when STATUS doesn't answer, running is unknown (`null`), never the saved
+  one (#14).
 - The device cache (`cache.rs`) records the profile STATUS reports
   (`running_profile`) beside the saved `profileNumber`: `profile switch`
   sets it (and the saved one with `--save`), any STATUS refreshes it
   (written only on a change), and a reboot gamepadii causes clears it. The
   guide's key hints take the live STATUS profile, else that record, else
   the saved one. Decided in #2 (follow-up 2).
+- The device cache is kept per pad, keyed by the serial the pad has in a
+  gamepad mode that has a unique one (XInput, Xbox One; `cache::PadId`,
+  #11): `~/.cache/gamepadii/<board>-<serial>.json`. Web-config can't say
+  which pad it is, so whenever gamepadii sees a pad with such a serial go
+  into web-config (the trip, `webconfig`, `reboot webconfig`, the guided
+  `mode`), it records that serial against the web-config enumeration
+  (bus, port, device number) in `webconfig-sessions.json`; reads in that
+  enumeration go to that pad. A replug or a reboot gets a new device
+  number, so a session never outlives the enumeration. A read it can't
+  attribute (into web-config by hand, or from a mode with no unique
+  serial) goes to `<board>.json` as before, with the enumeration it was
+  read in, and is moved to the pad's file when gamepadii sees that
+  enumeration come back in a mode with a serial (`webconfig --exit`,
+  `reboot gamepad`, `mode` from web-config). Lookups prefer the pad's own
+  file, however old, then the newest that can be this pad, never another
+  pad's (same mode, another serial). Board files from before still load,
+  and the first read attributed to a pad of that board replaces them. A
+  STRING with the unique id on the control channel would make this exact
+  in every mode; that needs a firmware change (protocol v1.1).
 
 ## Profiles live in gamepadii, not on the pad
 
@@ -255,8 +289,9 @@ crates/gamepadii-core/src/
   api/           typed endpoint structs + raw serde_json::Value passthrough
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
-  cache.rs       last web-config read per board (~/.cache/gamepadii/<board>.json),
-                 plus the profile the channel last reported running
+  cache.rs       last web-config read per pad (~/.cache/gamepadii/<board>-<serial>.json,
+                 else <board>.json), the profile the channel last reported
+                 running, and which pad went into which web-config session
   flow.rs        mode / webconfig / reboot / profile switch over Scan + Clock,
                  the control channel first, the guided flows as fallback;
                  the web-config round trip for info and backup

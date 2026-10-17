@@ -1285,7 +1285,14 @@ fn hints_use_the_profile_the_channel_reports() {
 fn without_the_channel_hints_use_the_recorded_profile() {
     let rig = Rig::s16(InputMode::Xinput).with_cache();
     let now = std::time::UNIX_EPOCH + Duration::from_secs(CAPTURED + 3600);
-    cache::record_profile(&rig.cache_dir(), "Haute42COSMOX", 1, false, now).unwrap();
+    cache::record_profile(
+        &rig.cache_dir(),
+        &cache::Key::board("Haute42COSMOX"),
+        1,
+        false,
+        now,
+    )
+    .unwrap();
     let msg = rig
         .mode(InputMode::Switch, false, &mut Log::default())
         .unwrap_err()
@@ -1687,4 +1694,388 @@ fn stay_drops_a_ram_only_profile_and_says_so() {
     );
     assert_eq!(rig.pad.firmware().active, 2);
     assert_eq!(cached(&rig).active_profile(), Some(2));
+}
+
+// ---- info labels the saved and the running profile (#14) -------------------
+
+fn info_read(rig: &Rig, stay: bool) -> gamepadii_core::Result<Read> {
+    rig.run(|env| flow::info(env, stay, &mut Log::default()))
+}
+
+/// `(number, saved, running)` for each profile row.
+fn labels(info: &gamepadii_core::commands::Info) -> Vec<(u32, bool, Option<bool>)> {
+    info.profiles
+        .iter()
+        .map(|p| (p.number, p.saved, p.running))
+        .collect()
+}
+
+#[test]
+fn info_labels_the_running_profile_when_it_is_the_saved_one() {
+    let rig = Rig::cc(InputMode::Xinput);
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip.unwrap().running_profile, Some(2));
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(2))
+    );
+    assert_eq!(info.active_profile, Some(2), "kept for older readers");
+    let l = labels(&info);
+    assert_eq!(l[1], (2, true, Some(true)));
+    assert!(
+        l.iter()
+            .filter(|(n, ..)| *n != 2)
+            .all(|(_, saved, running)| !saved && *running == Some(false)),
+        "{l:?}"
+    );
+}
+
+#[test]
+fn info_after_a_ram_only_switch_labels_both() {
+    // The pad runs 3 (RAM only), saved 2: web-config lists 2 as saved; the
+    // trip restores 3, and STATUS says so.
+    let rig = Rig::cc(InputMode::Xinput).with_cache();
+    switch(&rig, "3", false).unwrap();
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip.unwrap().restored_profile, Some(3));
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(3))
+    );
+    let l = labels(&info);
+    assert_eq!(l[1], (2, true, Some(false)));
+    assert_eq!(l[2], (3, false, Some(true)));
+    // The cache keeps both too.
+    let c = cached(&rig);
+    assert_eq!((c.saved_profile(), c.active_profile()), (Some(2), Some(3)));
+}
+
+#[test]
+fn info_after_a_failed_restore_labels_what_the_pad_runs() {
+    // Profile 3 can't be switched back to: the pad runs its saved 2.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.active = 3;
+                c.enabled_profiles &= !0b100;
+            }),
+    );
+    let (info, _) = info_read(&rig, false).unwrap();
+    assert_eq!(
+        (info.saved_profile, info.running_profile),
+        (Some(2), Some(2))
+    );
+}
+
+#[test]
+fn info_with_stay_labels_what_web_config_runs() {
+    let rig = Rig::cc(InputMode::Xinput);
+    switch(&rig, "3", false).unwrap();
+    let (info, trip) = info_read(&rig, true).unwrap();
+    assert!(trip.unwrap().stayed);
+    // The restart dropped 3; STATUS in web-config says 2.
+    assert_eq!(info.running_profile, Some(2));
+    assert_eq!(labels(&info)[1], (2, true, Some(true)));
+}
+
+#[test]
+fn info_without_status_after_the_trip_says_unknown() {
+    // A channel with no STATUS: the trip works, the running profile is
+    // unknown, and nothing stands in for it.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                c.caps = gamepadii_core::channel::Caps(
+                    gamepadii_core::channel::sim::V1_CAPS & !gamepadii_core::channel::Caps::STATUS,
+                );
+            }),
+    );
+    let (info, trip) = info_read(&rig, false).unwrap();
+    let t = trip.unwrap();
+    assert!(t.verified, "the VID:PID checked out");
+    assert_eq!(t.running_profile, None);
+    assert!(
+        t.note.as_deref().unwrap().contains("didn't answer STATUS"),
+        "{:?}",
+        t.note
+    );
+    assert_eq!(info.saved_profile, Some(2));
+    assert_eq!(info.running_profile, None);
+    assert!(
+        labels(&info)
+            .iter()
+            .all(|(_, _, running)| running.is_none())
+    );
+}
+
+#[test]
+fn info_in_web_config_does_not_guess_the_running_profile() {
+    let rig = Rig::cc(InputMode::Webconfig);
+    let (info, trip) = info_read(&rig, false).unwrap();
+    assert_eq!(trip, None);
+    assert_eq!((info.saved_profile, info.running_profile), (Some(2), None));
+    assert!(rig.pad.control_log().is_empty(), "no probe in web-config");
+}
+
+// ---- the cache is kept per pad, by its gamepad-mode serial (#11) ------------
+
+/// XInput serial `0C0FFEE`.
+const PAD_A: [u8; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0xC0, 0xFF, 0xEE];
+/// XInput serial `0BADDAD`.
+const PAD_B: [u8; 8] = [0x66, 0x77, 0x88, 0x99, 0xAA, 0xBA, 0xDD, 0xAD];
+/// XInput serial `0F00BAA`.
+const PAD_C: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0xF0, 0x0B, 0xAA];
+
+/// The S16 capture with profile 2 called `label`, so its cache can be told
+/// apart.
+fn relabelled(label: &str) -> Mock {
+    let mock = Mock::new(s16_dir());
+    let mut p = mock.current("getProfileOptions").unwrap();
+    p["alternativePinMappings"][0]["profileLabel"] = label.into();
+    mock.store("getProfileOptions", p);
+    mock
+}
+
+/// The guide `mode switch --no-wait` gives on a pad without the channel.
+fn guide_text(rig: &Rig) -> String {
+    rig.mode(InputMode::Switch, false, &mut Log::default())
+        .unwrap_err()
+        .to_string()
+}
+
+fn cache_file(rig: &Rig, name: &str) -> DeviceCache {
+    let b = std::fs::read(rig.cache_dir().join(name)).unwrap();
+    serde_json::from_slice(&b).unwrap()
+}
+
+fn profile2(c: &DeviceCache) -> String {
+    c.profile_options["alternativePinMappings"][0]["profileLabel"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+impl Rig {
+    /// Another pad (or the same one again) in the same socket, with the
+    /// same cache.
+    fn replug(&mut self, pad: SimPad) {
+        self.pad = Arc::new(pad);
+    }
+}
+
+#[test]
+fn only_modes_with_a_unique_serial_name_the_pad() {
+    let id = |mode| cache::PadId::of(&sim::device_with_id(mode, 7, Some(PAD_A)));
+    assert_eq!(
+        id(InputMode::Xinput),
+        Some(cache::PadId {
+            serial: "0C0FFEE".into(),
+            mode: InputMode::Xinput
+        })
+    );
+    let xbone = id(InputMode::Xbone).unwrap();
+    assert_eq!(xbone.serial, "RJBSKRFN8ABCDEFGH");
+    for mode in [
+        InputMode::Webconfig,
+        InputMode::SwitchPro,
+        InputMode::Keyboard,
+        InputMode::Generic,
+        InputMode::Ps4,
+    ] {
+        assert_eq!(id(mode), None, "{mode:?}");
+    }
+    // usbDescOverride: XInput's serial is the user's string.
+    let mut d = sim::device_with_id(InputMode::Xinput, 7, Some(PAD_A));
+    d.serial = Some("1.0".into());
+    assert_eq!(cache::PadId::of(&d), None);
+    d.serial = None;
+    assert_eq!(cache::PadId::of(&d), None);
+}
+
+#[test]
+fn two_pads_with_one_board_keep_separate_caches() {
+    let mut rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    info_read(&rig, false).unwrap();
+    rig.clock.advance(Duration::from_secs(60));
+    rig.replug(
+        SimPad::with_mock(relabelled("Hollow"), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_B),
+    );
+    info_read(&rig, false).unwrap();
+    assert_eq!(
+        files(&rig.cache_dir()),
+        [
+            "Haute42COSMOX-0BADDAD.json",
+            "Haute42COSMOX-0C0FFEE.json",
+            cache::CHANNELS_FILE,
+            cache::SESSIONS_FILE,
+        ]
+    );
+    let a = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
+    assert_eq!(a.pad.as_ref().unwrap().serial, "0C0FFEE");
+    assert_eq!(profile2(&a), "SilkSong");
+    let b = cache_file(&rig, "Haute42COSMOX-0BADDAD.json");
+    assert_eq!(b.pad.as_ref().unwrap().serial, "0BADDAD");
+    assert_eq!(profile2(&b), "Hollow");
+    assert!(b.captured_at > a.captured_at);
+
+    // In a gamepad mode, on stock firmware (the guide), each pad gets its
+    // own hints, not the newest.
+    rig.replug(SimPad::new(s16_dir(), InputMode::Xinput).unique_id(PAD_A));
+    let msg = guide_text(&rig);
+    assert!(msg.contains("In profile 2 (SilkSong)"), "{msg}");
+    assert!(!msg.contains("Hollow"), "{msg}");
+    rig.replug(SimPad::with_mock(relabelled("Hollow"), InputMode::Xinput).unique_id(PAD_B));
+    let msg = guide_text(&rig);
+    assert!(msg.contains("In profile 2 (Hollow)"), "{msg}");
+    // A third pad of that board: neither cache is its.
+    rig.replug(SimPad::new(s16_dir(), InputMode::Xinput).unique_id(PAD_C));
+    let msg = guide_text(&rig);
+    assert!(
+        !msg.contains("SilkSong") && !msg.contains("Hollow"),
+        "{msg}"
+    );
+    // Keyboard has no serial: it can't be told apart, so the newest.
+    let mock = relabelled("Hollow");
+    let mut o = mock.current("getGamepadOptions").unwrap();
+    o["inputMode"] = 3.into();
+    mock.store("getGamepadOptions", o);
+    rig.replug(SimPad::with_mock(mock, InputMode::Keyboard).unique_id(PAD_B));
+    let msg = guide_text(&rig);
+    assert!(msg.contains("In profile 2 (Hollow)"), "{msg}");
+}
+
+#[test]
+fn the_running_profile_goes_to_the_right_pad() {
+    let mut rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    info_read(&rig, false).unwrap();
+    rig.clock.advance(Duration::from_secs(60));
+    rig.replug(
+        SimPad::with_mock(relabelled("Hollow"), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_B),
+    );
+    info_read(&rig, false).unwrap();
+    // Back to A, the older cache: a RAM-only switch is recorded in A's.
+    rig.replug(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    switch(&rig, "3", false).unwrap();
+    let a = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
+    assert_eq!(a.active_profile(), Some(3));
+    let b = cache_file(&rig, "Haute42COSMOX-0BADDAD.json");
+    assert_eq!(b.active_profile(), Some(2), "B's untouched");
+}
+
+#[test]
+fn an_old_board_file_serves_until_the_pad_is_read() {
+    let mut rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).unique_id(PAD_A)).with_cache();
+    assert_eq!(files(&rig.cache_dir()), ["Haute42COSMOX.json"]);
+    let msg = guide_text(&rig);
+    assert!(msg.contains("In profile 2 (SilkSong)"), "{msg}");
+    // The first read of a pad of that board replaces it.
+    rig.replug(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    info_read(&rig, false).unwrap();
+    assert_eq!(
+        files(&rig.cache_dir()),
+        [
+            "Haute42COSMOX-0C0FFEE.json",
+            cache::CHANNELS_FILE,
+            cache::SESSIONS_FILE,
+        ]
+    );
+}
+
+#[test]
+fn a_pad_without_a_unique_serial_stays_by_board() {
+    // Keyboard has no serial: the trip still works, the cache is the
+    // board's as before.
+    let mock = Mock::new(s16_dir());
+    let mut o = mock.current("getGamepadOptions").unwrap();
+    o["inputMode"] = 3.into();
+    mock.store("getGamepadOptions", o);
+    let rig = Rig::new(
+        SimPad::with_mock(mock, InputMode::Keyboard)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    info_read(&rig, false).unwrap();
+    assert_eq!(
+        files(&rig.cache_dir()),
+        ["Haute42COSMOX.json", cache::CHANNELS_FILE]
+    );
+    let c = cached(&rig);
+    assert_eq!(c.pad, None);
+}
+
+#[test]
+fn web_config_reads_go_to_the_pad_seen_going_there() {
+    // `gamepadii webconfig` over the channel: gamepadii saw 0C0FFEE go in.
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    rig.run(|env| flow::webconfig(env, true, &mut Log::default()))
+        .unwrap();
+    assert_eq!(rig.pad.mode(), Some(InputMode::Webconfig));
+    let keyed = rig.cache_dir().join("Haute42COSMOX-0C0FFEE.json");
+    assert!(keyed.exists(), "{:?}", files(&rig.cache_dir()));
+    // A later `info`, in web-config: the same pad (serial 123456 there).
+    std::fs::remove_file(&keyed).unwrap();
+    info_read(&rig, false).unwrap();
+    assert!(keyed.exists(), "{:?}", files(&rig.cache_dir()));
+    assert!(!rig.cache_dir().join("Haute42COSMOX.json").exists());
+}
+
+#[test]
+fn a_replug_in_web_config_is_another_session() {
+    let mut rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    rig.run(|env| flow::webconfig(env, true, &mut Log::default()))
+        .unwrap();
+    // Replugged holding S2: a new enumeration, which could be any pad.
+    rig.replug(SimPad::new(s16_dir(), InputMode::Webconfig).unique_id(PAD_B));
+    info_read(&rig, false).unwrap();
+    let c = cached(&rig);
+    assert_eq!(c.pad, None, "board file");
+    assert_eq!(c.read_in.as_ref().unwrap().devnum, 7);
+}
+
+#[test]
+fn a_read_by_hand_is_attributed_when_the_pad_leaves_web_config() {
+    // Put into web-config by hand: gamepadii can't tell which pad it is.
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Webconfig).unique_id(PAD_A));
+    info_read(&rig, false).unwrap();
+    assert_eq!(files(&rig.cache_dir()), ["Haute42COSMOX.json"]);
+    // `gamepadii webconfig --exit`: it comes back in XInput as 0C0FFEE.
+    rig.run(|env| {
+        let client = (env.open)().unwrap();
+        flow::reboot(env, &client, BootMode::Gamepad, true, &mut Log::default())
+    })
+    .unwrap();
+    assert_eq!(files(&rig.cache_dir()), ["Haute42COSMOX-0C0FFEE.json"]);
+    let c = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
+    assert_eq!(c.pad.unwrap().serial, "0C0FFEE");
+    assert_eq!(c.read_in, None);
 }
