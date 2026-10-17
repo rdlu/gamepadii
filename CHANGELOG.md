@@ -91,6 +91,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any STATUS refreshes it, and a restart gamepadii makes clears it. The
   key hints use the live STATUS profile when the channel answers, else the
   cache's.
+- `gamepadii display layout [MODEL | --left N --right N]`: the OLED's
+  button drawing. Haute42 pads (Haute42COSMOX) take their model (`s16`,
+  `g16`, `s13`, `m16+`, `e16`, ...) or the layout (`default`,
+  `alt0`..`alt5`), from the board's BoardConfig.h; S16/G16 is Board
+  Defined Alternate 2 (36/42). Any board takes the raw values. With no
+  argument it shows the current layout and the choices. It backs up
+  first (`--no-backup` to skip), writes with a read-modify-write of the
+  whole `setDisplayOptions` object (which zeroes whatever it isn't sent),
+  and reads it back; from a gamepad mode the control channel takes the
+  pad to web-config and back, like `info`.
+- `info` shows the OLED layout, and on a Haute42 still on the generic
+  12-button drawing with a 16-button pin mapping, suggests
+  `gamepadii display layout s16`. The JSON gains `display_layout` and
+  `hints` (additive, still schema 1).
 
 ### Fixed
 
