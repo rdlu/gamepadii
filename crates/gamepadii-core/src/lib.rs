@@ -19,6 +19,7 @@ pub mod sim;
 pub mod sysfs;
 pub mod timestamp;
 pub mod transport;
+pub mod udev;
 pub mod wait;
 
 pub use error::{Error, Result};
