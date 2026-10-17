@@ -76,7 +76,7 @@ reboots as possible.
 - **Profiles:** up to 6 pin-mapping profiles (GPIO → logical button). They can
   be switched live with hotkeys (`LOAD_PROFILE_n`, `NEXT_PROFILE`), with no
   reboot.
-- **There is only one keyboard keymap** (logical button → HID keycode, 34
+- **There is only one keyboard keymap** (logical button → HID keycode, 32
   slots: Up/Down/Left/Right, B1–B4, L1/R1/L2/R2, S1/S2, L3/R3, A1–A4, E1–E12).
 - **Detecting the current mode from VID:PID:** XInput 045E:028E, Keyboard
   CAFE:0001, HID 10C4:82C0, Switch 0F0D:0092, PS4/5 1532:0401, web-config
@@ -112,7 +112,7 @@ have.
 - **`slots load a b c …`** picks up to 6 library profiles that share an
   input mode and puts them in the device's slots, so the on-pad hotkeys can
   switch between them with no PC involved. For keyboard profiles this uses
-  the superset trick: one 34-slot keymap with the pin mappings choosing keys
+  the superset trick: one 32-slot keymap with the pin mappings choosing keys
   per slot, and gamepadii reports when they don't fit.
 - **Later: a host remapper.** The pad stays in XInput/HID while gamepadii
   turns its buttons into keys through evdev → uinput. Switching per app is
