@@ -15,6 +15,7 @@ Commands:
   mode       Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
   webconfig  Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
   profile    Pin-mapping profiles on the pad
+  library    The profile library on this computer: KDL files in ~/.config/gamepadii/profiles/, and the examples that gamepadii ships. A profile names the physical buttons of a board file
   leds       The per-button RGB LEDs: animation, brightness, colours and the custom theme, or the lights profile on main firmware. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
   input      Read the buttons live (needs control channel v1.7 of the gamepadii firmware): the GPIOs pressed now, with their action and key, and the gamepad state
   log        The pad's log of its last 64 events, live (needs control channel v1.8 of the gamepadii firmware)

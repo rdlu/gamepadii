@@ -1,0 +1,27 @@
+// A small profile for one game. It starts from "Default" (profile 1 of
+// the S16) and changes three buttons. The other buttons come from the base.
+//
+// Copy this file into ~/.config/gamepadii/profiles/ and change it there.
+// A profile in that directory hides a shipped profile with the same name.
+profile "My Game" {
+    base "Default"
+    // The pad shows this label. The pad keeps at most 16 bytes.
+    label "My Game"
+    // Optional: the input mode that the profile is for.
+    input-mode xinput
+    pins {
+        // The big thumb button jumps, as in most games.
+        up B1
+        // The two thumb buttons next to it become the bumpers.
+        m2 L1
+        rs R1
+    }
+}
+
+// A second level of bases: "My Game" with one more change.
+profile "My Game Alt" {
+    base "My Game"
+    pins {
+        ls B2
+    }
+}

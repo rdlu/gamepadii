@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
 use gamepadii::cli::{
-    self, Cli, ColorsCommand, Command, DisplayCommand, InputCommand, LedsCommand,
+    self, Cli, ColorsCommand, Command, DisplayCommand, InputCommand, LedsCommand, LibraryCommand,
     LightsProfileCommand, MockChannel, ProfileCommand, SetupCommand, ThemeCommand, TripArgs,
 };
 use gamepadii::output::{self, Format, Style};
@@ -20,6 +20,7 @@ use gamepadii_core::colors::{ColorsFile, ColorsWrite, ThemeApply, ThemeFile};
 use gamepadii_core::discovery::Device;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Env, Timeouts};
+use gamepadii_core::library::{self, Library};
 use gamepadii_core::lights::{LightsFile, LightsWrite};
 use gamepadii_core::mode::BootMode;
 use gamepadii_core::slots::{SlotFile, SlotWrite};
@@ -306,6 +307,52 @@ fn main() -> ExitCode {
                 .and_then(|f| flow::profile_write(&env, &f, &write, &mut progress))
                 .map(|r| output::profile_write(style, &r));
             drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Library {
+            command: LibraryCommand::List,
+        }) => {
+            let dir = library::library_dir();
+            let result =
+                Library::load(dir.as_deref()).map(|l| output::library_list(style, &l.list()));
+            finish(format, result)
+        }
+        Some(Command::Library {
+            command: LibraryCommand::Show { name, slot_file },
+        }) => {
+            let dir = library::library_dir();
+            let result = Library::load(dir.as_deref())
+                .and_then(|l| l.resolve(&name))
+                .map(|r| match slot_file {
+                    // A file: JSON in any format, with an end of line.
+                    true if format == Format::Human => format!("{}\n", output::slot_file(&r)),
+                    true => output::slot_file(&r),
+                    false => output::library_show(style, &r),
+                });
+            finish(format, result)
+        }
+        Some(Command::Library {
+            command: LibraryCommand::Pull { write, force },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result = flow::library_pull(&env).and_then(|mut r| {
+                if let Some(path) = write {
+                    let path = path.unwrap_or_else(|| format!("{}.kdl", r.board).into());
+                    let dir = library::library_dir();
+                    library::save_pull(&mut r, dir.as_deref(), &path, force)?;
+                }
+                Ok(output::library_pull(style, &r))
+            });
             finish(format, result)
         }
         Some(Command::Leds {

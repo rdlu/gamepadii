@@ -1,10 +1,10 @@
 //! gamepadii core: GP2040-CE discovery and mode detection, the web-config
-//! client, and later profiles.
+//! client, the control channel, and the profile library.
 //!
 //! Layering (each layer only depends on the ones before it):
 //! `discovery` → `transport` / `channel` → `client` → `blob` → `commands`
-//! / `display` / `leds` / `lights` / `colors` / `slots` / `input` / `log` /
-//! `flow`. `commands`
+//! / `display` / `leds` / `lights` / `colors` / `slots` / `library` /
+//! `input` / `log` / `flow`. `commands`
 //! returns plain serde data and nothing here prints; front ends own
 //! rendering.
 
@@ -22,6 +22,7 @@ pub mod error;
 pub mod flow;
 pub mod input;
 pub mod leds;
+pub mod library;
 pub mod lights;
 pub mod log;
 pub mod mode;

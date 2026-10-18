@@ -24,6 +24,9 @@ clap_mangen = "0.3.3"
 # usbfs ioctls for the control channel (Linux only).
 libc = "0.2.191"
 crossterm = "0.29.0"
+# The profile library (KDL 2.0). kdl 6.6 and later need Rust 1.95; 6.5 builds
+# on the MSRV.
+kdl = "6.5.0"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order: backups and read-modify-writes keep the device's key order.

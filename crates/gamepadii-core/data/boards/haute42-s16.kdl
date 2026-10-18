@@ -1,0 +1,38 @@
+// The Haute42 S16: the name of each physical button, and its GPIO.
+// Profiles use these names, never the GPIOs.
+//
+// The GPIOs come from the board config Haute42COSMOX and from profile 1
+// of the S16 (tests/fixtures/api/s16-v0.7.12). The names follow §1.3 of
+// docs/research/keyboard-profiles.md: the left cluster is left, down,
+// right, m1, up (the big thumb button), m2 and rs; the top row is ls and
+// p1 to p4; the bottom row is k1 to k4.
+//
+// The labels of fn1 to fn4 and the position of turbo are not checked on
+// the pad yet (open question 4 of the research doc).
+board "haute42-s16" {
+    firmware-board "Haute42COSMOX"
+
+    button left gpio=5
+    button down gpio=3
+    button right gpio=4
+    button m1 gpio=27
+    button up gpio=2 size="26.6mm"
+    button m2 gpio=26
+    button rs gpio=19
+    button ls gpio=18
+
+    button p1 gpio=10
+    button p2 gpio=11
+    button p3 gpio=12
+    button p4 gpio=13
+    button k1 gpio=6
+    button k2 gpio=7
+    button k3 gpio=8
+    button k4 gpio=9
+
+    button fn1 gpio=21 label="Touchpad?"
+    button fn2 gpio=20 label="Home"
+    button fn3 gpio=16 label="Share"
+    button fn4 gpio=17 label="Options"
+    button turbo gpio=14
+}

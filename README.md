@@ -14,9 +14,10 @@ buttons. With our firmware fork, most changes do not need a button press.
 
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `restore`, `reboot`, `mode`, `webconfig`,
-`profile switch`, `profile show`, `profile write`, `display layout`,
-`leds`, `leds profile show`, `leds profile write`, `leds colors`,
-`leds theme`, `input`, `input find-pin`, `log` and `setup udev`. The TUI
+`profile switch`, `profile show`, `profile write`, `library list`,
+`library show`, `library pull`, `display layout`, `leds`,
+`leds profile show`, `leds profile write`, `leds colors`, `leds theme`,
+`input`, `input find-pin`, `log` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -92,6 +93,17 @@ gamepadii profile show [N|LABEL]  the pin mappings of a profile, live
 gamepadii profile write FILE --slot N [--select] [--save] [--label TEXT]
                                   write a slot file to profile 2-6, live;
                                   RAM only unless --save; backs up first
+gamepadii library list            the profiles in the library (KDL files
+                                  in ~/.config/gamepadii/profiles/, and
+                                  the shipped examples), and their errors
+gamepadii library show NAME [--slot-file]
+                                  a profile with its bases applied;
+                                  --slot-file gives a slot file for
+                                  profile write
+gamepadii library pull [--write [FILE]] [--force]
+                                  the enabled profiles of the pad, live,
+                                  as KDL (needs control channel v1.4);
+                                  --write puts them into the library
 gamepadii leds profile show [N]   the effects and colours of a lights
                                   profile, live (needs control channel
                                   v1.5); --json gives a lights file
@@ -175,6 +187,43 @@ Reboots and waits run on a worker thread, so the screen keeps up; when a
 flow needs a button press (stock firmware), the result panel says which.
 It watches USB once a second and picks up a pad plugged in, out, or back
 after a reboot.
+
+### The profile library
+
+gamepadii keeps profiles on the computer, in KDL 2.0 files in
+`~/.config/gamepadii/profiles/` (`$XDG_CONFIG_HOME/gamepadii/profiles/`).
+The library can hold any number of profiles. The pad is only a target.
+A profile names the physical buttons of a board file, never GPIOs. The
+board file of the S16 is in gamepadii. A profile can have a base profile:
+what it leaves out comes from the base.
+
+```kdl
+profile "My Game" {
+    base "Default"
+    label "My Game"
+    input-mode xinput
+    pins {
+        up B1
+        m2 L1
+        rs R1
+    }
+}
+```
+
+- `library pull` reads the profiles of the pad and writes them as KDL:
+  profile 1 with every button, and each other profile with "Default" as
+  its base and only the buttons that it changes. `--write` puts the file
+  into the library, and never replaces a file without `--force`.
+- `library show NAME --slot-file` gives the slot file of a profile, so
+  `gamepadii library show "My Game" --slot-file > game.json` and
+  `gamepadii profile write game.json --slot 6 --select` put it on the
+  pad. The buttons that the profile leaves out follow profile 1.
+- `library list` shows each profile, and each error with its file, line
+  and column: an unknown button or action, a button twice, two input
+  modes, a base that is not there, or a loop of bases.
+
+The format is in
+[docs/design/profile-library.md](docs/design/profile-library.md).
 
 ### The control channel
 

@@ -456,3 +456,51 @@ fn parses_profile_and_setup() {
     assert!(parse(&["--no-channel", "status"]).unwrap().no_channel);
     assert!(parse(&["--no-channel", "--mock-channel", "stock", "status"]).is_err());
 }
+
+#[test]
+fn help_library() {
+    insta::assert_snapshot!(help(&["library"]));
+}
+
+#[test]
+fn help_library_show() {
+    insta::assert_snapshot!(help(&["library", "show"]));
+}
+
+#[test]
+fn help_library_pull() {
+    insta::assert_snapshot!(help(&["library", "pull"]));
+}
+
+#[test]
+fn parses_library() {
+    use gamepadii::cli::LibraryCommand;
+    let lib = |args: &[&str]| match parse(args).map(|c| c.command) {
+        Ok(Some(Command::Library { command })) => Ok(command),
+        Ok(other) => panic!("{other:?}"),
+        Err(e) => Err(e),
+    };
+    assert_eq!(lib(&["library", "list"]).unwrap(), LibraryCommand::List);
+    assert_eq!(
+        lib(&["library", "show", "My Game", "--slot-file"]).unwrap(),
+        LibraryCommand::Show {
+            name: "My Game".into(),
+            slot_file: true
+        }
+    );
+    assert!(lib(&["library", "show"]).is_err(), "a name is required");
+    let pull = |args: &[&str]| match lib(args).unwrap() {
+        LibraryCommand::Pull { write, force } => (write, force),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(pull(&["library", "pull"]), (None, false));
+    assert_eq!(pull(&["library", "pull", "--write"]), (Some(None), false));
+    assert_eq!(
+        pull(&["library", "pull", "--write", "pad.kdl", "--force"]),
+        (Some(Some("pad.kdl".into())), true)
+    );
+    assert!(
+        lib(&["library", "pull", "--force"]).is_err(),
+        "--force needs --write"
+    );
+}

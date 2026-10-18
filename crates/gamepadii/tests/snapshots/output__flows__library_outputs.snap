@@ -1,0 +1,311 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::library_list(human(), &list),\noutput::library_show(human(), &show), output::library_pull(human(), &pull),\noutput::library_list(json(), &list),\n&json_show[..json_show.find(\"\\\"pins\\\"\").unwrap()], output::slot_file(&show),)"
+---
+8 profiles in the library
+directory     /profiles
+profiles      name         base     label        file
+              Default      -        Default      /profiles/pad.kdl:4
+              SilkSong     Default  SilkSong     /profiles/pad.kdl:31
+              Celeste      Default  Celeste      /profiles/pad.kdl:46
+              DKC          Default  DKC          /profiles/pad.kdl:53
+              TGX          Default  TGX          /profiles/pad.kdl:67
+              Hades        Default  Hades        /profiles/hades.kdl:1 (see the errors)
+              My Game      Default  My Game      (shipped) examples/per-game.kdl:6
+              My Game Alt  My Game  My Game Alt  (shipped) examples/per-game.kdl:22
+errors        /profiles/hades.kdl:3:10: unknown button "thumb": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, fn1, fn2, fn3, fn4, turbo
+
+Profile My Game
+file          (shipped) examples/per-game.kdl:6
+bases         Default
+board         haute42-s16 (Haute42COSMOX)
+label         My Game
+input mode    XInput
+pins          button  GPIO  action                  from
+              left       5  Left                    Default
+              down       3  Down                    Default
+              right      4  Right                   Default
+              m1        27  Up                      Default
+              up         2  B1                      My Game
+              m2        26  L1                      My Game
+              rs        19  R1                      My Game
+              ls        18  L3                      Default
+              p1        10  B3                      Default
+              p2        11  B4                      Default
+              p3        12  R1                      Default
+              p4        13  L1                      Default
+              k1         6  B1                      Default
+              k2         7  B2                      Default
+              k3         8  R2                      Default
+              k4         9  L2                      Default
+              fn1       21  A2                      Default
+              fn2       20  A1                      Default
+              fn3       16  S1                      Default
+              fn4       17  S2                      Default
+              turbo     14  menu-navigation-toggle  Default
+
+5 profiles pulled into /profiles/pad.kdl
+profiles      1 Default
+              2 SilkSong
+              3 Celeste
+              4 DKC
+              5 TGX
+board         haute42-s16 (Haute42COSMOX)
+via           the control channel (/dev/bus/usb/003/007)
+
+{
+  "schema": 1,
+  "dir": "/profiles",
+  "profiles": [
+    {
+      "name": "Default",
+      "file": "/profiles/pad.kdl",
+      "shipped": false,
+      "line": 4,
+      "base": null,
+      "label": "Default",
+      "ok": true
+    },
+    {
+      "name": "SilkSong",
+      "file": "/profiles/pad.kdl",
+      "shipped": false,
+      "line": 31,
+      "base": "Default",
+      "label": "SilkSong",
+      "ok": true
+    },
+    {
+      "name": "Celeste",
+      "file": "/profiles/pad.kdl",
+      "shipped": false,
+      "line": 46,
+      "base": "Default",
+      "label": "Celeste",
+      "ok": true
+    },
+    {
+      "name": "DKC",
+      "file": "/profiles/pad.kdl",
+      "shipped": false,
+      "line": 53,
+      "base": "Default",
+      "label": "DKC",
+      "ok": true
+    },
+    {
+      "name": "TGX",
+      "file": "/profiles/pad.kdl",
+      "shipped": false,
+      "line": 67,
+      "base": "Default",
+      "label": "TGX",
+      "ok": true
+    },
+    {
+      "name": "Hades",
+      "file": "/profiles/hades.kdl",
+      "shipped": false,
+      "line": 1,
+      "base": "Default",
+      "label": "Hades",
+      "ok": false
+    },
+    {
+      "name": "My Game",
+      "file": "(shipped) examples/per-game.kdl",
+      "shipped": true,
+      "line": 6,
+      "base": "Default",
+      "label": "My Game",
+      "ok": true
+    },
+    {
+      "name": "My Game Alt",
+      "file": "(shipped) examples/per-game.kdl",
+      "shipped": true,
+      "line": 22,
+      "base": "My Game",
+      "label": "My Game Alt",
+      "ok": true
+    }
+  ],
+  "errors": [
+    {
+      "file": "/profiles/hades.kdl",
+      "line": 3,
+      "column": 10,
+      "message": "unknown button \"thumb\": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, fn1, fn2, fn3, fn4, turbo"
+    }
+  ]
+}
+{
+  "schema": 1,
+  "name": "My Game",
+  "file": "(shipped) examples/per-game.kdl",
+  "shipped": true,
+  "line": 6,
+  "bases": [
+    "Default"
+  ],
+  "board": "haute42-s16",
+  "firmware_board": "Haute42COSMOX",
+  "label": "My Game",
+  "input_mode": "xinput",
+  
+{
+  "schema": 1,
+  "board": "Haute42COSMOX",
+  "profile": null,
+  "label": "My Game",
+  "enabled": true,
+  "pins": [
+    {
+      "gpio": 2,
+      "action": 5,
+      "action_name": "B1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 3,
+      "action": 2,
+      "action_name": "Down",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 4,
+      "action": 4,
+      "action_name": "Right",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 5,
+      "action": 3,
+      "action_name": "Left",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 6,
+      "action": 5,
+      "action_name": "B1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 7,
+      "action": 6,
+      "action_name": "B2",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 8,
+      "action": 12,
+      "action_name": "R2",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 9,
+      "action": 11,
+      "action_name": "L2",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 10,
+      "action": 7,
+      "action_name": "B3",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 11,
+      "action": 8,
+      "action_name": "B4",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 12,
+      "action": 10,
+      "action_name": "R1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 13,
+      "action": 9,
+      "action_name": "L1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 14,
+      "action": 78,
+      "action_name": "menu-navigation-toggle",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 16,
+      "action": 13,
+      "action_name": "S1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 17,
+      "action": 14,
+      "action_name": "S2",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 18,
+      "action": 17,
+      "action_name": "L3",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 19,
+      "action": 10,
+      "action_name": "R1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 20,
+      "action": 15,
+      "action_name": "A1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 21,
+      "action": 16,
+      "action_name": "A2",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 26,
+      "action": 9,
+      "action_name": "L1",
+      "button_mask": 0,
+      "dpad_mask": 0
+    },
+    {
+      "gpio": 27,
+      "action": 1,
+      "action_name": "Up",
+      "button_mask": 0,
+      "dpad_mask": 0
+    }
+  ]
+}

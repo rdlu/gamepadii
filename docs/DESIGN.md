@@ -505,13 +505,18 @@ gamepadii writes profiles into. The library is the source of truth, so the
 device's 6 slots and its single keymap don't limit how many profiles you
 have.
 
+The format, the checks and the commands of the first step are in
+[design/profile-library.md](design/profile-library.md). The library commands
+are `gamepadii library list|show|pull`: `profile` stays the name of the
+commands that operate on the slots of the pad.
+
 - **A profile is a full bundle.** Any of these can be included, and anything
   left out is inherited from a base profile: input mode, gamepad options
   (SOCD, D-pad mode, hotkeys), a pin mapping, and a keyboard keymap. Examples:
   `silksong`, `nms-keyboard`, `sidekick-obs`.
-- **`profile pull`** imports what is on the device now (all 6 slots plus the
-  keymap) into the library.
-- **`profile apply <name>`** writes the bundle to the device. In gamepad
+- **`library pull`** imports what is on the device now into the library:
+  the enabled slots now, the keymap later.
+- **`library apply <name>`** (next) writes the bundle to the device. In gamepad
   mode it takes one guided button press and one reboot.
 - **`slots load a b c …`** picks up to 6 library profiles that share an
   input mode and puts them in the device's slots, so the on-pad hotkeys can
@@ -556,7 +561,9 @@ crates/gamepadii-core/src/
   leds.rs        LED names (v0.7.12 enums), LED_STATUS and web-config reads
                  into one LedState, the SET_LED plan for `leds set`
   sim.rs         a simulated pad (Scan + mock Transport + EP0) for flow tests
-  profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
+  library/       the profile library: KDL files (~/.config/gamepadii/profiles),
+                 parse.rs, write.rs, board.rs (shipped board files), pull.rs
+                 (slots → profiles); diff/apply next
   commands.rs    status, info, backup, profile … → plain data
 crates/gamepadii/src/
   main.rs cli.rs output.rs

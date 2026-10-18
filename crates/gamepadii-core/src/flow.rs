@@ -1,15 +1,15 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
-//! switch`, `profile show` and `profile write` (over the channel only),
-//! `leds` (and `leds set`, `leds profile`, `leds colors` and `leds theme`,
-//! over the channel only), `input` and `input
-//! find-pin` (over the channel only), `log` and `log --follow` (over the
-//! channel only), `backup --channel-only` and `restore` (over the channel
-//! only), and the trip through web-config that `info` and `backup` take
-//! from a gamepad mode ([`through_webconfig`]). They poll USB through a
-//! [`Scan`] and time through a [`Clock`], open the web-config client and
+//! switch`, `profile show`, `profile write` and `library pull` (over the
+//! channel only), `leds` (and `leds set`, `leds profile`, `leds colors` and
+//! `leds theme`, over the channel only), `input` and `input find-pin` (over
+//! the channel only), `log` and `log --follow` (over the channel only),
+//! `backup --channel-only` and `restore` (over the channel only), and the
+//! trip through web-config that `info` and `backup` take from a gamepad mode
+//! ([`through_webconfig`]). They poll USB through a [`Scan`] and time
+//! through a [`Clock`], open the web-config client and
 //! the control channel through closures, and report progress through a
-//! [`Progress`], so every branch runs in tests against a simulated pad
-//! with no real sleeps.
+//! [`Progress`], so every branch runs in tests against a simulated pad with
+//! no real sleeps.
 //!
 //! In a gamepad mode the flows first send HELLO on the control channel
 //! (`crate::channel`). When the firmware answers, they switch the mode or
@@ -42,6 +42,7 @@ use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::input::{self, Finder, FoundPin, InputReport, PinNames};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
+use crate::library::{self, PullReport};
 use crate::lights::{self, LightsFile, LightsReport, LightsWrite, LightsWriteReport};
 use crate::log::LogReport;
 use crate::mode::{BootMode, Confidence, InputMode};
@@ -2426,6 +2427,44 @@ fn join(gpios: &[u8]) -> String {
         .map(u8::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// `gamepadii library pull`: the enabled slots with READ_SLOT, live, in
+/// any mode, as KDL with the button names of the board file. It reads
+/// only; [`library::save_pull`] writes the file.
+pub fn library_pull(env: &Env) -> Result<PullReport> {
+    let (_, ch) = slot_channel(env)?;
+    let st = ch.status()?;
+    let firmware_board = ch.string(proto::string::BOARD).ok().flatten();
+    let Some(board) = firmware_board
+        .as_deref()
+        .and_then(library::board::for_firmware)
+    else {
+        return Err(Error::Usage(format!(
+            "gamepadii has no board file for this pad (board config {}), so it can't name \
+             its buttons",
+            firmware_board.as_deref().unwrap_or("unknown")
+        )));
+    };
+    let mut read = Vec::new();
+    for n in st.enabled() {
+        read.push(ch.read_slot(n)?);
+    }
+    if !read.iter().any(|s| s.profile == 1) {
+        read.insert(0, ch.read_slot(1)?);
+    }
+    let (profiles, skipped) = library::pull::profiles(&board, &read);
+    Ok(PullReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        kdl: library::pull::text(&board, &profiles, &skipped),
+        board: board.name,
+        firmware_board: board.firmware_board,
+        profiles: profiles.into_iter().map(|p| p.name).collect(),
+        slots: read.iter().map(|s| s.profile).collect(),
+        skipped,
+        file: None,
+    })
 }
 
 // ---- lights profiles (control channel v1.5) ----------------------------------
