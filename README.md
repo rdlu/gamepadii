@@ -12,9 +12,6 @@ buttons. With our firmware fork, most changes do not need a button press.
 
 ![The TUI: the pad, its input modes and profiles, a profile switch, and the help](docs/media/tui.gif)
 
-The demos use a simulated S16 that is made from recorded data. To make them
-again, run `mise run demos` (needs vhs and ffmpeg).
-
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `display layout`, `leds` and `setup udev`. The TUI
