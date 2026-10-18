@@ -50,6 +50,7 @@ it here in the same change.
 | input mode | The type of controller that the pad shows to the host: XInput, Switch, PS4, keyboard, and others. |
 | KDL | A text format for configuration files. gamepadii will keep its profile library in KDL files. |
 | LED | A light under a button. The S16 has one LED for each button. |
+| lights profile | On main firmware, a set of LED effects: one when a button is released, one when it is pressed, and one for the case. The pad has 4, numbered from 0. The LEDs can also be off. |
 | main (upstream main) | The newest code of GP2040-CE. It is not a release. |
 | OLED | The small display on the pad. It shows the buttons and the active profile. |
 | PR (pull request) | A request to merge a branch into `main` on GitHub. |

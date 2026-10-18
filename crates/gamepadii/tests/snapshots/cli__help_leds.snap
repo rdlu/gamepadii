@@ -2,12 +2,12 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"leds\"])"
 ---
-The per-button RGB LEDs: animation, brightness, colours and the custom theme. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
+The per-button RGB LEDs: animation, brightness, colours and the custom theme, or the lights profile on main firmware. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
 
 Usage: gamepadii leds [OPTIONS] [COMMAND]
 
 Commands:
-  set         Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
+  set         Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware, or v1.2 on main). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
   brightness  One brightness step up or down, or a level, live (as `set --brightness`)
   help        Print this message or the help of the given subcommand(s)
 

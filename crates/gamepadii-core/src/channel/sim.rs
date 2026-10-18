@@ -10,6 +10,8 @@
 //! takes the stock path. [`SimChannel::with_leds`] makes it a v1.1 build
 //! with the LED commands (LED_STATUS, SET_LED: RAM and saved LED state,
 //! range checks); without that, they are unknown commands, as on v1.0.
+//! [`SimChannel::with_lights`] makes it a main-line v1.2 build with the
+//! lights commands (LIGHTS_STATUS, SET_LIGHTS) in place of the LED ones.
 //! [`SimChannel::with_board_id`] makes it a v1.3 build with STRING 0x05;
 //! before that, the id STALLs.
 //!
@@ -23,7 +25,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::proto::{self, Caps, Command, Hello, LedStatus, Outcome, SetLed, Setup, Status};
+use super::proto::{
+    self, Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Status,
+};
 use super::{ControlTransport, UsbError};
 use crate::mode::{BootMode, InputMode};
 use crate::transport::mock::Mock;
@@ -110,6 +114,69 @@ impl SimLedLimits {
     }
 }
 
+/// `InputMode` 0–17 and 19: what main can boot (§3.8).
+pub const MAIN_MODES: u32 = 0x000b_ffff;
+
+/// The lights settings SET_LIGHTS changes, in RAM or saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimLights {
+    /// -1 off, or 0–3.
+    pub profile: i8,
+    pub brightness: u8,
+}
+
+impl Default for SimLights {
+    fn default() -> Self {
+        Self {
+            profile: 0,
+            brightness: 5,
+        }
+    }
+}
+
+/// The effects and cycle times of a lights profile, as LIGHTS_STATUS gives
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SimLightsProfile {
+    pub enabled: bool,
+    pub idle_effect: u8,
+    pub pressed_effect: u8,
+    pub case_effect: u8,
+    pub idle_cycle_time: u8,
+    pub pressed_cycle_time: u8,
+    pub case_cycle_time: u8,
+}
+
+/// What SET_LIGHTS checks against, and what it can't change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimLightsLimits {
+    /// `NeoPicoLEDAddon` is set up: [`Caps::LIGHTS`] only then.
+    pub running: bool,
+    pub brightness_steps: u8,
+    pub brightness_maximum: u8,
+    pub profiles: [SimLightsProfile; 4],
+    pub idle_timeout_s: u16,
+    /// A web-config preview runs: SET_LIGHTS is BUSY.
+    pub preview: bool,
+}
+
+impl Default for SimLightsLimits {
+    /// Main's defaults: 10 steps, all four profiles enabled.
+    fn default() -> Self {
+        Self {
+            running: true,
+            brightness_steps: 10,
+            brightness_maximum: 128,
+            profiles: [SimLightsProfile {
+                enabled: true,
+                ..SimLightsProfile::default()
+            }; 4],
+            idle_timeout_s: 0,
+            preview: false,
+        }
+    }
+}
+
 /// The firmware's names for the effects (STRING `0x20 + n`).
 const EFFECT_NAMES: [&str; 5] = [
     "EFFECT_STATIC_COLOR",
@@ -123,9 +190,12 @@ const EFFECT_NAMES: [&str; 5] = [
 pub struct SimChannel {
     /// The channel is built into this firmware.
     pub enabled: bool,
-    /// The protocol minor in HELLO: 0, 1 with the LED commands, 3 with the
-    /// board ID.
+    /// The protocol minor in HELLO: 0, 1 with the LED commands, 2 on the
+    /// main line, 3 with the board ID.
     pub minor: u8,
+    /// The main line: the lights commands are known (behind
+    /// [`Caps::LIGHTS`]) and the v1.1 LED ones are not.
+    pub main: bool,
     pub caps: Caps,
     pub modes: u32,
     /// STRING id → value.
@@ -157,6 +227,11 @@ pub struct SimChannel {
     /// The LEDs in flash: what a restart goes back to.
     pub saved_leds: SimLeds,
     pub led_limits: SimLedLimits,
+    /// Main's lights as they run (RAM).
+    pub lights: SimLights,
+    /// Main's lights in flash.
+    pub saved_lights: SimLights,
+    pub lights_limits: SimLightsLimits,
     pub log: Vec<Seen>,
 }
 
@@ -172,6 +247,7 @@ impl SimChannel {
         Self {
             enabled: false,
             minor: 0,
+            main: false,
             caps: Caps(V1_CAPS),
             modes: V0712_MODES,
             strings,
@@ -190,6 +266,9 @@ impl SimChannel {
             leds: SimLeds::default(),
             saved_leds: SimLeds::default(),
             led_limits: SimLedLimits::default(),
+            lights: SimLights::default(),
+            saved_lights: SimLights::default(),
+            lights_limits: SimLightsLimits::default(),
             log: Vec::new(),
         }
     }
@@ -201,6 +280,22 @@ impl SimChannel {
         if self.led_limits.running {
             self.caps = Caps(self.caps.0 | Caps::LEDS);
         }
+        self
+    }
+
+    /// A main-line build: protocol minor 2 (or more), main's modes, the
+    /// lights commands (advertised only when the LEDs are set up) and no
+    /// v1.1 LED commands.
+    pub fn with_lights(mut self) -> Self {
+        self.main = true;
+        self.minor = self.minor.max(2);
+        self.modes = MAIN_MODES;
+        let lights = if self.lights_limits.running {
+            Caps::LIGHTS
+        } else {
+            0
+        };
+        self.caps = Caps(self.caps.0 & !Caps::LEDS | lights);
         self
     }
 
@@ -268,7 +363,96 @@ impl SimChannel {
         }
         s.active = s.saved_profile;
         s.leds_from(mock);
+        s.lights_from(mock);
         s
+    }
+
+    /// Main's lights from the mock: `getAnimationProtoOptions` and
+    /// `getLedOptions`. A v0.7.12 mock has neither, and nothing changes.
+    fn lights_from(&mut self, mock: &Mock) {
+        let int = |o: &Value, k: &str| o.get(k).and_then(Value::as_i64);
+        let byte = |o: &Value, k: &str| int(o, k).and_then(|v| u8::try_from(v).ok());
+        if let Some(a) = mock
+            .current("getAnimationProtoOptions")
+            .and_then(|a| a.get("AnimationOptions").cloned())
+        {
+            let k = &mut self.lights_limits;
+            if let Some(v) = int(&a, "baseProfileIndex").and_then(|v| i8::try_from(v).ok()) {
+                self.saved_lights.profile = v;
+            }
+            if let Some(v) = byte(&a, "brightness") {
+                self.saved_lights.brightness = v;
+            }
+            if let Some(v) = int(&a, "idletimeout").and_then(|v| u16::try_from(v).ok()) {
+                k.idle_timeout_s = v;
+            }
+            let profiles = a.get("profiles").and_then(Value::as_array);
+            for (p, json) in k.profiles.iter_mut().zip(profiles.into_iter().flatten()) {
+                // The getter adds 1 to each cycle time.
+                let cycle = |key| byte(json, key).map_or(0, |v| v.saturating_sub(1));
+                *p = SimLightsProfile {
+                    enabled: int(json, "bEnabled").is_some_and(|v| v != 0)
+                        || json.get("bEnabled").and_then(Value::as_bool) == Some(true),
+                    idle_effect: byte(json, "baseNonPressedEffect").unwrap_or(0),
+                    pressed_effect: byte(json, "basePressedEffect").unwrap_or(0),
+                    case_effect: byte(json, "baseCaseEffect").unwrap_or(0),
+                    idle_cycle_time: cycle("baseCycleTime"),
+                    pressed_cycle_time: cycle("basePressedCycleTime"),
+                    case_cycle_time: cycle("baseCaseCycleTime"),
+                };
+            }
+            self.lights = self.saved_lights;
+            if let Some(o) = mock.current("getLedOptions") {
+                if let Some(pin) = int(&o, "dataPin") {
+                    self.lights_limits.running = pin >= 0;
+                }
+                // Main gives a percentage.
+                if let Some(pct) = o.get("brightnessMaximum").and_then(Value::as_f64) {
+                    self.lights_limits.brightness_maximum =
+                        (pct.clamp(0.0, 100.0) as f32 * 2.55f32 + 0.5) as u8;
+                }
+            }
+        }
+    }
+
+    /// LIGHTS_STATUS as main would answer it now.
+    pub fn lights_status(&self) -> LightsStatus {
+        let k = &self.lights_limits;
+        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+        let p = usize::try_from(self.lights.profile)
+            .ok()
+            .and_then(|i| k.profiles.get(i));
+        let or_none = |f: fn(&SimLightsProfile) -> u8| p.map_or(LightsStatus::NONE, f);
+        LightsStatus {
+            flags: LightsStatus::RUNNING
+                | flag(self.lights != self.saved_lights, LightsStatus::UNSAVED)
+                | flag(k.preview, LightsStatus::PREVIEW),
+            profile: self.lights.profile,
+            enabled_profiles: k
+                .profiles
+                .iter()
+                .zip(0..)
+                .filter(|(p, _)| p.enabled)
+                .fold(0, |m, (_, n)| m | 1 << n),
+            profiles: 4,
+            brightness: self.lights.brightness,
+            brightness_steps: k.brightness_steps,
+            brightness_maximum: k.brightness_maximum,
+            idle_effect: or_none(|p| p.idle_effect),
+            pressed_effect: or_none(|p| p.pressed_effect),
+            case_effect: or_none(|p| p.case_effect),
+            idle_cycle_time: or_none(|p| p.idle_cycle_time),
+            pressed_cycle_time: or_none(|p| p.pressed_cycle_time),
+            case_cycle_time: or_none(|p| p.case_cycle_time),
+            idle_timeout_s: k.idle_timeout_s,
+        }
+    }
+
+    /// Any save writes the whole config: the LEDs' and lights' RAM state
+    /// too.
+    fn save_all(&mut self) {
+        self.saved_leds = self.leds;
+        self.saved_lights = self.lights;
     }
 
     /// The LED state from the mock: `animationOptions` from its `getConfig`
@@ -362,6 +546,7 @@ impl SimChannel {
         self.token = token;
         self.active = self.saved_profile;
         self.leds = self.saved_leds;
+        self.lights = self.saved_lights;
         self.pending = false;
         self.reboot_pending = false;
         self.last = (0, 0, 0);
@@ -379,6 +564,10 @@ impl SimChannel {
             Some(c) if c.is_in() != setup.is_in() => None,
             // A v1.0 build (or one without LEDs) doesn't know them.
             Some(Command::LedStatus | Command::SetLed) if !self.caps.has(Caps::LEDS) => Some(None),
+            // Only main knows the lights commands; without the LEDs,
+            // LIGHTS_STATUS STALLs and SET_LIGHTS is UNSUPPORTED (§3.8).
+            Some(Command::LightsStatus | Command::SetLights) if !self.main => Some(None),
+            Some(Command::LightsStatus) if !self.caps.has(Caps::LIGHTS) => Some(None),
             known => Some(known),
         }
     }
@@ -447,6 +636,7 @@ impl SimChannel {
                 None => return Err(UsbError::Stall),
             },
             Command::LedStatus => self.led_status().encode().to_vec(),
+            Command::LightsStatus => self.lights_status().encode().to_vec(),
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -534,8 +724,7 @@ impl SimChannel {
                 }
                 if persist == 1 {
                     self.saved_profile = n;
-                    // Any save writes the whole config, the LEDs' RAM state too.
-                    self.saved_leds = self.leds;
+                    self.save_all();
                 }
                 Ok(None)
             }
@@ -560,7 +749,7 @@ impl SimChannel {
                     return Err(Outcome::Unsupported);
                 }
                 self.saved_mode = m;
-                self.saved_leds = self.leds;
+                self.save_all();
                 Ok(Some(Effect::Reboot(BootMode::Gamepad)))
             }
             Command::SetLed => {
@@ -588,8 +777,39 @@ impl SimChannel {
                     }
                 }
                 if set.persist {
-                    self.saved_leds = self.leds;
+                    self.save_all();
                     // The save writes the profile too.
+                    self.saved_profile = self.active;
+                }
+                Ok(None)
+            }
+            Command::SetLights => {
+                if !self.caps.has(Caps::LIGHTS) {
+                    return Err(Outcome::Unsupported);
+                }
+                let set = SetLights::parse(args).ok_or(Outcome::BadArg)?;
+                if self.lights_limits.preview {
+                    return Err(Outcome::Busy);
+                }
+                let k = self.lights_limits;
+                let profile_ok = set.profile.is_none_or(|p| {
+                    p == -1
+                        || usize::try_from(p)
+                            .ok()
+                            .and_then(|i| k.profiles.get(i))
+                            .is_some_and(|p| p.enabled)
+                });
+                if !profile_ok || set.brightness.is_some_and(|b| b > k.brightness_steps) {
+                    return Err(Outcome::BadArg);
+                }
+                if let Some(p) = set.profile {
+                    self.lights.profile = p;
+                }
+                if let Some(b) = set.brightness {
+                    self.lights.brightness = b;
+                }
+                if set.persist {
+                    self.save_all();
                     self.saved_profile = self.active;
                 }
                 Ok(None)

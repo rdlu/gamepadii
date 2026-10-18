@@ -161,6 +161,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   profiles (`lights`). Stock main never counts as a fork build, so it is
   never asked for `getConfig`. Synthetic fixtures in
   `tests/fixtures/api/s16-main/`.
+- Control channel 1.2 on main firmware: `leds` reads LIGHTS_STATUS (the
+  lights profile, the brightness, the effects of the profile that runs),
+  and `leds set --lights-profile N|off` and `--brightness` send
+  SET_LIGHTS, live and RAM only unless `--save`. The S16 on main has no
+  v1.1 LED commands, so before this change `leds set` could not change its
+  LEDs. JSON: `lights_off` and `lights_profile` in the LED state, and the
+  cycle times of each profile (additive). `leds` on main web-config no
+  longer shows lights profile 0 when the lights are off.
+  `--mock-channel lights` simulates it.
 - Control channel 1.3: the board ID. STRING 0x05 gives the unique ID of the
   flash chip (16 hex digits). gamepadii asks for it only when HELLO gives
   1.3 or higher. `status` shows it (`board_id` in JSON, `null` before 1.3,

@@ -34,15 +34,16 @@ size          78.3 KiB
 captured      2026-10-17T16:57:03Z
 
 LEDs
+lights        profile 0
 brightness    5 (maximum 128/255)
-led profiles  *0 idle rainbow-synced (1), pressed static-color (0), case rainbow-synced (1)
+profiles      *0 idle rainbow-synced (1), pressed static-color (0), case rainbow-synced (1)
                1 idle static-color (0), pressed static-color (0), case static-color (0)
                2 idle rainbow-rotate (2), pressed static-color (0), case rainbow-rotate (2)
                3 idle chase-horizontal-pingpong (14), pressed burst (4), case chase-index (3)
-lights        16
+light count   16
 idle timeout  never
 via           web-config (mock:s16-main)
-note          main firmware has LED profiles in place of v0.7.12's animation, colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's model and aren't on main yet)
+note          main firmware has lights profiles in place of v0.7.12's animation, colours and themes; shown as saved
 
 {
   "schema": 1,
@@ -58,6 +59,8 @@ note          main firmware has LED profiles in place of v0.7.12's animation, co
   "theme": null,
   "custom_theme": null,
   "unsaved": null,
+  "lights_off": false,
+  "lights_profile": 0,
   "custom_theme_colors": null,
   "lights": {
     "profile": 0,
@@ -76,7 +79,10 @@ note          main firmware has LED profiles in place of v0.7.12's animation, co
         "case_effect": {
           "index": 1,
           "name": "rainbow-synced"
-        }
+        },
+        "idle_cycle_time": 0,
+        "pressed_cycle_time": 0,
+        "case_cycle_time": 0
       },
       {
         "index": 1,
@@ -92,7 +98,10 @@ note          main firmware has LED profiles in place of v0.7.12's animation, co
         "case_effect": {
           "index": 0,
           "name": "static-color"
-        }
+        },
+        "idle_cycle_time": 0,
+        "pressed_cycle_time": 0,
+        "case_cycle_time": 0
       },
       {
         "index": 2,
@@ -108,7 +117,10 @@ note          main firmware has LED profiles in place of v0.7.12's animation, co
         "case_effect": {
           "index": 2,
           "name": "rainbow-rotate"
-        }
+        },
+        "idle_cycle_time": 0,
+        "pressed_cycle_time": 0,
+        "case_cycle_time": 0
       },
       {
         "index": 3,
@@ -124,12 +136,15 @@ note          main firmware has LED profiles in place of v0.7.12's animation, co
         "case_effect": {
           "index": 3,
           "name": "chase-index"
-        }
+        },
+        "idle_cycle_time": 0,
+        "pressed_cycle_time": 0,
+        "case_cycle_time": 0
       }
     ],
     "idle_timeout_s": 0,
     "light_count": 16
   },
-  "note": "main firmware has LED profiles in place of v0.7.12's animation, colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's model and aren't on main yet)",
+  "note": "main firmware has lights profiles in place of v0.7.12's animation, colours and themes; shown as saved",
   "trip": null
 }

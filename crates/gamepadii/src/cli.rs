@@ -19,7 +19,7 @@ use clap_complete::Shell;
 
 use gamepadii_core::display::LayoutArg;
 use gamepadii_core::flow::{self, ProfileArg};
-use gamepadii_core::leds::{LedChange, Level, Pick};
+use gamepadii_core::leds::{LedChange, Level, LightsPick, Pick};
 use gamepadii_core::mode::{BootMode, InputMode};
 
 use crate::output::Format;
@@ -87,6 +87,8 @@ pub enum MockChannel {
     Channel,
     /// The same with control channel v1.1: the LED commands.
     Leds,
+    /// The fork's main line, control channel v1.2: the lights commands.
+    Lights,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -180,7 +182,8 @@ pub enum Command {
         command: ProfileCommand,
     },
     /// The per-button RGB LEDs: animation, brightness, colours and the
-    /// custom theme. Over the control channel when the firmware has the LED
+    /// custom theme, or the lights profile on main firmware. Over the
+    /// control channel when the firmware has the LED
     /// commands (no reboot); else from web-config, where stock firmware
     /// doesn't show the animation or brightness (in a gamepad mode the
     /// control channel takes the pad there and back).
@@ -244,8 +247,8 @@ pub enum ProfileCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum LedsCommand {
     /// Change the LEDs live, with no reboot (needs control channel v1.1 of
-    /// the gamepadii firmware). RAM only unless --save: the pad goes back
-    /// to its saved LED settings when it restarts.
+    /// the gamepadii firmware, or v1.2 on main). RAM only unless --save:
+    /// the pad goes back to its saved LED settings when it restarts.
     Set {
         /// The animation: static-color, rainbow, chase, static-theme,
         /// custom-theme, or its number.
@@ -266,6 +269,10 @@ pub enum LedsCommand {
         /// playstation, neogeo, street-fighter-2, tekken, ..., or its number.
         #[arg(long, value_name = "NAME|N", value_parser = pick_parser)]
         theme: Option<Pick>,
+        /// Main firmware: the lights profile, from 0, or off. The other
+        /// options above, except --brightness, are for the v0.7.12 line.
+        #[arg(long, value_name = "N|off", value_parser = lights_parser)]
+        lights_profile: Option<LightsPick>,
         /// Also save it to flash, as the LED hotkeys do (alone: save what
         /// runs now). In PS4/PS5 mode the firmware skips saves while the
         /// controller authentication needs the flash.
@@ -293,6 +300,7 @@ impl LedsCommand {
                 static_color,
                 button_color,
                 theme,
+                lights_profile,
                 save,
             } => LedChange {
                 animation,
@@ -300,6 +308,7 @@ impl LedsCommand {
                 static_color,
                 button_color,
                 theme,
+                lights_profile,
                 save,
             },
             LedsCommand::Brightness { level, save } => LedChange {
@@ -316,6 +325,10 @@ fn pick_parser(s: &str) -> Result<Pick, String> {
 }
 
 fn level_parser(s: &str) -> Result<Level, String> {
+    s.parse()
+}
+
+fn lights_parser(s: &str) -> Result<LightsPick, String> {
     s.parse()
 }
 

@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"leds\", \"set\"])"
 ---
-Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
+Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware, or v1.2 on main). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
 
 Usage: gamepadii leds set [OPTIONS]
 
@@ -37,6 +37,9 @@ Options:
 
       --theme <NAME|N>
           The static-theme animation's theme: static-rainbow, xbox, playstation, neogeo, street-fighter-2, tekken, ..., or its number
+
+      --lights-profile <N|off>
+          Main firmware: the lights profile, from 0, or off. The other options above, except --brightness, are for the v0.7.12 line
 
       --no-channel
           Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses

@@ -2,8 +2,9 @@
 //!
 //! Three ways to read them, best first:
 //!
-//! 1. The control channel's LED_STATUS (v1.1, capability `leds`): the
-//!    animation, brightness and colours running now, with no reboot.
+//! 1. The control channel: LED_STATUS (v1.1, capability `leds`) on the
+//!    v0.7.12 line, LIGHTS_STATUS (v1.2, capability `lights`) on main.
+//!    What runs now, with no reboot.
 //! 2. Web-config on a fork build ([`ForkFixes`]): `animationOptions` from
 //!    `getConfig` (saved, not RAM), with `getLedOptions` and
 //!    `getCustomTheme`.
@@ -19,7 +20,9 @@
 //! [`read_webconfig_main`] shows what those say, and leaves v0.7.12's
 //! animation, colours and theme `null`.
 //!
-//! Changing them is SET_LED, on the channel only (issue #19).
+//! Changing them is on the channel only: SET_LED (issue #19) on the
+//! v0.7.12 line, SET_LIGHTS (the lights profile and the brightness) on
+//! main.
 //!
 //! The names are GP2040-CE v0.7.12's: [`EFFECTS`] is `AnimationEffects` in
 //! `proto/enums.proto`, [`COLORS`] is `AnimationColor` (`ANIMATION_COLOR_*`)
@@ -32,7 +35,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::api::{self, Endpoint, FirmwareLine, ForkFixes};
-use crate::channel::{Channel, LedStatus, SetLed, proto};
+use crate::channel::{Channel, LedStatus, LightsStatus, SetLed, SetLights, proto};
 use crate::client::Client;
 use crate::commands::{self, Route};
 use crate::error::{Error, Result};
@@ -192,6 +195,28 @@ impl FromStr for Pick {
     }
 }
 
+/// A lights profile on the command line (main): its number from 0, or
+/// `off`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightsPick {
+    Off,
+    Number(u8),
+}
+
+impl FromStr for LightsPick {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(LightsPick::Off),
+            n => n
+                .parse()
+                .map(LightsPick::Number)
+                .map_err(|_| format!("{s}: a lights profile (0, 1, ...) or off")),
+        }
+    }
+}
+
 /// A brightness on the command line: a level, or one step up or down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -303,6 +328,10 @@ pub struct LedState {
     /// The running settings differ from the saved ones (the channel says;
     /// `null` elsewhere).
     pub unsaved: Option<bool>,
+    /// Main: the lights profile is off (-1). `null` on v0.7.12.
+    pub lights_off: Option<bool>,
+    /// Main: the lights profile, from 0; `null` when off, and on v0.7.12.
+    pub lights_profile: Option<u8>,
 }
 
 impl LedState {
@@ -319,6 +348,23 @@ impl LedState {
             theme: Some(Named::new(Kind::Theme, l.theme, &[])),
             custom_theme: Some(l.custom_theme()),
             unsaved: Some(l.unsaved()),
+            lights_off: None,
+            lights_profile: None,
+        }
+    }
+
+    /// What LIGHTS_STATUS says. Main has no animation, colours or theme
+    /// of the v0.7.12 kind: those stay `null`.
+    pub fn from_lights(l: &LightsStatus) -> Self {
+        LedState {
+            running: Some(l.running()),
+            brightness: Some(l.brightness),
+            brightness_steps: Some(l.brightness_steps),
+            brightness_maximum: Some(l.brightness_maximum),
+            unsaved: Some(l.unsaved()),
+            lights_off: Some(l.on().is_none()),
+            lights_profile: l.on(),
+            ..LedState::default()
         }
     }
 }
@@ -361,13 +407,18 @@ pub struct LightsProfile {
     pub pressed_effect: Option<Named>,
     /// `baseCaseEffect` ([`MAIN_IDLE_EFFECTS`]).
     pub case_effect: Option<Named>,
+    /// The cycle times, 0–9 as the firmware counts (web-config shows 1–10).
+    pub idle_cycle_time: Option<u8>,
+    pub pressed_cycle_time: Option<u8>,
+    pub case_cycle_time: Option<u8>,
 }
 
 /// What main firmware's web configurator says about its lights:
 /// `getAnimationProtoOptions` and `getLightsDataOptions`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Lights {
-    /// `baseProfileIndex`: the LED profile the pad starts with.
+    /// `baseProfileIndex`: the lights profile, the same as
+    /// [`LedState::lights_profile`]. `null` when off.
     pub profile: Option<u8>,
     pub profiles: Vec<LightsProfile>,
     /// `idletimeout`: seconds without input before the LEDs go dark (0:
@@ -388,8 +439,20 @@ pub fn extra_effects(ch: &Channel, count: u8) -> Vec<(u8, String)> {
         .collect()
 }
 
-/// [`LedReport`] over the channel: LED_STATUS.
+/// [`LedReport`] over the channel: LIGHTS_STATUS on main, else
+/// LED_STATUS.
 pub fn over_channel(ch: &Channel) -> Result<LedReport> {
+    if ch.caps().has(proto::Caps::LIGHTS) {
+        let l = ch.lights_status()?;
+        return Ok(LedReport {
+            via: Route::Control,
+            host: ch.node(),
+            state: LedState::from_lights(&l),
+            custom_theme_colors: None,
+            lights: Some(Lights::from_status(&l)),
+            note: l.preview().then(|| PREVIEW.to_string()),
+        });
+    }
     let l = ch.led_status()?;
     let extra = extra_effects(ch, l.animations);
     Ok(LedReport {
@@ -400,6 +463,42 @@ pub fn over_channel(ch: &Channel) -> Result<LedReport> {
         lights: None,
         note: None,
     })
+}
+
+/// What to say while web-config shows a preview of the lights.
+pub const PREVIEW: &str = "web-config shows a preview of the lights now; the pad refuses a \
+     change until the preview stops";
+
+impl Lights {
+    /// What LIGHTS_STATUS says: every profile, enabled or not, and the
+    /// effects of the one that runs. It has no light count.
+    pub fn from_status(l: &LightsStatus) -> Self {
+        let value = |v: u8| (v != LightsStatus::NONE).then_some(v);
+        let named = |table, v| value(v).map(|index| Named::from_table(table, index));
+        Lights {
+            profile: l.on(),
+            profiles: (0..l.profiles.min(8))
+                .map(|index| {
+                    // The reply has the effects of the running profile only.
+                    let now = l.on() == Some(index);
+                    let effect = |table, v| named(table, v).filter(|_| now);
+                    let time = |v| value(v).filter(|_| now);
+                    LightsProfile {
+                        index,
+                        enabled: Some(l.profile_enabled(index)),
+                        idle_effect: effect(MAIN_IDLE_EFFECTS, l.idle_effect),
+                        pressed_effect: effect(MAIN_PRESSED_EFFECTS, l.pressed_effect),
+                        case_effect: effect(MAIN_IDLE_EFFECTS, l.case_effect),
+                        idle_cycle_time: time(l.idle_cycle_time),
+                        pressed_cycle_time: time(l.pressed_cycle_time),
+                        case_cycle_time: time(l.case_cycle_time),
+                    }
+                })
+                .collect(),
+            idle_timeout_s: Some(u64::from(l.idle_timeout_s)),
+            light_count: None,
+        }
+    }
 }
 
 /// What to say where the animation and brightness can't be read.
@@ -426,9 +525,8 @@ fn hex(v: Option<&Value>) -> Option<String> {
 }
 
 /// What `leds` says on main firmware, read from web-config.
-pub const MAIN_NOTE: &str = "main firmware has LED profiles in place of v0.7.12's animation, \
-     colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's \
-     model and aren't on main yet)";
+pub const MAIN_NOTE: &str = "main firmware has lights profiles in place of v0.7.12's \
+     animation, colours and themes; shown as saved";
 
 /// [`LedReport`] from the web configurator, by firmware line. On v0.7.12:
 /// `getLedOptions` and `getCustomTheme`, and on a fork build `getConfig`'s
@@ -472,13 +570,23 @@ pub fn read_webconfig(client: &Client) -> Result<LedReport> {
     })
 }
 
+impl Named {
+    fn from_table(table: &[&str], index: u8) -> Self {
+        Named {
+            index,
+            name: table.get(usize::from(index)).map(|s| (*s).to_string()),
+        }
+    }
+}
+
 /// A name from `table`, by value.
 fn table_name(table: &[&str], v: &Value, key: &str) -> Option<Named> {
-    let index = byte(v, key)?;
-    Some(Named {
-        index,
-        name: table.get(usize::from(index)).map(|s| (*s).to_string()),
-    })
+    byte(v, key).map(|index| Named::from_table(table, index))
+}
+
+/// A cycle time from web-config (1–10) as the firmware counts it (0–9).
+fn cycle_time(v: &Value, key: &str) -> Option<u8> {
+    byte(v, key).map(|n| n.saturating_sub(1))
 }
 
 /// [`LedReport`] from main firmware's web configurator, as saved:
@@ -519,12 +627,19 @@ pub fn read_webconfig_main(client: &Client) -> Result<LedReport> {
                         idle_effect: table_name(MAIN_IDLE_EFFECTS, p, "baseNonPressedEffect"),
                         pressed_effect: table_name(MAIN_PRESSED_EFFECTS, p, "basePressedEffect"),
                         case_effect: table_name(MAIN_IDLE_EFFECTS, p, "baseCaseEffect"),
+                        idle_cycle_time: cycle_time(p, "baseCycleTime"),
+                        pressed_cycle_time: cycle_time(p, "basePressedCycleTime"),
+                        case_cycle_time: cycle_time(p, "baseCaseCycleTime"),
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // -1 is off: never clamp it to profile 0.
+        let profile = a.get("baseProfileIndex").and_then(Value::as_i64);
+        state.lights_off = profile.map(|p| p < 0);
+        state.lights_profile = profile.and_then(|p| u8::try_from(p).ok());
         Lights {
-            profile: byte(a, "baseProfileIndex"),
+            profile: state.lights_profile,
             profiles,
             idle_timeout_s: a.get("idletimeout").and_then(Value::as_u64),
             light_count,
@@ -571,6 +686,8 @@ pub struct LedChange {
     pub static_color: Option<Pick>,
     pub button_color: Option<Pick>,
     pub theme: Option<Pick>,
+    /// Main: the lights profile.
+    pub lights_profile: Option<LightsPick>,
     /// Save to flash, as the LED hotkeys do.
     pub save: bool,
 }
@@ -583,7 +700,36 @@ impl LedChange {
             || self.static_color.is_some()
             || self.button_color.is_some()
             || self.theme.is_some()
+            || self.lights_profile.is_some()
     }
+
+    /// The v0.7.12 settings it asks for, by option name.
+    fn v0_7_12_options(&self) -> Vec<&'static str> {
+        [
+            (self.animation.is_some(), "--animation"),
+            (self.static_color.is_some(), "--static-color"),
+            (self.button_color.is_some(), "--button-color"),
+            (self.theme.is_some(), "--theme"),
+        ]
+        .into_iter()
+        .filter_map(|(on, o)| on.then_some(o))
+        .collect()
+    }
+}
+
+/// The brightness `level` asks for, from `now` on a pad with `steps`.
+fn brightness_level(level: Option<Level>, now: u8, steps: u8) -> Result<Option<u8>> {
+    Ok(match level {
+        None => None,
+        Some(Level::To(n)) if n <= steps => Some(n),
+        Some(Level::To(n)) => {
+            return Err(Error::Usage(format!(
+                "brightness {n}: this pad has levels 0 to {steps}"
+            )));
+        }
+        Some(Level::Up) => Some(now.saturating_add(1).min(steps)),
+        Some(Level::Down) => Some(now.saturating_sub(1)),
+    })
 }
 
 /// The SET_LED for `change` on a pad showing `before`, and the settings it
@@ -599,18 +745,16 @@ pub fn plan(
             .map(|p| resolve(kind, p, count, extra))
             .transpose()
     };
-    let steps = before.brightness_steps;
-    let brightness = match change.brightness {
-        None => None,
-        Some(Level::To(n)) if n <= steps => Some(n),
-        Some(Level::To(n)) => {
-            return Err(Error::Usage(format!(
-                "brightness {n}: this pad has levels 0 to {steps}"
-            )));
-        }
-        Some(Level::Up) => Some(before.brightness.saturating_add(1).min(steps)),
-        Some(Level::Down) => Some(before.brightness.saturating_sub(1)),
-    };
+    if change.lights_profile.is_some() {
+        return Err(Error::Usage(
+            "this pad's firmware (the v0.7.12 line) has no lights profiles; use --animation".into(),
+        ));
+    }
+    let brightness = brightness_level(
+        change.brightness,
+        before.brightness,
+        before.brightness_steps,
+    )?;
     let set = SetLed {
         animation: pick(Kind::Animation, &change.animation, before.animations)?,
         brightness,
@@ -646,16 +790,84 @@ pub fn shows(l: &LedStatus, set: &SetLed) -> bool {
     .all(|(want, now)| want.is_none_or(|w| w == now))
 }
 
+/// The SET_LIGHTS for `change` on a main pad showing `before`, and the
+/// settings it changes (`lights_profile`, `brightness`); `Usage` for a
+/// v0.7.12 setting or a value the pad doesn't have.
+pub fn plan_lights(
+    change: &LedChange,
+    before: &LightsStatus,
+) -> Result<(SetLights, Vec<&'static str>)> {
+    let old = change.v0_7_12_options();
+    if !old.is_empty() {
+        return Err(Error::Usage(format!(
+            "{} {}: main firmware has lights profiles in place of v0.7.12's animation, \
+             colours and themes; use --lights-profile and --brightness",
+            if old.len() == 1 { "option" } else { "options" },
+            old.join(", ")
+        )));
+    }
+    let enabled: Vec<u8> = (0..before.profiles)
+        .filter(|n| before.profile_enabled(*n))
+        .collect();
+    let list = || {
+        enabled
+            .iter()
+            .map(u8::to_string)
+            .chain(["off".to_string()])
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let profile = match change.lights_profile {
+        None => None,
+        Some(LightsPick::Off) => Some(-1),
+        Some(LightsPick::Number(n)) if enabled.contains(&n) => i8::try_from(n).ok(),
+        Some(LightsPick::Number(n)) => {
+            let why = if n < before.profiles {
+                "is disabled"
+            } else {
+                "is not on this pad"
+            };
+            return Err(Error::Usage(format!(
+                "lights profile {n} {why}; this pad has {}",
+                list()
+            )));
+        }
+    };
+    let set = SetLights {
+        profile,
+        brightness: brightness_level(
+            change.brightness,
+            before.brightness,
+            before.brightness_steps,
+        )?,
+        persist: change.save,
+    };
+    let mut changed = Vec::new();
+    if set.profile.is_some_and(|p| p != before.profile) {
+        changed.push("lights_profile");
+    }
+    if set.brightness.is_some_and(|b| b != before.brightness) {
+        changed.push("brightness");
+    }
+    Ok((set, changed))
+}
+
+/// Whether `l` shows what `set` asked for.
+pub fn shows_lights(l: &LightsStatus, set: &SetLights) -> bool {
+    set.profile.is_none_or(|p| p == l.profile) && set.brightness.is_none_or(|b| b == l.brightness)
+}
+
 /// `gamepadii leds set` and `leds brightness`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedSetReport {
-    /// Always `control`: SET_LED.
+    /// Always `control`: SET_LED, or SET_LIGHTS on main.
     pub via: Route,
     pub host: String,
     pub before: LedState,
     pub leds: LedState,
     /// The settings that changed: `animation`, `brightness`,
-    /// `static_color`, `button_color`, `theme`.
+    /// `static_color`, `button_color`, `theme`, and on main
+    /// `lights_profile`.
     pub changed: Vec<&'static str>,
     /// Whether this saved the LED settings to flash (`--save`).
     pub saved: bool,
@@ -723,6 +935,105 @@ mod tests {
         );
         assert!("".parse::<Pick>().is_err());
         assert!("300".parse::<Pick>().is_err());
+    }
+
+    fn main_s16() -> LightsStatus {
+        LightsStatus {
+            flags: LightsStatus::RUNNING,
+            profile: 0,
+            enabled_profiles: 0b1011,
+            profiles: 4,
+            brightness: 5,
+            brightness_steps: 10,
+            brightness_maximum: 128,
+            idle_effect: 1,
+            pressed_effect: 0,
+            case_effect: 1,
+            idle_cycle_time: 0,
+            pressed_cycle_time: 0,
+            case_cycle_time: 0,
+            idle_timeout_s: 0,
+        }
+    }
+
+    #[test]
+    fn a_lights_plan_takes_enabled_profiles_and_off() {
+        let ask = |p, b| LedChange {
+            lights_profile: p,
+            brightness: b,
+            ..LedChange::default()
+        };
+        let (set, changed) = plan_lights(
+            &ask(Some(LightsPick::Number(3)), Some(Level::Up)),
+            &main_s16(),
+        )
+        .unwrap();
+        assert_eq!((set.profile, set.brightness), (Some(3), Some(6)));
+        assert_eq!(changed, ["lights_profile", "brightness"]);
+        let (set, _) = plan_lights(&ask(Some(LightsPick::Off), None), &main_s16()).unwrap();
+        assert_eq!(set.encode(), [0x01, 0xff, 0, 0]);
+        // Profile 2 is disabled, and 4 doesn't exist.
+        let e = plan_lights(&ask(Some(LightsPick::Number(2)), None), &main_s16()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("lights profile 2 is disabled; this pad has 0, 1, 3, off"),
+            "{e}"
+        );
+        let e = plan_lights(&ask(Some(LightsPick::Number(4)), None), &main_s16()).unwrap_err();
+        assert!(e.to_string().contains("is not on this pad"), "{e}");
+        let e = plan_lights(&ask(None, Some(Level::To(11))), &main_s16()).unwrap_err();
+        assert!(e.to_string().contains("levels 0 to 10"), "{e}");
+        // What runs already changes nothing.
+        let (set, changed) = plan_lights(
+            &ask(Some(LightsPick::Number(0)), Some(Level::To(5))),
+            &main_s16(),
+        )
+        .unwrap();
+        assert!(changed.is_empty() && shows_lights(&main_s16(), &set));
+        let v0712 = LedChange {
+            animation: Some(Pick::Name("chase".into())),
+            theme: Some(Pick::Number(1)),
+            ..LedChange::default()
+        };
+        let e = plan_lights(&v0712, &main_s16()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("options --animation, --theme: main firmware"),
+            "{e}"
+        );
+        let e = plan(&ask(Some(LightsPick::Off), None), &s16(), &[]).unwrap_err();
+        assert!(e.to_string().contains("no lights profiles"), "{e}");
+        assert_eq!("OFF".parse(), Ok(LightsPick::Off));
+        assert_eq!("2".parse(), Ok(LightsPick::Number(2)));
+        assert!("dim".parse::<LightsPick>().is_err());
+    }
+
+    #[test]
+    fn lights_status_shows_the_running_profile_only() {
+        let l = Lights::from_status(&main_s16());
+        assert_eq!(l.profile, Some(0));
+        assert_eq!(l.profiles.len(), 4);
+        let now = &l.profiles[0];
+        assert_eq!(
+            now.idle_effect.as_ref().unwrap().name.as_deref(),
+            Some("rainbow-synced")
+        );
+        assert_eq!(now.idle_cycle_time, Some(0));
+        assert_eq!(l.profiles[1].idle_effect, None);
+        assert_eq!(l.profiles[2].enabled, Some(false));
+        let off = LightsStatus {
+            profile: -1,
+            idle_effect: LightsStatus::NONE,
+            ..main_s16()
+        };
+        let state = LedState::from_lights(&off);
+        assert_eq!((state.lights_off, state.lights_profile), (Some(true), None));
+        assert!(
+            Lights::from_status(&off)
+                .profiles
+                .iter()
+                .all(|p| p.idle_effect.is_none())
+        );
     }
 
     #[test]

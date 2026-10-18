@@ -71,6 +71,8 @@ now           XInput (045e:028e, confirmed), as before
   },
   "custom_theme": true,
   "unsaved": false,
+  "lights_off": null,
+  "lights_profile": null,
   "custom_theme_colors": null,
   "lights": null,
   "note": null,
@@ -90,6 +92,8 @@ now           XInput (045e:028e, confirmed), as before
   "theme": null,
   "custom_theme": true,
   "unsaved": null,
+  "lights_off": null,
+  "lights_profile": null,
   "custom_theme_colors": [
     {
       "button": "Up",

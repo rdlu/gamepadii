@@ -2171,8 +2171,8 @@ fn no_led_channel(pad: &Device, use_: LedUse, why: Option<String>) -> Error {
     };
     let mut msg = format!(
         "the pad (in {} mode) has no control channel with LED commands, so gamepadii can't \
-         {what}; that needs the gamepadii build of GP2040-CE with control channel v1.1. \
-         {otherwise}",
+         {what}; that needs the gamepadii build of GP2040-CE with control channel v1.1 \
+         (the v0.7.12 line) or v1.2 (main). {otherwise}",
         Seen::from(pad).label()
     );
     if let Some(w) = why {
@@ -2181,8 +2181,13 @@ fn no_led_channel(pad: &Device, use_: LedUse, why: Option<String>) -> Error {
     Error::NeedsUser(msg)
 }
 
-/// The pad's control channel, when it has the LED commands (v1.1); else
-/// why not, as an error.
+/// Whether the channel has LED commands: v1.1's or main's v1.2 ones.
+fn has_leds(ch: &Channel) -> bool {
+    ch.caps().has(Caps::LEDS) || ch.caps().has(Caps::LIGHTS)
+}
+
+/// The pad's control channel, when it has the LED commands (v1.1, or
+/// v1.2 on main); else why not, as an error.
 fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
     if pad.mode == Some(InputMode::Bootsel) {
         return Err(Error::NeedsUser(
@@ -2197,7 +2202,7 @@ fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
         ));
     };
     match commands::probe(open, pad, env.cache_dir.as_deref()) {
-        Probe::Found(ch) if ch.caps().has(Caps::LEDS) => Ok(ch),
+        Probe::Found(ch) if has_leds(&ch) => Ok(ch),
         Probe::Found(ch) => {
             let h = ch.hello();
             Err(no_led_channel(
@@ -2218,8 +2223,9 @@ fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
     }
 }
 
-/// `gamepadii leds`: LED_STATUS on the control channel when the build has
-/// the LED commands (any mode, no reboot). Otherwise from the web
+/// `gamepadii leds`: LED_STATUS (or LIGHTS_STATUS on main) on the
+/// control channel when the build has the LED commands (any mode, no
+/// reboot). Otherwise from the web
 /// configurator ([`leds::read_webconfig`]), and from a gamepad mode through
 /// web-config and back over the channel, as `info` does; on stock firmware
 /// in a gamepad mode, that is [`Error::NeedsUser`] with how to switch.
@@ -2232,7 +2238,7 @@ pub fn leds(
     if pad.mode != Some(InputMode::Bootsel)
         && let Some(open) = env.control
         && let Probe::Found(ch) = commands::probe(open, &pad, env.cache_dir.as_deref())
-        && ch.caps().has(Caps::LEDS)
+        && has_leds(&ch)
     {
         return leds::over_channel(&ch).map(|r| (r, None));
     }
@@ -2246,19 +2252,22 @@ pub fn leds(
     )
 }
 
-/// `gamepadii leds` with no trip: LED_STATUS only (for waybar, which must
-/// never reboot the pad).
+/// `gamepadii leds` with no trip: the channel only (for waybar, which
+/// must never reboot the pad).
 pub fn leds_now(env: &Env) -> Result<LedReport> {
     let pad = pick(env.scan.scan())?;
     leds::over_channel(&led_channel(env, &pad, LedUse::ReadLive)?)
 }
 
-/// `gamepadii leds set` and `leds brightness`: SET_LED on the control
-/// channel, live; saved to flash only with `change.save`. Read back with
-/// LED_STATUS.
+/// `gamepadii leds set` and `leds brightness`: SET_LED (SET_LIGHTS on
+/// main) on the control channel, live; saved to flash only with
+/// `change.save`. Read back with LED_STATUS (LIGHTS_STATUS).
 pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
     let pad = pick(env.scan.scan())?;
     let ch = led_channel(env, &pad, LedUse::Change)?;
+    if ch.caps().has(Caps::LIGHTS) {
+        return lights_set(env, &ch, change);
+    }
     let before = ch.led_status()?;
     let extra = leds::extra_effects(&ch, before.animations);
     let (set, changed) = leds::plan(change, &before, &extra)?;
@@ -2274,15 +2283,11 @@ pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
         note: None,
     };
     let mut notes = Vec::new();
-    match change.brightness {
-        Some(leds::Level::Up) if before.brightness >= before.brightness_steps => notes.push(
-            format!("already at the brightest level ({})", before.brightness),
-        ),
-        Some(leds::Level::Down) if before.brightness == 0 => {
-            notes.push("already at the dimmest level (0)".to_string());
-        }
-        _ => {}
-    }
+    notes.extend(brightness_note(
+        change,
+        before.brightness,
+        before.brightness_steps,
+    ));
     let save = change.save && (!report.changed.is_empty() || before.unsaved());
     if report.changed.is_empty() && !save {
         if change.save {
@@ -2321,17 +2326,7 @@ pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
                     l.animation, l.brightness, l.static_color, l.button_color, l.theme
                 )));
             }
-            let mut note =
-                "the save isn't confirmed: the pad still shows unsaved LED changes after 1 s"
-                    .to_string();
-            let mode = ch.status().ok().and_then(|s| running(&s));
-            if matches!(mode, Some(InputMode::Ps4 | InputMode::Ps5)) {
-                note.push_str(
-                    " (in PS4/PS5 mode the firmware skips saves while the controller \
-                     authentication needs the flash)",
-                );
-            }
-            notes.push(note);
+            notes.push(unconfirmed_save(&ch));
             l
         }
     };
@@ -2341,6 +2336,107 @@ pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
     }
     report.note = (!notes.is_empty()).then(|| notes.join("; "));
     Ok(report)
+}
+
+/// [`leds_set`] on main: SET_LIGHTS, read back with LIGHTS_STATUS.
+fn lights_set(env: &Env, ch: &Channel, change: &LedChange) -> Result<LedSetReport> {
+    let before = ch.lights_status()?;
+    let (set, changed) = leds::plan_lights(change, &before)?;
+    let mut report = LedSetReport {
+        via: Route::Control,
+        host: ch.node(),
+        before: LedState::from_lights(&before),
+        leds: LedState::from_lights(&before),
+        changed,
+        saved: false,
+        verified: true,
+        note: None,
+    };
+    let mut notes = Vec::new();
+    notes.extend(brightness_note(
+        change,
+        before.brightness,
+        before.brightness_steps,
+    ));
+    let save = change.save && (!report.changed.is_empty() || before.unsaved());
+    if report.changed.is_empty() && !save {
+        if change.save {
+            notes.push("nothing to save: the LED settings are saved already".into());
+        } else if before.unsaved() {
+            notes.push(not_saved_leds().into());
+        }
+        report.note = (!notes.is_empty()).then(|| notes.join("; "));
+        return Ok(report);
+    }
+    if before.preview() {
+        return Err(Error::NeedsUser(format!(
+            "{}; stop the preview in web-config, then try again",
+            leds::PREVIEW
+        )));
+    }
+    ch.set_lights(&set)?;
+    report.saved = set.persist;
+    let after = wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(20),
+            timeout: Duration::from_secs(1),
+        },
+        || {
+            ch.lights_status()
+                .ok()
+                .filter(|l| leds::shows_lights(l, &set) && (!set.persist || !l.unsaved()))
+        },
+        |_| {},
+    );
+    let after = match after {
+        Some(l) => l,
+        None => {
+            let l = ch.lights_status()?;
+            report.leds = LedState::from_lights(&l);
+            if !leds::shows_lights(&l, &set) {
+                report.verified = false;
+                return Err(Error::CheckFailed(format!(
+                    "the pad accepted the lights change, but LIGHTS_STATUS shows lights \
+                     profile {}, brightness {}",
+                    l.profile, l.brightness
+                )));
+            }
+            notes.push(unconfirmed_save(ch));
+            l
+        }
+    };
+    report.leds = LedState::from_lights(&after);
+    if !set.persist && after.unsaved() {
+        notes.push(not_saved_leds().into());
+    }
+    report.note = (!notes.is_empty()).then(|| notes.join("; "));
+    Ok(report)
+}
+
+/// The note for brightness up at the top, or down at the bottom.
+fn brightness_note(change: &LedChange, now: u8, steps: u8) -> Option<String> {
+    match change.brightness {
+        Some(leds::Level::Up) if now >= steps => {
+            Some(format!("already at the brightest level ({now})"))
+        }
+        Some(leds::Level::Down) if now == 0 => Some("already at the dimmest level (0)".into()),
+        _ => None,
+    }
+}
+
+/// The note for a save that the pad does not confirm in 1 s.
+fn unconfirmed_save(ch: &Channel) -> String {
+    let mut note =
+        "the save isn't confirmed: the pad still shows unsaved LED changes after 1 s".to_string();
+    let mode = ch.status().ok().and_then(|s| running(&s));
+    if matches!(mode, Some(InputMode::Ps4 | InputMode::Ps5)) {
+        note.push_str(
+            " (in PS4/PS5 mode the firmware skips saves while the controller \
+             authentication needs the flash)",
+        );
+    }
+    note
 }
 
 /// The note for an LED change left in RAM.

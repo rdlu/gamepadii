@@ -615,7 +615,17 @@ times are for the profile in byte 1, and v1.2 cannot change them.
   `setAnimationProtoOptions` do it. They are not on the allowlist of
   gamepadii yet.
 
-Host side: not done yet. gamepadii knows bit 9 by number only.
+Host side: `channel::Channel::lights_status` / `set_lights`,
+`leds::over_channel`, `leds::plan_lights` and `flow::leds_set`. With
+bit 9, `gamepadii leds` reads LIGHTS_STATUS, and `leds set
+--lights-profile N|off --brightness N|up|down` sends SET_LIGHTS. The host
+refuses the v0.7.12 options (`--animation`, the colours, `--theme`) on
+main, and `--lights-profile` on the v0.7.12 line, before it sends a
+command. While a web-config preview runs, the host sends nothing and asks
+the user to stop the preview. `channel/sim.rs` models main with
+`SimChannel::with_lights`: the checks in the order above, the RAM and
+saved state, and the effects of each profile from the mock's
+`getAnimationProtoOptions`.
 
 ### 3.9 v1.3: the board ID
 

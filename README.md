@@ -87,12 +87,14 @@ gamepadii display layout --left N --right N
 gamepadii leds                    the LEDs: animation, brightness, colours,
                                   theme (live over the control channel;
                                   else from web-config, partly unknown on
-                                  stock firmware; on main firmware its LED
-                                  profiles instead)
+                                  stock firmware; on main firmware its
+                                  lights profiles instead)
 gamepadii leds set [--animation NAME|N] [--brightness N|up|down]
     [--static-color NAME|N] [--button-color NAME|N] [--theme NAME|N] [--save]
                                   change them live (needs control channel
                                   v1.1); RAM only unless --save
+gamepadii leds set [--lights-profile N|off] [--brightness N|up|down] [--save]
+                                  the same on main firmware (channel v1.2)
 gamepadii leds brightness <up|down|N> [--save]
                                   one step, or a level
 gamepadii setup udev [--print|--install]
@@ -144,7 +146,8 @@ press:
   `reboot bootsel` goes through web-config (BOOTSEL isn't offered on the
   channel);
 - `leds` reads the LEDs, and `leds set` / `leds brightness` change them,
-  with no reboot. This needs channel v1.1, the LED commands. Like
+  with no reboot. This needs channel v1.1, the LED commands, or v1.2 on
+  main firmware, where `--lights-profile` selects a lights profile. Like
   `profile switch`, a change is RAM only unless `--save`. A v1.0 channel
   has no LED commands, so `leds` reads them through web-config instead;
 - `profile switch` changes the active pin-mapping profile with no reboot.
