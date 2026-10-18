@@ -58,6 +58,26 @@ every action is pinned to a commit SHA with its version in a comment.
   temporary directories (`exit.rs`'s `gamepadii_in`): commands write the
   device cache and backups there.
 
+## Writing
+
+All text uses ASD-STE100 Simplified Technical English (STE): issues, PRs,
+commit messages, docs, code comments, CLI messages, and messages to the user.
+
+- Write short sentences: 20 words or fewer for instructions, 25 or fewer for
+  descriptions. Put one instruction in each sentence.
+- Use the active voice. Use each word with one meaning only.
+- Technical words that are not in STE must be in `docs/GLOSSARY.md`, with
+  one meaning. If you use a new one, add it in the same change.
+- Every issue and every PR starts with the **intent**: what the user wants
+  to do, and why the change is necessary. Write it so that a person who does
+  not know the code understands it. Then give the details. The templates are
+  in `.github/`.
+- Keep it short. Give the steps that show the problem, the result you
+  expect, and the result you get. Put long technical analysis in a
+  linked file, not in the issue body.
+- Text for third-party projects (for example GP2040-CE) is written or
+  approved by the user, one item at a time.
+
 ## Web-config API hazards
 
 The client must guard against these (details in `docs/DESIGN.md`):
