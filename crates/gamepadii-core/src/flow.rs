@@ -472,7 +472,7 @@ fn channel(env: &Env, d: &Device) -> Probed {
     if d.mode == Some(InputMode::Bootsel) {
         return unprobed;
     }
-    let hint = match channel::probe(open, d) {
+    let hint = match commands::probe(open, d, env.cache_dir.as_deref()) {
         Probe::Found(ch) => {
             let board = ch.string(proto::string::BOARD).ok().flatten();
             let firmware = Firmware {
@@ -480,7 +480,8 @@ fn channel(env: &Env, d: &Device) -> Probed {
                 ..Firmware::default()
             };
             commands::remember(env.cache_dir.as_deref(), &ch, &firmware);
-            let key = Key::new(&firmware, pad);
+            let board_id = ch.board_id().ok().flatten();
+            let key = Key::new(&firmware, PadId::with_board_id(pad, board_id.as_deref()));
             let status = ch.status().ok();
             if let Some(st) = &status {
                 let dir = env.cache_dir.as_deref();
@@ -500,7 +501,7 @@ fn channel(env: &Env, d: &Device) -> Probed {
             ))
         }
         Probe::Newer { major, .. } => Some(format!("{}.", commands::newer_protocol(major))),
-        Probe::NoAccess { .. } | Probe::Absent(_) => None,
+        Probe::NoAccess { .. } | Probe::Stock(_) | Probe::Absent(_) => None,
     };
     Probed { hint, ..unprobed }
 }
@@ -511,10 +512,11 @@ fn guide_cache(env: &Env, p: &Probed) -> Option<DeviceCache> {
 }
 
 /// gamepadii saw `from` (in a gamepad mode) come back as `wc`, in
-/// web-config: records which pad that is, so what is read there goes into
-/// its cache.
-fn entered_webconfig(env: &Env, from: &Device, wc: &Device) {
-    if let (Some(dir), Some(pad)) = (env.cache_dir.as_deref(), PadId::of(from)) {
+/// web-config: records which pad that is (`known`, when the channel said,
+/// else from `from`'s serial), so what is read there goes into its cache.
+fn entered_webconfig(env: &Env, from: &Device, wc: &Device, known: Option<&PadId>) {
+    let pad = known.cloned().or_else(|| PadId::of(from));
+    if let (Some(dir), Some(pad)) = (env.cache_dir.as_deref(), pad) {
         let _ = cache::record_session(dir, &pad, wc);
     }
 }
@@ -817,7 +819,7 @@ pub fn mode(
     )
     .ok_or_else(|| gave_up(env.timeouts.user, &guide))?;
     if got.mode == Some(InputMode::Webconfig) {
-        entered_webconfig(env, &pad, &got);
+        entered_webconfig(env, &pad, &got, probed.key.pad.as_ref());
         return via_webconfig(env, target, &got, (&pad).into(), true, progress);
     }
     Ok(ModeReport {
@@ -1178,7 +1180,7 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
             |d| d.mode == Some(InputMode::Webconfig),
         )
         .ok_or_else(|| not_back(env.timeouts.reboot, "asked for web-config"))?;
-        entered_webconfig(env, &pad, &got);
+        entered_webconfig(env, &pad, &got, probed.key.pad.as_ref());
         (got, WebconfigVia::Control)
     } else {
         let cache = guide_cache(env, &probed);
@@ -1201,7 +1203,7 @@ pub fn webconfig(env: &Env, wait: bool, progress: &mut dyn Progress) -> Result<W
             |d| d.mode == Some(InputMode::Webconfig),
         )
         .ok_or_else(|| gave_up(env.timeouts.user, &guide))?;
-        entered_webconfig(env, &pad, &got);
+        entered_webconfig(env, &pad, &got, probed.key.pad.as_ref());
         (got, WebconfigVia::User)
     };
     // The cache is a bonus: a pad whose server isn't up yet still has a URL.
@@ -1443,7 +1445,7 @@ fn watch_reboot(
     if before.mode == Some(InputMode::Webconfig) && in_gamepad_mode(&got) {
         left_webconfig(env, before, &got);
     } else if in_gamepad_mode(before) && got.mode == Some(InputMode::Webconfig) {
-        entered_webconfig(env, before, &got);
+        entered_webconfig(env, before, &got, None);
     }
     report.waited = true;
     report.after = Some((&got).into());
@@ -1608,7 +1610,7 @@ fn visit<T>(
              `gamepadii reboot gamepad` sends it back",
         )
     })?;
-    entered_webconfig(env, &pad, &wc);
+    entered_webconfig(env, &pad, &wc, probed.key.pad.as_ref());
     let client = match connect_ready(env, progress) {
         Ok(c) => c.with_hello(*ch.hello()),
         Err(e) => {
@@ -1667,7 +1669,7 @@ fn visit<T>(
 fn with_channel(env: &Env, client: Client, wc: &Device) -> Client {
     match env
         .control
-        .and_then(|open| channel::probe(open, wc).found())
+        .and_then(|open| commands::probe(open, wc, env.cache_dir.as_deref()).found())
     {
         Some(ch) => client.with_hello(*ch.hello()),
         None => client,
@@ -2037,7 +2039,7 @@ pub fn profile_switch(
             Some("the control channel is off: --no-channel".into()),
         ));
     };
-    let ch = match channel::probe(open, &pad) {
+    let ch = match commands::probe(open, &pad, env.cache_dir.as_deref()) {
         Probe::Found(ch) if ch.caps().has(Caps::SET_PROFILE) => ch,
         Probe::Found(_) => {
             return Err(no_channel_for_profiles(
@@ -2052,14 +2054,16 @@ pub fn profile_switch(
             )));
         }
         Probe::Newer { major, .. } => return Err(Error::Usage(commands::newer_protocol(major))),
-        Probe::Absent(_) => return Err(no_channel_for_profiles(&pad, None)),
+        Probe::Stock(_) | Probe::Absent(_) => return Err(no_channel_for_profiles(&pad, None)),
     };
     let st = ch.status()?;
     let firmware = Firmware {
         board: ch.string(proto::string::BOARD).ok().flatten(),
         ..Firmware::default()
     };
-    let key = Key::new(&firmware, cache::identify(env.cache_dir.as_deref(), &pad));
+    let board_id = ch.board_id().ok().flatten();
+    let pad_id = cache::identify(env.cache_dir.as_deref(), &pad);
+    let key = Key::new(&firmware, PadId::with_board_id(pad_id, board_id.as_deref()));
     let remember = |n: u8, saved: bool, progress: &mut dyn Progress| {
         let dir = env.cache_dir.as_deref();
         if let Some(e) = commands::remember_profile(dir, &key, n, saved, env.clock.wall()) {
@@ -2192,7 +2196,7 @@ fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
             Some("the control channel is off: --no-channel".into()),
         ));
     };
-    match channel::probe(open, pad) {
+    match commands::probe(open, pad, env.cache_dir.as_deref()) {
         Probe::Found(ch) if ch.caps().has(Caps::LEDS) => Ok(ch),
         Probe::Found(ch) => {
             let h = ch.hello();
@@ -2210,7 +2214,7 @@ fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
             channel::udev_hint(&node)
         ))),
         Probe::Newer { major, .. } => Err(Error::Usage(commands::newer_protocol(major))),
-        Probe::Absent(_) => Err(no_led_channel(pad, use_, None)),
+        Probe::Stock(_) | Probe::Absent(_) => Err(no_led_channel(pad, use_, None)),
     }
 }
 
@@ -2227,7 +2231,7 @@ pub fn leds(
     let pad = pick(env.scan.scan())?;
     if pad.mode != Some(InputMode::Bootsel)
         && let Some(open) = env.control
-        && let Probe::Found(ch) = channel::probe(open, &pad)
+        && let Probe::Found(ch) = commands::probe(open, &pad, env.cache_dir.as_deref())
         && ch.caps().has(Caps::LEDS)
     {
         return leds::over_channel(&ch).map(|r| (r, None));

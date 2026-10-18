@@ -437,8 +437,9 @@ fn control_opener<'a>(cli: &Cli, root: &'a Root) -> Option<Box<OpenControl<'a>>>
     #[cfg(target_os = "linux")]
     {
         use gamepadii_core::channel::usbfs::Usbfs;
+        let clock = SystemClock::new();
         Some(Box::new(move |d: &Device| {
-            Usbfs::open(root, d).map(|u| Box::new(u) as Box<dyn ControlTransport>)
+            Usbfs::open_new(root, d, &clock).map(|u| Box::new(u) as Box<dyn ControlTransport>)
         }))
     }
     #[cfg(not(target_os = "linux"))]

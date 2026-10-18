@@ -186,12 +186,13 @@ fn channel_rows(c: &ChannelReport) -> Vec<(&'static str, String)> {
     if c.profile_pending {
         profile.push_str(" (switching)");
     }
+    let mut board = c.firmware.board.clone().unwrap_or_else(|| "-".into());
+    if let Some(id) = &c.board_id {
+        board.push_str(&format!(" (board ID {id})"));
+    }
     vec![
         ("firmware", firmware),
-        (
-            "board",
-            c.firmware.board.clone().unwrap_or_else(|| "-".into()),
-        ),
+        ("board", board),
         ("input mode", setting(&c.input_mode)),
         ("profile", profile),
         (

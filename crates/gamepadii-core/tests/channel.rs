@@ -71,7 +71,7 @@ fn stock_xinput_answers_with_zero_bytes_and_is_not_the_channel() {
     assert!(reply.is_empty(), "XInput ACKs with a 0-byte data stage");
     let p = channel::hello(standalone(sim), 7);
     assert!(
-        matches!(p, Probe::Absent(ref r) if r.contains("Short(0)")),
+        matches!(p, Probe::Stock(ref r) if r.contains("Short(0)")),
         "{p:?}"
     );
 }
@@ -81,7 +81,7 @@ fn stock_xbox_one_answers_with_garbage_and_is_not_the_channel() {
     let sim = SimChannel::stock(Some(InputMode::Xbone));
     let p = channel::hello(standalone(sim), 7);
     assert!(
-        matches!(p, Probe::Absent(ref r) if r.contains("Magic")),
+        matches!(p, Probe::Stock(ref r) if r.contains("Magic")),
         "{p:?}"
     );
 
@@ -101,7 +101,7 @@ fn stock_xbox_one_answers_with_garbage_and_is_not_the_channel() {
     sim.garbage = stale;
     let p = channel::hello(standalone(sim), 0x1234);
     assert!(
-        matches!(p, Probe::Absent(ref r) if r.contains("Nonce")),
+        matches!(p, Probe::Stock(ref r) if r.contains("Nonce")),
         "{p:?}"
     );
 }
@@ -116,13 +116,13 @@ fn stock_modes_that_stall_are_not_the_channel() {
     ] {
         let p = channel::hello(standalone(SimChannel::stock(Some(m))), 9);
         assert!(
-            matches!(p, Probe::Absent(ref r) if r.contains("STALL")),
+            matches!(p, Probe::Stock(ref r) if r.contains("STALL")),
             "{m:?}: {p:?}"
         );
     }
     // The boot ROM has no firmware at all.
     let pad = Arc::new(SimPad::new(s16_dir(), InputMode::Bootsel).with_channel());
-    assert!(matches!(channel::hello(open(&pad), 9), Probe::Absent(_)));
+    assert!(matches!(channel::hello(open(&pad), 9), Probe::Stock(_)));
 }
 
 #[test]
@@ -718,4 +718,35 @@ fn the_effect_count_follows_the_custom_theme() {
     let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
     sim.led_limits.running = false;
     assert!(!sim.with_leds().caps.has(Caps::LEDS));
+}
+
+#[test]
+fn a_new_node_gets_a_moment_for_its_acl() {
+    use gamepadii_core::wait::{Clock, ManualClock};
+    let clock = ManualClock::at(0);
+    // The ACL comes on the third try.
+    let tries = std::cell::Cell::new(0);
+    let r = channel::wait_for_acl(&clock, || {
+        tries.set(tries.get() + 1);
+        if tries.get() < 3 {
+            Err(UsbError::NoAccess)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(r.is_ok());
+    assert_eq!(tries.get(), 3);
+    assert_eq!(clock.elapsed(), Duration::from_millis(200));
+
+    // It never comes: gamepadii stops after a second.
+    let start = clock.elapsed();
+    let r = channel::wait_for_acl(&clock, || Err::<(), _>(UsbError::NoAccess));
+    assert!(matches!(r, Err(UsbError::NoAccess)));
+    assert_eq!(clock.elapsed() - start, channel::ACL_WAIT);
+
+    // Any other error ends the wait at once.
+    let start = clock.elapsed();
+    let r = channel::wait_for_acl(&clock, || Err::<(), _>(UsbError::Gone));
+    assert!(matches!(r, Err(UsbError::Gone)));
+    assert_eq!(clock.elapsed(), start);
 }

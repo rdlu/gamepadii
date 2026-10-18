@@ -3,7 +3,7 @@
 //! with no descriptor change and no kernel driver detached
 //! (`docs/design/control-channel.md`).
 //!
-//! - [`proto`]: the v1 wire format, and v1.1's LED commands.
+//! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.3's board ID.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -29,6 +29,7 @@ use crate::api::RebootAck;
 use crate::discovery::Device;
 use crate::error::{Error, Result};
 use crate::mode::{BootMode, InputMode};
+use crate::wait::Clock;
 
 pub use proto::{Caps, Command, Hello, LedStatus, Outcome, SetLed, Setup, Status};
 
@@ -50,6 +51,10 @@ pub enum UsbError {
     Gone,
     /// No reply in time (`ETIMEDOUT`).
     Timeout,
+    /// gamepadii runs as root, and does not use the channel then: root
+    /// gets past the udev rule's limit, to every device with one of our
+    /// ids (a real Xbox 360 pad, a DualShock, ...).
+    AsRoot,
     Io(std::io::Error),
 }
 
@@ -60,6 +65,9 @@ impl fmt::Display for UsbError {
             UsbError::NoAccess => f.write_str("permission denied"),
             UsbError::Gone => f.write_str("the pad is no longer on USB"),
             UsbError::Timeout => f.write_str("no reply in time"),
+            UsbError::AsRoot => f.write_str(
+                "gamepadii does not use the control channel as root; run it as your user",
+            ),
             UsbError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -81,7 +89,30 @@ impl UsbError {
                 context,
                 IoError::new(ErrorKind::TimedOut, "no reply within 1 s"),
             ),
+            UsbError::AsRoot => Error::Usage(format!("{context}: {}", UsbError::AsRoot)),
             UsbError::Io(e) => Error::io(context, e),
+        }
+    }
+}
+
+/// How long to wait for the `uaccess` ACL on a device node that udev has
+/// just made: it can come a moment after the node.
+pub const ACL_WAIT: Duration = Duration::from_secs(1);
+
+/// `open`, tried again every 100 ms for up to [`ACL_WAIT`] while it fails
+/// with `EACCES`. Use it only for a node that is new on USB, with the udev
+/// rule installed: otherwise `EACCES` does not go away.
+pub fn wait_for_acl<T>(
+    clock: &dyn Clock,
+    mut open: impl FnMut() -> Result<T, UsbError>,
+) -> Result<T, UsbError> {
+    let start = clock.elapsed();
+    loop {
+        match open() {
+            Err(UsbError::NoAccess) if clock.elapsed().saturating_sub(start) < ACL_WAIT => {
+                clock.sleep(Duration::from_millis(100));
+            }
+            r => return r,
         }
     }
 }
@@ -127,11 +158,23 @@ pub fn nonce() -> u16 {
     if n == 0 { 0x4750 } else { n }
 }
 
+/// `s` as a board ID: 16 hex digits, in upper case.
+pub fn board_id(s: &str) -> Option<String> {
+    let s = s.trim();
+    (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s.to_ascii_uppercase())
+}
+
 /// What a HELLO found.
 pub enum Probe {
     Found(Channel),
-    /// No channel: a STALL, a short reply (stock XInput), garbage (stock
-    /// Xbox One), no reply, or no device node. The reason is for notes.
+    /// The device answered HELLO, and the answer is not the channel: a
+    /// STALL, a short reply (stock XInput), garbage (stock Xbox One), a
+    /// wrong magic or nonce. This connection gives the same answer again,
+    /// so it is not asked again ([`crate::commands::probe`]). The reason is
+    /// for notes.
+    Stock(String),
+    /// No answer: no reply in time, the pad left the bus, or no device
+    /// node. The reason is for notes.
     Absent(String),
     /// The node exists but this user can't open it read-write.
     NoAccess {
@@ -148,6 +191,7 @@ impl fmt::Debug for Probe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Probe::Found(c) => write!(f, "Found({:?})", c.hello),
+            Probe::Stock(r) => write!(f, "Stock({r:?})"),
             Probe::Absent(r) => write!(f, "Absent({r:?})"),
             Probe::NoAccess { node } => write!(f, "NoAccess({node})"),
             Probe::Newer { node, major } => write!(f, "Newer({node}, v{major})"),
@@ -184,6 +228,7 @@ pub fn hello(t: Box<dyn ControlTransport>, nonce: u16) -> Probe {
     ) {
         Ok(r) => r,
         Err(UsbError::NoAccess) => return Probe::NoAccess { node },
+        Err(e @ UsbError::Stall) => return Probe::Stock(format!("HELLO: {e}")),
         Err(e) => return Probe::Absent(format!("HELLO: {e}")),
     };
     match Hello::parse(&reply, nonce) {
@@ -193,7 +238,7 @@ pub fn hello(t: Box<dyn ControlTransport>, nonce: u16) -> Probe {
             seq: Cell::new(nonce.rotate_left(8)),
         }),
         Err(proto::NotHello::Major(major)) => Probe::Newer { node, major },
-        Err(why) => Probe::Absent(format!("HELLO: not the channel ({why:?})")),
+        Err(why) => Probe::Stock(format!("HELLO: not the channel ({why:?})")),
     }
 }
 
@@ -272,6 +317,19 @@ impl Channel {
             Err(UsbError::Stall) => Ok(None),
             Err(e) => Err(self.fail(e, Command::String)),
         }
+    }
+
+    /// The unique ID of the flash chip (v1.3 STRING [`proto::string::BOARD_ID`]),
+    /// in upper case; `None` before protocol 1.3 (the request is never
+    /// sent then: an older pad STALLs it) or when the reply is not 16 hex
+    /// digits. Pads with the same flash chip can give the same ID.
+    pub fn board_id(&self) -> Result<Option<String>> {
+        if !self.hello.has_board_id() {
+            return Ok(None);
+        }
+        Ok(self
+            .string(proto::string::BOARD_ID)?
+            .and_then(|s| board_id(&s)))
     }
 
     /// Sends an OUT command. A STALL is a refusal: STATUS says why.

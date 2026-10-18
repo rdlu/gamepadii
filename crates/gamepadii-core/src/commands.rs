@@ -50,6 +50,10 @@ pub struct StatusDevice {
     /// Why the channel couldn't be used, when that is worth saying (no
     /// permission on the node of a pad known to have it, a newer protocol).
     pub channel_note: Option<String>,
+    /// The pad's key in the device cache, from the channel's board ID (and
+    /// the USB port, when another pad gives the same ID) or the serial.
+    #[serde(skip)]
+    pub pad: Option<cache::PadId>,
 }
 
 /// [`Status`] for the machine under `root`, from sysfs alone (no channel
@@ -72,7 +76,7 @@ pub fn status_with(
             "no GP2040-CE device on USB (is it plugged in?)".into(),
         ));
     }
-    let devices = devices
+    let mut devices: Vec<StatusDevice> = devices
         .into_iter()
         .map(|device| match control {
             Some(open) if device.mode != Some(InputMode::Bootsel) => {
@@ -82,10 +86,54 @@ pub fn status_with(
                 device,
                 control_channel: None,
                 channel_note: None,
+                pad: None,
             },
         })
         .collect();
+    let shared = shared_board_ids(&devices);
+    for d in &mut devices {
+        d.pad = cache::identify(cache_dir, &d.device);
+        let Some(r) = &d.control_channel else {
+            continue;
+        };
+        let mut pad = cache::PadId::with_board_id(d.pad.take(), r.board_id.as_deref());
+        if r.board_id.as_ref().is_some_and(|id| shared.contains(id))
+            && let Some(p) = &mut pad
+        {
+            p.port = Some(d.device.port.clone());
+            d.channel_note = Some(SHARED_BOARD_ID.into());
+        }
+        d.pad = pad.clone();
+        let key = cache::Key::new(&r.firmware, pad);
+        let _ = remember_profile(
+            cache_dir,
+            &key,
+            r.active_profile.number,
+            false,
+            SystemTime::now(),
+        );
+    }
     Ok(Status { devices })
+}
+
+/// The note on pads that give the same board ID as another connected pad.
+pub const SHARED_BOARD_ID: &str = "another connected pad gives the same board ID (its flash chip \
+     has no unique ID), so gamepadii tells them apart by USB port. Keep each pad on its port";
+
+/// The board IDs that more than one of `devices` gives.
+fn shared_board_ids(devices: &[StatusDevice]) -> Vec<String> {
+    let ids: Vec<&String> = devices
+        .iter()
+        .filter_map(|d| d.control_channel.as_ref()?.board_id.as_ref())
+        .collect();
+    let mut shared: Vec<String> = ids
+        .iter()
+        .filter(|id| ids.iter().filter(|o| o == id).count() > 1)
+        .map(|id| (*id).clone())
+        .collect();
+    shared.sort();
+    shared.dedup();
+    shared
 }
 
 fn probe_status(
@@ -94,19 +142,11 @@ fn probe_status(
     cache_dir: Option<&Path>,
 ) -> StatusDevice {
     let (mut report, mut note) = (None, None);
-    match channel::probe(open, &device) {
+    match probe(open, &device, cache_dir) {
         Probe::Found(ch) => match channel_report(&ch) {
             Ok(r) => {
                 confirm(&mut device, &r);
                 remember(cache_dir, &ch, &r.firmware);
-                let key = cache::Key::new(&r.firmware, cache::identify(cache_dir, &device));
-                let _ = remember_profile(
-                    cache_dir,
-                    &key,
-                    r.active_profile.number,
-                    false,
-                    SystemTime::now(),
-                );
                 report = Some(r);
             }
             Err(e) => note = Some(format!("the control channel answered HELLO, then: {e}")),
@@ -115,13 +155,29 @@ fn probe_status(
             note = Some(channel::udev_hint(&node));
         }
         Probe::Newer { major, .. } => note = Some(newer_protocol(major)),
-        Probe::NoAccess { .. } | Probe::Absent(_) => {}
+        Probe::NoAccess { .. } | Probe::Stock(_) | Probe::Absent(_) => {}
     }
     StatusDevice {
         device,
         control_channel: report,
         channel_note: note,
+        pad: None,
     }
+}
+
+/// HELLO to `d`, one time for each connection: a connection that showed
+/// no channel before (in `cache_dir`) is not asked again, and one that
+/// shows none now is recorded. Only a real answer counts
+/// ([`Probe::Stock`]); a timeout or a permission error is asked again.
+pub fn probe(open: &OpenControl<'_>, d: &Device, cache_dir: Option<&Path>) -> Probe {
+    if cache_dir.is_some_and(|dir| cache::no_channel_seen(dir, d)) {
+        return Probe::Stock("HELLO showed no channel on this connection before".into());
+    }
+    let p = channel::probe(open, d);
+    if let (Probe::Stock(_), Some(dir)) = (&p, cache_dir) {
+        let _ = cache::record_no_channel(dir, d);
+    }
+    p
 }
 
 /// What to say about a channel speaking a protocol major we don't.
@@ -201,6 +257,10 @@ pub struct ChannelReport {
     /// From the build: version, board config, label, build type (the rest
     /// is `null`; web-config has it).
     pub firmware: Firmware,
+    /// The unique ID of the flash chip (protocol 1.3, `433030383835362E`);
+    /// `null` on older firmware. Stable, but pads with the same flash chip
+    /// can give the same one.
+    pub board_id: Option<String>,
     /// The running mode: `webconfig` (255) in web-config.
     pub input_mode: ModeSetting,
     pub active_profile: ProfileName,
@@ -251,6 +311,7 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
             build_type: string(proto::string::BUILD_TYPE)?,
             file_name: None,
         },
+        board_id: ch.board_id()?,
         input_mode: ModeSetting::new(Some(i64::from(st.input_mode))),
         active_profile,
         enabled_profiles: st.enabled(),

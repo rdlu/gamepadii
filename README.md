@@ -168,6 +168,7 @@ The channel needs read-write access to the pad's device node
 (`/dev/bus/usb/BBB/DDD`), which is root-only by default. `gamepadii setup
 udev` explains the rule, and `--install` writes
 `/etc/udev/rules.d/70-gamepadii.rules` (through pkexec) and reloads udev.
+gamepadii does not use the channel when it runs as root.
 It is opt-in for a reason: GP2040-CE borrows most of its USB ids from real
 controllers, so the rule also grants the logged-in user that access to a
 real Xbox 360, HORI, DualShock or Switch pad. It touches no input device
@@ -220,7 +221,14 @@ control channel has said otherwise since: whenever it answers (`status`,
 pad runs. A RAM-only `profile switch` changes only that, `--save` the saved
 one too, and a restart gamepadii makes puts it back on the saved one.
 
-Web-config mode has no unique serial (every pad says `123456`), but XInput
+With control channel 1.3, the pad gives its board ID: the unique ID of its
+flash chip, in every mode. Then the cache is
+`~/.cache/gamepadii/<board>-<board ID>.json`. Some flash chips give a fixed
+ID, so two pads can give the same one. If they are connected at the same
+time, `status` tells them apart by USB port and shows a warning.
+
+Without the board ID, the cache goes by the USB serial. Web-config mode has
+no unique serial (every pad says `123456`), but XInput
 and Xbox One have one, made from the board's unique id. The cache goes by
 that serial: when gamepadii takes the pad into web-config itself (or sees
 it go there, during `mode` or `webconfig`), it knows which pad it is, so

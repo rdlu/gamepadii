@@ -1933,9 +1933,13 @@ fn profile2(c: &DeviceCache) -> String {
 
 impl Rig {
     /// Another pad (or the same one again) in the same socket, with the
-    /// same cache.
+    /// same cache. A replug is a new connection: a new device number.
     fn replug(&mut self, pad: SimPad) {
-        self.pad = Arc::new(pad);
+        let devnum = gamepadii_core::discovery::Scan::scan(&*self.pad)
+            .first()
+            .and_then(|d| d.devnum)
+            .unwrap_or(7);
+        self.pad = Arc::new(pad.with_devnum(devnum + 1));
     }
 }
 
@@ -1945,12 +1949,13 @@ fn only_modes_with_a_unique_serial_name_the_pad() {
     assert_eq!(
         id(InputMode::Xinput),
         Some(cache::PadId {
-            serial: "0C0FFEE".into(),
-            mode: InputMode::Xinput
+            serial: Some("0C0FFEE".into()),
+            mode: Some(InputMode::Xinput),
+            ..cache::PadId::default()
         })
     );
     let xbone = id(InputMode::Xbone).unwrap();
-    assert_eq!(xbone.serial, "RJBSKRFN8ABCDEFGH");
+    assert_eq!(xbone.serial.as_deref(), Some("RJBSKRFN8ABCDEFGH"));
     for mode in [
         InputMode::Webconfig,
         InputMode::SwitchPro,
@@ -1993,10 +1998,10 @@ fn two_pads_with_one_board_keep_separate_caches() {
         ]
     );
     let a = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
-    assert_eq!(a.pad.as_ref().unwrap().serial, "0C0FFEE");
+    assert_eq!(a.pad.as_ref().unwrap().serial.as_deref(), Some("0C0FFEE"));
     assert_eq!(profile2(&a), "SilkSong");
     let b = cache_file(&rig, "Haute42COSMOX-0BADDAD.json");
-    assert_eq!(b.pad.as_ref().unwrap().serial, "0BADDAD");
+    assert_eq!(b.pad.as_ref().unwrap().serial.as_deref(), Some("0BADDAD"));
     assert_eq!(profile2(&b), "Hollow");
     assert!(b.captured_at > a.captured_at);
 
@@ -2072,6 +2077,8 @@ fn an_old_board_file_serves_until_the_pad_is_read() {
         [
             "Haute42COSMOX-0C0FFEE.json",
             cache::CHANNELS_FILE,
+            // The stock firmware's connection, before the replug.
+            cache::NO_CHANNEL_FILE,
             cache::SESSIONS_FILE,
         ]
     );
@@ -2133,7 +2140,8 @@ fn a_replug_in_web_config_is_another_session() {
     info_read(&rig, false).unwrap();
     let c = cached(&rig);
     assert_eq!(c.pad, None, "board file");
-    assert_eq!(c.read_in.as_ref().unwrap().devnum, 7);
+    // The reboot into web-config made device 8, the replug device 9.
+    assert_eq!(c.read_in.as_ref().unwrap().devnum, 9);
 }
 
 #[test]
@@ -2150,7 +2158,7 @@ fn a_read_by_hand_is_attributed_when_the_pad_leaves_web_config() {
     .unwrap();
     assert_eq!(files(&rig.cache_dir()), ["Haute42COSMOX-0C0FFEE.json"]);
     let c = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
-    assert_eq!(c.pad.unwrap().serial, "0C0FFEE");
+    assert_eq!(c.pad.unwrap().serial.as_deref(), Some("0C0FFEE"));
     assert_eq!(c.read_in, None);
 }
 
@@ -2372,4 +2380,176 @@ fn leds_set_refuses_what_the_pad_lacks() {
     let e = rig.run(flow::leds_now).unwrap_err();
     assert_eq!(e.exit_code(), exit::NEEDS_USER);
     assert!(reboots(&rig).is_empty());
+}
+
+// ---- the board ID (control channel v1.3) -------------------------------------
+
+/// The flash chip ID `1122334455C0FFEE`, XInput serial `0C0FFEE`.
+const PAD_A_ID: &str = "1122334455C0FFEE";
+
+/// STRING requests the pad got, by id.
+fn strings_asked(rig: &Rig) -> Vec<u16> {
+    rig.pad
+        .control_log()
+        .into_iter()
+        .filter(|s| s.setup.is_in() && s.setup.command_byte() == 0x03)
+        .map(|s| s.setup.value)
+        .collect()
+}
+
+fn status_of(rig: &Rig) -> gamepadii_core::commands::Status {
+    let control = |d: &gamepadii_core::discovery::Device| rig.pad.open_control(d);
+    let dir = rig.cache_dir();
+    gamepadii_core::commands::status_with(&*rig.pad, Some(&control), Some(&dir)).unwrap()
+}
+
+#[test]
+fn only_a_1_3_pad_is_asked_for_its_board_id() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| c.minor = 2),
+    );
+    let s = status_of(&rig);
+    let report = s.devices[0].control_channel.as_ref().unwrap();
+    assert_eq!(report.board_id, None);
+    assert!(
+        !strings_asked(&rig).contains(&5),
+        "{:?}",
+        strings_asked(&rig)
+    );
+
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A)
+            .with_board_id(),
+    );
+    let s = status_of(&rig);
+    let report = s.devices[0].control_channel.as_ref().unwrap();
+    assert_eq!(report.protocol, "1.3");
+    assert_eq!(report.board_id.as_deref(), Some(PAD_A_ID));
+    assert!(strings_asked(&rig).contains(&5));
+}
+
+#[test]
+fn a_1_3_pad_is_kept_by_its_board_id() {
+    let mut rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A),
+    );
+    info_read(&rig, false).unwrap();
+    assert!(files(&rig.cache_dir()).contains(&"Haute42COSMOX-0C0FFEE.json".to_string()));
+
+    // The same pad with firmware 1.3: its cache goes by the board ID, and
+    // replaces the one by serial.
+    rig.clock.advance(Duration::from_secs(60));
+    rig.replug(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .unique_id(PAD_A)
+            .with_board_id(),
+    );
+    info_read(&rig, false).unwrap();
+    assert_eq!(
+        files(&rig.cache_dir()),
+        [
+            format!("Haute42COSMOX-{PAD_A_ID}.json"),
+            cache::CHANNELS_FILE.to_string(),
+            cache::SESSIONS_FILE.to_string(),
+        ]
+    );
+    let c = cache_file(&rig, &format!("Haute42COSMOX-{PAD_A_ID}.json"));
+    let pad = c.pad.unwrap();
+    assert_eq!(pad.board_id.as_deref(), Some(PAD_A_ID));
+    assert_eq!(pad.serial.as_deref(), Some("0C0FFEE"));
+
+    // On stock firmware, the serial still finds it: the firmware makes the
+    // serial from the board ID.
+    rig.replug(SimPad::new(s16_dir(), InputMode::Xinput).unique_id(PAD_A));
+    let msg = guide_text(&rig);
+    assert!(msg.contains("In profile 2 (SilkSong)"), "{msg}");
+}
+
+#[test]
+fn board_ids_and_serials_name_the_same_pad() {
+    // The S16: flash chip ID `C008856.` in ASCII, XInput serial `035362E`.
+    let s16 = cache::PadId::board("433030383835362E");
+    assert_eq!(s16.serials_in(InputMode::Xinput), ["035362E"]);
+    let mut d = sim::device(InputMode::Xinput, 7);
+    d.serial = Some("035362E".into());
+    let by_serial = cache::PadId::of(&d).unwrap();
+    assert_eq!(s16.same(&by_serial), Some(true));
+    assert_eq!(by_serial.same(&s16), Some(true));
+
+    let xbone = sim::device_with_id(InputMode::Xbone, 7, Some(PAD_A));
+    let xbone = cache::PadId::of(&xbone).unwrap();
+    assert_eq!(cache::PadId::board(PAD_A_ID).same(&xbone), Some(true));
+    assert_eq!(s16.same(&xbone), Some(false));
+
+    assert_eq!(
+        s16.same(&cache::PadId::board(PAD_A_ID)),
+        Some(false),
+        "another board ID"
+    );
+    let a = cache::PadId::of(&sim::device_with_id(InputMode::Xinput, 7, Some(PAD_A))).unwrap();
+    assert_eq!(a.same(&xbone), None, "serials of two modes can't compare");
+    assert!(
+        cache::PadId::board("not hex")
+            .serials_in(InputMode::Xinput)
+            .is_empty()
+    );
+    assert!(s16.serials_in(InputMode::Keyboard).is_empty());
+    // Xbox One: v0.7.12 and main make the letters in two ways.
+    assert_eq!(
+        cache::PadId::board(PAD_A_ID).serials_in(InputMode::Xbone),
+        ["RJBSKRFN8ABCDEFGH", "RIZQHKVE8ABCDEFGH"]
+    );
+}
+
+/// Some devices on USB.
+struct Many(Vec<gamepadii_core::discovery::Device>);
+
+impl gamepadii_core::discovery::Scan for Many {
+    fn scan(&self) -> Vec<gamepadii_core::discovery::Device> {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn two_pads_with_the_same_board_id_go_by_their_port() {
+    use gamepadii_core::channel::sim::{SimChannel, Standalone};
+    use gamepadii_core::channel::{ControlTransport, node_path};
+    let pad = |port: &str, devnum| {
+        let mut d = sim::device(InputMode::Xinput, devnum);
+        d.port = port.into();
+        d
+    };
+    let scan = Many(vec![pad("3-1", 7), pad("3-2", 8), pad("3-3", 9)]);
+    let open = |d: &gamepadii_core::discovery::Device| {
+        // The pad on 3-3 has its own ID.
+        let id = if d.port == "3-3" {
+            PAD_A_ID
+        } else {
+            "433030383835362E"
+        };
+        let sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_board_id(id);
+        Ok(Box::new(Standalone::new(sim, node_path(d).unwrap())) as Box<dyn ControlTransport>)
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let s = gamepadii_core::commands::status_with(&scan, Some(&open), Some(dir.path())).unwrap();
+    let notes: Vec<_> = s
+        .devices
+        .iter()
+        .map(|d| d.channel_note.as_deref())
+        .collect();
+    let shared = Some(gamepadii_core::commands::SHARED_BOARD_ID);
+    assert_eq!(notes, [shared, shared, None]);
+    let ports: Vec<_> = s
+        .devices
+        .iter()
+        .map(|d| d.pad.as_ref().unwrap().port.as_deref())
+        .collect();
+    assert_eq!(ports, [Some("3-1"), Some("3-2"), None]);
 }

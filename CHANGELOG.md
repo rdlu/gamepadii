@@ -161,6 +161,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   profiles (`lights`). Stock main never counts as a fork build, so it is
   never asked for `getConfig`. Synthetic fixtures in
   `tests/fixtures/api/s16-main/`.
+- Control channel 1.3: the board ID. STRING 0x05 gives the unique ID of the
+  flash chip (16 hex digits). gamepadii asks for it only when HELLO gives
+  1.3 or higher. `status` shows it (`board_id` in JSON, `null` before 1.3,
+  additive). The device cache uses it as the key, in every mode and in
+  web-config (`<board>-<board ID>.json`). A cache by serial still matches,
+  because the firmware makes the serial from the ID, and the first read
+  with the ID replaces that file. When two connected pads give the same
+  ID, `status` tells them apart by USB port and shows a warning.
+- Safety with other devices that use our USB ids (a real Xbox 360 pad, an
+  8BitDo pad in XInput mode): a connection that answers HELLO without the
+  channel is not asked again (`no-channel.json`), so a waybar module does
+  not send vendor requests to it every few seconds. As root, gamepadii does
+  not use the channel. Tests check that no OUT request follows a bad HELLO.
+- Right after a pad connects, udev can apply the ACL a moment late. With
+  the udev rule installed, gamepadii tries again for up to 1 s on a new
+  node before it shows the udev hint.
 
 ### Fixed
 
@@ -197,3 +213,5 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Backups and the device cache keep each endpoint's keys in the pad's order
   (serde_json `preserve_order`).
 - Exit code 1 is now used: a verify that fails after a reboot or a write.
+- The simulated Xbox One serial took the v0.7.12 formula (`'A' + byte %
+  25`) as the only one. Main uses `% 26`; the cache accepts both.

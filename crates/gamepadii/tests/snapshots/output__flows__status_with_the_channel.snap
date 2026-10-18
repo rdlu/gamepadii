@@ -71,6 +71,7 @@ channel       control channel v1.0 on /dev/bus/usb/003/007
           "build_type": "Release",
           "file_name": null
         },
+        "board_id": null,
         "input_mode": {
           "value": 0,
           "mode": "xinput"
