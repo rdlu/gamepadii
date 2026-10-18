@@ -32,6 +32,10 @@ reboots as possible.
   stays behind cfg gates.
 - **Firmware fork:** fine to carry, upstream first: freeze reports, then a
   design discussion for the control channel (decided 2026-10-17).
+- **Depend on the fork where useful** (decided 2026-10-17): gamepadii uses
+  what only fork builds can do (the control channel, `getConfig`) without
+  waiting for upstream, behind a capability check, and stock keeps working
+  as before (see "Fork firmware" below).
 
 ## What the firmware allows (GP2040-CE, checked at v0.7.12 and main 8013b41)
 
@@ -97,13 +101,15 @@ reboots as possible.
     the previous POST body.
   - POST bodies are capped at 16 KB, and requests must be serialised.
   - `resetSettings` is a destructive GET.
-  - **Never call `getConfig` on v0.7.12.** On the S16 (Haute42COSMOX build
-    0014e4a) it hangs the network stack: USB stays enumerated, the device
-    stops answering ping, and only a replug brings it back (seen
+  - **Never call `getConfig` on stock v0.7.12.** On the S16 (Haute42COSMOX
+    build 0014e4a) it hangs the network stack: USB stays enumerated, the
+    device stops answering ping, and only a replug brings it back (seen
     2026-10-17). Back up through the per-section `get*` endpoints instead,
-    as the web UI does.
-  - **Never call `getI2CPeripheralMap` either.** It runs a live I2C bus scan,
-    and that hung the S16 in the same way. The client keeps an explicit
+    as the web UI does. It is allowed on fork builds with the fixes, and
+    only behind the capability check ("Fork firmware" below).
+  - **Never call `getI2CPeripheralMap` on stock either.** It runs a live I2C
+    bus scan, and that hung the S16 in the same way. Fork builds fixed it
+    too, and it sits behind the same check. The client keeps an explicit
     allowlist of endpoints verified as safe to read; a `get*` name alone
     doesn't make an endpoint safe. Verified safe on the S16 so far (the
     allowlist in `gamepadii-core/src/api/mod.rs`): getAddonsOptions,
@@ -161,6 +167,47 @@ reboots as possible.
   JSON fields it doesn't know. The S16's exact build is still unknown; it may
   be a Haute42 vendor build.
 
+## Fork firmware
+
+Our fork (`rdlu/GP2040-CE`, branch `gamepadii/control-channel`, on the pad
+as v0.7.12-6-gf507f0b) carries, on top of v0.7.12: I2C access serialised
+between the cores with bounded scan probes (a1b069d), web-config replies
+built in one exactly sized buffer (7822dc7), lwIP's `fs_file` matching
+lib/httpd's (2435d1d), reply buffers kept until lwIP has sent them
+(5d6f73a), a 503 instead of running out of heap (85ca0f6), then the control
+channel (f507f0b). `getConfig` and `getI2CPeripheralMap` were stress-tested
+10/10 to 20/20 rounds ok on every build with the fixes.
+
+**The capability check** (`api::fork::ForkFixes::check`, through
+`Client::fork_fixes`). A pad has the fixes when:
+
+1. its commit, the `-g<hash>` of the version string (`git describe`) or
+   `boardBuild`, is one of `FIXED_BUILDS`: our builds that were
+   stress-tested (85ca0f6, 8419a38, f19c11b, f507f0b, 5eea8a6, 1008647);
+   or
+2. the control channel answered HELLO (only the fork has it, and its branch
+   sits on the fixes) and the version isn't a bare release tag.
+
+Anything else is stock, a bare tag such as `v0.7.12` above all, even with
+something on EP0 that passes for the channel. Someone else's dev build
+(`v0.7.12-3-g1234567`) isn't necessarily fixed, so it qualifies only with
+the channel. The channel's STATUS and STRING have no feature field for the
+fixes, so the version is the signal; a new fork build goes into
+`FIXED_BUILDS` once it has passed the stress test. `getConfig` and
+`getI2CPeripheralMap` take a `ForkFixes`, which only the check makes, so a
+stock pad can't be asked.
+
+Used by `backup`: on a fork build the bundle gets `full_config`
+(`{"evidence", "config", "error"}`), read after every per-section endpoint;
+a failure there (a 503, a timeout) is recorded and the rest is kept. On
+stock it is `null`. `flow::backup` adds the channel's HELLO as evidence: on
+a trip, the one from before the reboot; in web-config, one HELLO there.
+`commands::full_config` returns the document for the LED commands
+(`animationOptions` is only there, #19). The mock hangs on both endpoints
+while its firmware version is a bare release tag, and the fork fixture
+(`tests/fixtures/api/s16-fork/`, an overlay of the stock capture with a
+synthetic `getConfig`) serves them.
+
 ## The control channel (gamepadii firmware)
 
 Our fork answers vendor requests on EP0 in every mode, web-config
@@ -195,7 +242,8 @@ Host side (`gamepadii-core/src/channel/`):
   and the channel, including the §3.6 details), used by `sim::SimPad` and
   the CLI's hidden `--mock-channel`.
 - Web-config mode keeps the HTTP path for `mode` (with its backup) and
-  `reboot`; the channel there is only probed by `status`.
+  `reboot`; the channel there is only probed by `status`, and by `backup`
+  (one HELLO, as evidence for the fork's fixes).
 - `info` and `backup` from a gamepad mode (`flow::through_webconfig`):
   REBOOT(1), wait for `cafe:4028` and the HTTP server, read, then
   `/api/reboot {"bootMode":0}` and check the VID:PID and STATUS show the

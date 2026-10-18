@@ -73,13 +73,16 @@ The client must guard against these (details in `docs/DESIGN.md`):
 - lwIP's httpd matches `Content-Length:` case-sensitively; requests must use
   that exact casing (we use our own HTTP/1.0 client for this).
 - `resetSettings` is a destructive GET: never call it.
-- Never call `/api/getConfig` on v0.7.12: on the S16 (Haute42COSMOX, build
-  0014e4a) it hangs the device's network stack until replugged. Back up via
-  the per-section `get*` endpoints.
-- Never call `/api/getI2CPeripheralMap` either: it runs a live I2C bus scan
-  and hangs the S16 the same way. The client reads only from an explicit
-  allowlist of endpoints verified safe (the list is in `docs/DESIGN.md`), never
-  "anything named `get*`".
+- Never call `/api/getConfig` on stock v0.7.12: on the S16 (Haute42COSMOX,
+  build 0014e4a) it hangs the device's network stack until replugged. Back
+  up via the per-section `get*` endpoints. It is allowed on fork builds with
+  the fixes, only through `api::fork` with a `ForkFixes` from the capability
+  check (`Client::fork_fixes`; the rule is in `docs/DESIGN.md`, "Fork
+  firmware"); `backup` adds it as `full_config` there.
+- Never call `/api/getI2CPeripheralMap` on stock either: it runs a live I2C
+  bus scan and hangs the S16 the same way (fork builds: same check). The
+  client reads only from an explicit allowlist of endpoints verified safe
+  (the list is in `docs/DESIGN.md`), never "anything named `get*`".
 
 ## Hardware
 

@@ -37,5 +37,6 @@ expression: v
     "getSplashImage": "object, 1 keys",
     "getUsedPins": "object, 1 keys",
     "getWiiControls": "object, 66 keys"
-  }
+  },
+  "full_config": null
 }

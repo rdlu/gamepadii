@@ -1391,6 +1391,79 @@ fn backup_from_keyboard_goes_to_web_config_and_back() {
     assert_eq!(rig.pad.mode(), Some(InputMode::Keyboard));
 }
 
+fn fork_dir() -> PathBuf {
+    s16_dir().join("../s16-fork")
+}
+
+/// Whether the pad's web-config server was asked for `getConfig`.
+fn asked_for_get_config(rig: &Rig) -> bool {
+    rig.requests().iter().any(|(_, p)| *p == "/api/getConfig")
+}
+
+fn backup(rig: &Rig) -> (gamepadii_core::commands::BackupReport, Option<flow::Trip>) {
+    rig.run(|env| flow::backup(env, None, false, &mut Log::default()))
+        .unwrap()
+}
+
+#[test]
+fn backup_on_stock_never_asks_for_get_config() {
+    // Stock without the channel, already in web-config.
+    let rig = Rig::s16(InputMode::Webconfig);
+    let (report, _) = backup(&rig);
+    assert!(!report.full_config);
+    assert!(!asked_for_get_config(&rig));
+    // A v0.7.12 release with the channel, from XInput: still no.
+    let rig = Rig::cc(InputMode::Xinput);
+    let (report, trip) = backup(&rig);
+    assert!(trip.unwrap().verified);
+    assert!(!report.full_config);
+    assert_eq!(report.full_config_evidence, None);
+    assert!(!asked_for_get_config(&rig));
+}
+
+#[test]
+fn backup_on_the_fork_build_has_get_config() {
+    let rig = Rig::new(SimPad::new(fork_dir(), InputMode::Xinput).with_channel());
+    let (report, trip) = backup(&rig);
+    assert!(trip.unwrap().verified);
+    assert!(report.full_config);
+    assert_eq!(
+        report.full_config_evidence,
+        Some(gamepadii_core::api::Evidence::KnownBuild)
+    );
+    assert!(asked_for_get_config(&rig));
+    let text = std::fs::read_to_string(&report.path).unwrap();
+    let saved: Value = serde_json::from_str(&text).unwrap();
+    let anim = &saved["full_config"]["config"]["animationOptions"];
+    assert_eq!(anim["brightness"], 3);
+}
+
+#[test]
+fn a_dev_build_qualifies_by_its_control_channel() {
+    // A fork build gamepadii doesn't know the commit of: the HELLO it
+    // answers in web-config is the evidence.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("BASE"), fork_dir().to_str().unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("getFirmwareVersion.json"),
+        r#"{"version":"v0.7.12-9-g1234567","boardBuild":"1234567","boardConfig":"Haute42COSMOX"}"#,
+    )
+    .unwrap();
+    let rig = Rig::new(SimPad::new(dir.path(), InputMode::Webconfig).with_channel());
+    let (report, trip) = backup(&rig);
+    assert_eq!(trip, None);
+    assert_eq!(
+        report.full_config_evidence,
+        Some(gamepadii_core::api::Evidence::ControlChannel)
+    );
+    assert!(report.full_config);
+    // Without the channel, the same build is left alone.
+    let rig = Rig::new(SimPad::new(dir.path(), InputMode::Webconfig));
+    let (report, _) = backup(&rig);
+    assert_eq!(report.full_config_evidence, None);
+    assert!(!asked_for_get_config(&rig));
+}
+
 #[test]
 fn stay_leaves_it_in_web_config() {
     let rig = Rig::cc(InputMode::Xinput);

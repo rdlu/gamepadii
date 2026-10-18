@@ -152,6 +152,37 @@ mod webconfig {
         ));
     }
 
+    /// The S16 on the fork build (`tests/fixtures/api/s16-fork`): the
+    /// backup has `getConfig` too.
+    fn fork_backup_report() -> BackupReport {
+        let fork =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-fork");
+        let client = Client::open(Box::new(Mock::new(fork))).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(1_792_256_223);
+        let mut r = commands::backup(&client, Some(&dir.path().join("s16.json")), now).unwrap();
+        r.path = PathBuf::from("/backups/s16.json");
+        r
+    }
+
+    #[test]
+    fn human_backup_on_the_fork() {
+        insta::assert_snapshot!(output::backup(
+            Style::plain(Format::Human),
+            &fork_backup_report(),
+            None
+        ));
+    }
+
+    #[test]
+    fn json_backup_on_the_fork() {
+        insta::assert_snapshot!(output::backup(
+            Style::plain(Format::Json),
+            &fork_backup_report(),
+            None
+        ));
+    }
+
     #[test]
     fn reboot_without_waiting() {
         let human = |m| {

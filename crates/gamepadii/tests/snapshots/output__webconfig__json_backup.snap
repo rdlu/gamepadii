@@ -39,6 +39,9 @@ expression: "output::backup(Style::plain(Format::Json), &backup_report(), None)"
     "getWiiControls"
   ],
   "unavailable": [],
-  "bytes": 63735,
+  "full_config": false,
+  "full_config_evidence": null,
+  "full_config_error": null,
+  "bytes": 63758,
   "trip": null
 }

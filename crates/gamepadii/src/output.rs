@@ -9,7 +9,7 @@
 use std::io::IsTerminal;
 
 use gamepadii_core::Error;
-use gamepadii_core::api::RebootAck;
+use gamepadii_core::api::{Evidence, RebootAck};
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
@@ -608,6 +608,17 @@ pub fn backup(style: Style, b: &BackupReport, trip: Option<&Trip>) -> String {
     ];
     if !b.unavailable.is_empty() {
         r.push(("not on this fw", b.unavailable.join("\n")));
+    }
+    if let Some(evidence) = b.full_config_evidence {
+        let why = match evidence {
+            Evidence::KnownBuild => "a known fork build",
+            Evidence::ControlChannel => "fork firmware, from its control channel",
+        };
+        let row = match &b.full_config_error {
+            Some(e) => format!("getConfig not saved ({why}): {e}"),
+            None => format!("getConfig too ({why})"),
+        };
+        r.push(("full config", row));
     }
     r.push(("size", bytes(b.bytes)));
     r.push(("captured", b.captured_at.clone()));
