@@ -1494,3 +1494,47 @@ fn backup_channel_only_and_restore_exit_codes() {
     let (code, _, _) = run("config", &["restore"]);
     assert_eq!(code, 3);
 }
+
+/// Runs the completion answer for `line` (fish), as the script does at Tab.
+fn complete_in(home: &std::path::Path, line: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_gamepadii"))
+        .arg("--")
+        .args(line)
+        .env("COMPLETE", "fish")
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .output()
+        .expect("run gamepadii");
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn completions_print_a_script_for_each_shell() {
+    let home = tempfile::tempdir().unwrap();
+    for shell in ["bash", "zsh", "fish"] {
+        let (code, stdout, _) = gamepadii_in(home.path(), &["completions", shell]);
+        assert_eq!(code, 0, "{shell}");
+        assert!(stdout.contains("COMPLETE="), "{shell}: {stdout}");
+    }
+}
+
+#[test]
+fn completion_gives_the_library_names_and_the_profile_numbers() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("config/gamepadii/profiles");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mine.kdl"),
+        "profile \"Hades\" {\n    base \"Default\"\n    label \"Hades run\"\n}\n",
+    )
+    .unwrap();
+    let names = complete_in(home.path(), &["gamepadii", "library", "show", ""]);
+    assert!(names.lines().any(|l| l == "Default"), "{names}");
+    assert!(names.lines().any(|l| l == "Hades\tHades run"), "{names}");
+    // No device cache: the numbers only, and no talk to a pad.
+    let profiles = complete_in(home.path(), &["gamepadii", "profile", "switch", ""]);
+    let values: Vec<&str> = profiles.lines().filter(|l| !l.starts_with('-')).collect();
+    assert_eq!(values, ["1", "2", "3", "4", "5", "6"]);
+}

@@ -7,22 +7,23 @@ CLI and TUI for GP2040-CE gamepads: status, input modes, profiles
 Usage: gamepadii [OPTIONS] [COMMAND]
 
 Commands:
-  status     The pad on USB: input mode (with a confidence), USB ids, bus and port
-  info       Firmware, board, memory, input mode, profiles and boot buttons. Needs web-config; in a gamepad mode the control channel takes the pad there and back
-  backup     Save every readable setting to one JSON file. Needs web-config; in a gamepad mode the control channel takes the pad there and back. With control channel v1.6, the file also has the saved config as one blob, for `restore`
-  restore    Write the config blob of a backup file back to the pad, over the control channel (needs v1.6). This writes all the settings to flash
-  reboot     Restart the pad into gamepad mode, web-config or BOOTSEL, then wait for it on USB and check what came back. Needs web-config, or the control channel in a gamepad mode
-  mode       Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
-  webconfig  Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
-  profile    Pin-mapping profiles on the pad
-  library    The profile library on this computer: KDL files in ~/.config/gamepadii/profiles/, and the examples that gamepadii ships. A profile names the physical buttons of a board file
-  leds       The per-button RGB LEDs: animation, brightness, colours and the custom theme, or the lights profile on main firmware. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
-  input      Read the buttons live (needs control channel v1.7 of the gamepadii firmware): the GPIOs pressed now, with their action and key, and the gamepad state
-  log        The pad's log of its last 64 events, live (needs control channel v1.8 of the gamepadii firmware)
-  tui        The terminal UI: the pad, its input modes and profiles, web-config and backups. `gamepadii` with no command opens it on a terminal
-  display    The pad's OLED display
-  setup      One-time setup of this machine
-  help       Print this message or the help of the given subcommand(s)
+  status       The pad on USB: input mode (with a confidence), USB ids, bus and port
+  info         Firmware, board, memory, input mode, profiles and boot buttons. Needs web-config; in a gamepad mode the control channel takes the pad there and back
+  backup       Save every readable setting to one JSON file. Needs web-config; in a gamepad mode the control channel takes the pad there and back. With control channel v1.6, the file also has the saved config as one blob, for `restore`
+  restore      Write the config blob of a backup file back to the pad, over the control channel (needs v1.6). This writes all the settings to flash
+  reboot       Restart the pad into gamepad mode, web-config or BOOTSEL, then wait for it on USB and check what came back. Needs web-config, or the control channel in a gamepad mode
+  mode         Switch the input mode, or with no MODE show the current one and the choices. In a gamepad mode it uses the control channel, or else says which buttons to press and waits
+  webconfig    Get the pad into web-config and print its URL; in a gamepad mode it reboots it over the control channel, or else says which buttons to press and waits
+  profile      Pin-mapping profiles on the pad
+  library      The profile library on this computer: KDL files in ~/.config/gamepadii/profiles/, and the examples that gamepadii ships. A profile names the physical buttons of a board file
+  leds         The per-button RGB LEDs: animation, brightness, colours and the custom theme, or the lights profile on main firmware. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
+  input        Read the buttons live (needs control channel v1.7 of the gamepadii firmware): the GPIOs pressed now, with their action and key, and the gamepad state
+  log          The pad's log of its last 64 events, live (needs control channel v1.8 of the gamepadii firmware)
+  tui          The terminal UI: the pad, its input modes and profiles, web-config and backups. `gamepadii` with no command opens it on a terminal
+  display      The pad's OLED display
+  setup        One-time setup of this machine
+  completions  Print the shell completion script (bash, zsh, fish, ...)
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
       --format <FORMAT>

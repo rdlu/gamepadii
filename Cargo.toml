@@ -19,7 +19,9 @@ categories = ["command-line-utilities", "hardware-support"]
 [workspace.dependencies]
 gamepadii-core = { path = "crates/gamepadii-core", version = "0.1.0" }
 clap = { version = "4.6.7", features = ["derive"] }
-clap_complete = "4.6.11"
+# `unstable-dynamic`: completion of names from the library and the device
+# cache. Its API can change in a minor version: check it after an update.
+clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 clap_mangen = "0.3.3"
 # usbfs ioctls for the control channel (Linux only).
 libc = "0.2.191"

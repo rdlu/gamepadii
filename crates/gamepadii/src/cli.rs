@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 
 use gamepadii_core::display::LayoutArg;
 use gamepadii_core::flow::{self, ProfileArg};
@@ -289,8 +290,15 @@ pub enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
-    /// Print a shell completion script, for packagers.
-    #[command(hide = true)]
+    /// Print the shell completion script (bash, zsh, fish, ...).
+    ///
+    /// The script calls gamepadii at each Tab, so it also completes the names
+    /// in the profile library and the profile labels of the pad. The labels
+    /// come from the device cache: a Tab never talks to the pad.
+    ///
+    /// Fish: put `gamepadii completions fish | source` in config.fish.
+    /// Zsh: put `source <(gamepadii completions zsh)` in .zshrc, after
+    /// compinit. Bash: put `source <(gamepadii completions bash)` in .bashrc.
     Completions {
         #[arg(value_enum)]
         shell: Shell,
@@ -319,7 +327,7 @@ pub enum ProfileCommand {
     /// goes back to its saved profile when it restarts.
     Switch {
         /// The profile: its number (1-6) or its label, any case.
-        #[arg(value_parser = profile_parser)]
+        #[arg(value_parser = profile_parser, add = ArgValueCandidates::new(profile_names))]
         profile: ProfileArg,
         /// Also save it to flash, as the profile hotkeys do.
         #[arg(long)]
@@ -331,7 +339,7 @@ pub enum ProfileCommand {
     Show {
         /// The profile: its number (1-6) or its label. Default: the active
         /// one.
-        #[arg(value_parser = profile_parser)]
+        #[arg(value_parser = profile_parser, add = ArgValueCandidates::new(profile_names))]
         profile: Option<ProfileArg>,
     },
     /// Write a slot file (the JSON of `profile show`) to profile 2-6, live,
@@ -369,6 +377,7 @@ pub enum LibraryCommand {
     /// and the profile that gives it.
     Show {
         /// The name of the profile, any case.
+        #[arg(add = ArgValueCandidates::new(library_names))]
         name: String,
         /// Print the slot file for `gamepadii profile write` (JSON) in
         /// place of the profile. Buttons with no action are not in it, so
@@ -728,9 +737,61 @@ impl Cli {
     }
 }
 
-/// Writes the completion script for `shell`.
-pub fn completions(shell: Shell, out: &mut dyn Write) {
-    clap_complete::generate(shell, &mut Cli::command(), "gamepadii", out);
+/// The variable that the completion script sets when it calls gamepadii.
+pub const COMPLETE_VAR: &str = "COMPLETE";
+
+/// Writes the completion script for `shell`: it calls `gamepadii` again
+/// with [`COMPLETE_VAR`] set, which [`complete_env`] answers.
+pub fn completions(shell: Shell, out: &mut dyn Write) -> std::io::Result<()> {
+    let name = shell.to_string();
+    let shells = clap_complete::env::Shells::builtins();
+    let completer = shells
+        .completer(&name)
+        .ok_or_else(|| std::io::Error::other(format!("no completion for {name}")))?;
+    completer.write_registration(COMPLETE_VAR, "gamepadii", "gamepadii", "gamepadii", out)
+}
+
+/// Answers a call from the completion script and exits; returns at once
+/// when [`COMPLETE_VAR`] is not set.
+pub fn complete_env() {
+    clap_complete::CompleteEnv::with_factory(Cli::command)
+        .var(COMPLETE_VAR)
+        .complete();
+}
+
+/// The names in the profile library, for completion. Files that do not
+/// parse give no names.
+pub fn library_names() -> Vec<CompletionCandidate> {
+    let dir = gamepadii_core::library::library_dir();
+    let Ok(library) = gamepadii_core::library::Library::load(dir.as_deref()) else {
+        return Vec::new();
+    };
+    library
+        .list()
+        .profiles
+        .into_iter()
+        .map(|p| {
+            let help = (p.label != p.name).then(|| p.label.into());
+            CompletionCandidate::new(p.name).help(help)
+        })
+        .collect()
+}
+
+/// The profile numbers and labels of the pad, from the newest device
+/// cache, for completion. gamepadii does not talk to the pad here.
+pub fn profile_names() -> Vec<CompletionCandidate> {
+    let mut names: Vec<CompletionCandidate> = Vec::new();
+    let profiles = gamepadii_core::cache::cache_dir()
+        .and_then(|d| gamepadii_core::cache::load_latest(&d))
+        .and_then(|c| c.profiles());
+    for n in 1..=6 {
+        let label = profiles.as_ref().and_then(|p| p.label(n));
+        names.push(CompletionCandidate::new(n.to_string()).help(label.clone().map(Into::into)));
+        if let Some(label) = label.filter(|l| !l.is_empty()) {
+            names.push(CompletionCandidate::new(label).help(Some(format!("profile {n}").into())));
+        }
+    }
+    names
 }
 
 /// Writes gamepadii(1) and a page per visible subcommand into `dir`, which
