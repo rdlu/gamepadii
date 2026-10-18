@@ -259,16 +259,24 @@ pub fn unset_numbers(file: &LightsFile, count: usize) -> Vec<u8> {
     numbers.into_iter().collect()
 }
 
-/// The note for the colour numbers `unset` of lights profile `profile`.
-pub fn unset_note(profile: u8, unset: &[u8], count: usize) -> Option<String> {
-    if unset.is_empty() {
-        return None;
+/// The notes for the colour numbers `unset` of lights profile `profile`:
+/// one for the custom colours that are not set, one for the numbers out of
+/// range (30 and more, only in a stored profile).
+pub fn unset_note(profile: u8, unset: &[u8], count: usize) -> Vec<String> {
+    let max = number(CUSTOM_COLORS_MAX);
+    let (black, out): (Vec<u8>, Vec<u8>) = unset.iter().partition(|c| usize::from(**c) < max);
+    let list = |l: &[u8]| l.iter().map(u8::to_string).collect::<Vec<_>>().join(", ");
+    let mut notes = Vec::new();
+    if !out.is_empty() {
+        notes.push(format!(
+            "lights profile {profile} has the stored colour number {}, out of range \
+             (0 to 29)",
+            list(&out)
+        ));
     }
-    let list = unset
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
+    if black.is_empty() {
+        return notes;
+    }
     let set = match count {
         0 => "no custom colours are set".to_string(),
         1 => "only custom colour 0 (number 14) is set".to_string(),
@@ -279,9 +287,14 @@ pub fn unset_note(profile: u8, unset: &[u8], count: usize) -> Option<String> {
             number(n - 1)
         ),
     };
-    Some(format!(
-        "lights profile {profile} uses colour number {list}, which shows black: {set}"
-    ))
+    notes.insert(
+        0,
+        format!(
+            "lights profile {profile} uses colour number {}, which shows black: {set}",
+            list(&black)
+        ),
+    );
+    notes
 }
 
 /// What to say about the global custom colours.
@@ -489,23 +502,23 @@ mod tests {
         assert_eq!(unset_numbers(&f, 2), [16, 17, 29, 32]);
         assert_eq!(unset_numbers(&f, 16), [32]);
         assert_eq!(unset_numbers(&f, 0), [14, 15, 16, 17, 29, 32]);
-        let note = unset_note(1, &[16, 17], 2).unwrap();
+        let notes = unset_note(1, &[16, 17, 32], 2);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[1].contains("stored colour number 32, out of range"));
+        let note = &notes[0];
         assert!(note.contains("colour number 16, 17"), "{note}");
         assert!(
             note.contains("custom colours 0 and 1 (numbers 14 and 15)"),
             "{note}"
         );
-        let note = unset_note(1, &[17], 3).unwrap();
+        let note = &unset_note(1, &[17], 3)[0];
         assert!(
             note.contains("custom colours 0 to 2 (numbers 14 to 16)"),
             "{note}"
         );
-        assert!(
-            unset_note(1, &[14], 0)
-                .unwrap()
-                .contains("no custom colours")
-        );
-        assert_eq!(unset_note(1, &[], 0), None);
+        assert!(unset_note(1, &[14], 0)[0].contains("no custom colours"));
+        assert!(unset_note(1, &[], 0).is_empty());
+        assert_eq!(unset_note(1, &[32], 16).len(), 1);
         assert_eq!(
             changed(&after_write(&[]), &after_write(&[Rgb::BLACK])),
             Vec::<u8>::new()

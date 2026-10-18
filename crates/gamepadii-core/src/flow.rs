@@ -2637,11 +2637,13 @@ fn same_board(want: Option<&str>, have: Option<&str>) -> Result<()> {
     }
 }
 
-/// The note about colour numbers that show black in lights profile `n`
-/// with `count` custom colours set; `None` when it can't read the profile.
-fn unset_note(ch: &Channel, n: u8, count: usize) -> Option<String> {
-    let file = read_lights_file(ch, n, None).ok()?;
-    colors::unset_note(n, &colors::unset_numbers(&file, count), count)
+/// The notes about colour numbers that show black in lights profile `n`
+/// with `count` custom colours set; none when it can't read the profile.
+fn unset_note(ch: &Channel, n: u8, count: usize) -> Vec<String> {
+    match read_lights_file(ch, n, None) {
+        Ok(file) => colors::unset_note(n, &colors::unset_numbers(&file, count), count),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Writes `colors`, waits until the LEDs apply them, and reads them back:
@@ -2730,10 +2732,8 @@ pub fn colors_write(
         notes.push("the pad took the write but the LEDs haven't applied it after 1 s".into());
     }
     notes.push(colors::SHARED.to_string());
-    if let Some(n) = status.on()
-        && let Some(note) = unset_note(&ch, n, file.colors.len())
-    {
-        notes.push(note);
+    if let Some(n) = status.on() {
+        notes.extend(unset_note(&ch, n, file.colors.len()));
     }
     if !write.save {
         notes.push(
@@ -2907,10 +2907,12 @@ pub fn theme_apply(
     if theme.colors.is_some() {
         notes.push(colors::SHARED.to_string());
     }
-    if let Some(count) = count
-        && let Some(note) = colors::unset_note(n, &colors::unset_numbers(&after, count), count)
-    {
-        notes.push(note);
+    if let Some(count) = count {
+        notes.extend(colors::unset_note(
+            n,
+            &colors::unset_numbers(&after, count),
+            count,
+        ));
     }
     if !apply.save {
         notes.push(
