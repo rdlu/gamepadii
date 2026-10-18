@@ -10,6 +10,7 @@ waiting for the pad to come back (up to 10 s)
 --- info
 Haute42 COSMOX (GP2040-CE v0.7.12)
 firmware      v0.7.12 (build 0014e4a, Release, rp2040)
+line          v0.7.12 (a known build)
 board         Haute42COSMOX
 flash         1.2 MiB of 2.0 MiB used (2.0 MiB chip)
 heap          19.3 KiB of 118.8 KiB used, 145.2 KiB static
@@ -37,6 +38,7 @@ hint          the OLED draws the generic 12-button layout (27/31), but the pins 
 Backed up Haute42 COSMOX (GP2040-CE v0.7.12)
 file          /backups/s16.json
 endpoints     21 of 21
+line          v0.7.12 (a known build)
 size          62.3 KiB
 captured      2026-10-17T16:57:04Z
 via           the control channel: web-config, and left there (/dev/bus/usb/003/009)

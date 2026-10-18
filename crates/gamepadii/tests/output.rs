@@ -183,6 +183,37 @@ mod webconfig {
         ));
     }
 
+    /// The S16 on stock upstream main (`tests/fixtures/api/s16-main`,
+    /// synthetic): info, backup and leds on the main line.
+    fn main_client() -> Client {
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main");
+        Client::open(Box::new(Mock::new(dir))).unwrap()
+    }
+
+    #[test]
+    fn main_firmware_outputs() {
+        let client = main_client();
+        let info = commands::info(&client).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(1_792_256_223);
+        let mut backup =
+            commands::backup(&client, Some(&dir.path().join("s16.json")), now).unwrap();
+        backup.path = PathBuf::from("/backups/s16.json");
+        let leds = gamepadii_core::leds::read_webconfig(&client).unwrap();
+        let human = Style::plain(Format::Human);
+        let json = Style::plain(Format::Json);
+        insta::assert_snapshot!(
+            [
+                output::info(human, &info, None),
+                output::backup(human, &backup, None),
+                output::leds(human, &leds, None),
+                output::leds(json, &leds, None),
+            ]
+            .join("\n")
+        );
+    }
+
     #[test]
     fn reboot_without_waiting() {
         let human = |m| {

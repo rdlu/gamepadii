@@ -15,6 +15,10 @@ expression: "output::backup(Style::plain(Format::Json), &backup_report(), None)"
     "build_type": "Release",
     "file_name": "GP2040-CE_0.7.12_Haute42COSMOX"
   },
+  "firmware_line": {
+    "line": "v0.7.12",
+    "evidence": "known_build"
+  },
   "endpoints": [
     "getAddonsOptions",
     "getButtonLayoutDefs",
@@ -42,6 +46,6 @@ expression: "output::backup(Style::plain(Format::Json), &backup_report(), None)"
   "full_config": false,
   "full_config_evidence": null,
   "full_config_error": null,
-  "bytes": 63758,
+  "bytes": 63837,
   "trip": null
 }
