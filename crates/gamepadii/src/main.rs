@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
@@ -467,7 +469,18 @@ fn mock_control(
         .with_leds(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
-    Ok(Box::new(Standalone::new(sim, node)))
+    // One simulated pad per node for the whole process: the TUI opens the
+    // channel for each action and must see the changes of the last one.
+    static PADS: OnceLock<Mutex<HashMap<String, Arc<Mutex<SimChannel>>>>> = OnceLock::new();
+    let mut pads = PADS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let pad = pads
+        .entry(node.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(sim)))
+        .clone();
+    Ok(Box::new(Standalone::shared(pad, node)))
 }
 
 /// `setup udev --install`: through pkexec on a live system; straight into

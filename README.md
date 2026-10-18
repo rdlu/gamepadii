@@ -1,20 +1,46 @@
 # gamepadii
 
-A Linux CLI and TUI for GP2040-CE gamepads, with a Tauri GUI to follow. It finds the pad on USB, tells which input mode it is in (XInput,
-Keyboard, HID, Switch, PS4/PS5, web-config, BOOTSEL, ...), and will switch
-modes and apply profiles (pin mappings, keyboard keymaps) without the
-built-in web configurator, with as few button presses and reboots as the
-firmware allows.
+A Linux CLI and TUI for gamepads that use the
+[GP2040-CE](https://gp2040-ce.info/) firmware. A Tauri GUI will follow.
+The first pad that it supports is the Haute42 S16.
 
-**Status: pre-release, in development.** `status`, `info`, `backup`,
-`reboot`, `mode`, `webconfig`, `profile switch`, `display layout`, `leds`
-and `setup udev` work so
-far, and a first TUI (`gamepadii` on a terminal) covers status, modes,
-profiles, web-config and backups. The roadmap is tracked in
-[GitHub issues](https://github.com/rdlu/gamepadii/issues/1), and the design
-notes are in [docs/DESIGN.md](docs/DESIGN.md).
+gamepadii shows the status of the pad and changes its settings from the
+computer. You do not have to open the web configurator, and you push fewer
+buttons. With our firmware fork, most changes do not need a button press.
 
-The documentation will live at **<https://gamepadii.dlu.one/>**.
+![gamepadii status, a profile switch, and the LEDs, on a simulated S16](docs/media/cli.gif)
+
+![The TUI: the pad, its input modes and profiles, a profile switch, and the help](docs/media/tui.gif)
+
+The demos use a simulated S16 that is made from recorded data. To make them
+again, run `mise run demos` (needs vhs and ffmpeg).
+
+**Status: pre-release, in development.** These commands operate now:
+`status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
+`profile switch`, `display layout`, `leds` and `setup udev`. The TUI
+(`gamepadii` on a terminal) shows the pad, and changes the input mode and
+the profile. The roadmap is in
+[GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
+notes are in [docs/DESIGN.md](docs/DESIGN.md). The words that we use are
+in [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
+The documentation will be at **<https://gamepadii.dlu.one/>**.
+
+## Goals
+
+- **See the pad:** the input mode, the firmware, the profiles and the LEDs,
+  from the terminal or a status bar (waybar).
+- **Change the pad without the web configurator:** the input mode, the
+  profile, the OLED layout and the LEDs.
+- **More profiles than the pad can keep:** a profile library on the
+  computer (KDL files), with keyboard profiles for games (for example
+  No Man's Sky) and for other apps (for example OBS).
+- **A control channel in the firmware:** our
+  [fork of GP2040-CE](https://github.com/rdlu/GP2040-CE) adds a small USB
+  connection, so that gamepadii can change the profile, the input mode and
+  the LEDs without a restart into web-config. The fork also has fixes for two
+  web-config problems that stop the pad until you disconnect it. Stock
+  firmware also operates with gamepadii, with button presses for some steps.
 
 ## Install
 

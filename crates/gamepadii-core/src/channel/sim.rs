@@ -16,7 +16,7 @@
 //! [`Standalone`] wraps it for the CLI's hidden `--mock-channel`.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -602,15 +602,21 @@ fn proto_byte(m: InputMode) -> u8 {
 /// A [`SimChannel`] on its own, ignoring reboots: the CLI's hidden
 /// `--mock-channel`, for end-to-end tests against static sysfs fixtures.
 pub struct Standalone {
-    sim: Mutex<SimChannel>,
+    sim: Arc<Mutex<SimChannel>>,
     node: String,
     no_access: bool,
 }
 
 impl Standalone {
     pub fn new(sim: SimChannel, node: impl Into<String>) -> Self {
+        Self::shared(Arc::new(Mutex::new(sim)), node)
+    }
+
+    /// A transport on a simulated pad that outlives it, so that a later
+    /// open sees the changes of an earlier one (as on a real pad).
+    pub fn shared(sim: Arc<Mutex<SimChannel>>, node: impl Into<String>) -> Self {
         Self {
-            sim: Mutex::new(sim),
+            sim,
             node: node.into(),
             no_access: false,
         }

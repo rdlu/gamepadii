@@ -44,3 +44,7 @@ run = "cargo update --dry-run --verbose 2>&1 | grep -E 'Updating [^ ]+ v|Unchang
 [tasks.update]
 description = "Update Cargo.lock within semver, then run the gates"
 run = ["cargo update", { task = "check" }]
+
+[tasks.demos]
+description = "Make the README demos again (needs vhs, ffmpeg and the 0xProto Nerd Font)"
+run = "docs/demos/build.sh"
