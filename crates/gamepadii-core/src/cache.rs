@@ -350,6 +350,44 @@ impl DeviceCache {
         changed
     }
 
+    /// Profile `slot.profile` (2–6) is now `slot` in flash: its label,
+    /// enabled state and pins, in `profile_options` as `getProfileOptions`
+    /// has them. Other keys of each entry stay. Whether anything changed.
+    pub fn set_slot(&mut self, slot: &crate::channel::Slot) -> bool {
+        let Some(i) = usize::from(slot.profile).checked_sub(2).filter(|i| *i < 5) else {
+            return false;
+        };
+        let Value::Object(o) = &mut self.profile_options else {
+            return false;
+        };
+        let Value::Array(alts) = o
+            .entry("alternativePinMappings")
+            .or_insert_with(|| Value::Array(Vec::new()))
+        else {
+            return false;
+        };
+        while alts.len() <= i {
+            alts.push(Value::Object(serde_json::Map::new()));
+        }
+        let Value::Object(entry) = &mut alts[i] else {
+            return false;
+        };
+        let before = entry.clone();
+        entry.insert("profileLabel".into(), slot.label.clone().into());
+        entry.insert("enabled".into(), slot.enabled().into());
+        for (gpio, p) in slot.pins.iter().enumerate() {
+            let pin = entry
+                .entry(format!("pin{gpio:02}"))
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Value::Object(pin) = pin {
+                pin.insert("action".into(), p.action.into());
+                pin.insert("customButtonMask".into(), p.button_mask.into());
+                pin.insert("customDpadMask".into(), p.dpad_mask.into());
+            }
+        }
+        *entry != before
+    }
+
     /// The pad restarted: whatever ran from RAM is gone, it runs the saved
     /// profile again. Whether anything changed.
     pub fn restarted(&mut self) -> bool {
@@ -557,6 +595,11 @@ pub fn update(dir: &Path, key: &Key, f: impl FnOnce(&mut DeviceCache) -> bool) -
 /// (saved too with `saved`, after `profile switch --save`).
 pub fn record_profile(dir: &Path, key: &Key, n: u8, saved: bool, now: SystemTime) -> Result<()> {
     update(dir, key, |c| c.set_profile(n, saved, now))
+}
+
+/// Records a slot that WRITE_SLOT saved to flash (`profile write --save`).
+pub fn record_slot(dir: &Path, key: &Key, slot: &crate::channel::Slot) -> Result<()> {
+    update(dir, key, |c| c.set_slot(slot))
 }
 
 /// Records that gamepadii restarted the pad (it runs its saved profile).

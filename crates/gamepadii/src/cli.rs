@@ -89,6 +89,9 @@ pub enum MockChannel {
     Leds,
     /// The fork's main line, control channel v1.2: the lights commands.
     Lights,
+    /// The fork's main line, control channel v1.4: the lights commands and
+    /// the profile slots.
+    Slots,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -241,6 +244,38 @@ pub enum ProfileCommand {
         /// Also save it to flash, as the profile hotkeys do.
         #[arg(long)]
         save: bool,
+    },
+    /// Show the pin mappings of a profile, live (needs control channel
+    /// v1.4 of the gamepadii firmware). The JSON is a slot file for
+    /// `profile write`.
+    Show {
+        /// The profile: its number (1-6) or its label. Default: the active
+        /// one.
+        #[arg(value_parser = profile_parser)]
+        profile: Option<ProfileArg>,
+    },
+    /// Write a slot file (the JSON of `profile show`) to profile 2-6, live,
+    /// with no reboot (needs control channel v1.4). RAM only unless
+    /// --save. gamepadii backs up the slot first.
+    Write {
+        /// The slot file, or - for standard input.
+        file: PathBuf,
+        /// The profile to write: 2 to 6 (profile 1 is the board's own
+        /// mapping).
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(2..=6))]
+        slot: u8,
+        /// Make it the active profile now.
+        #[arg(long)]
+        select: bool,
+        /// Also save it to flash.
+        #[arg(long)]
+        save: bool,
+        /// The label, in place of the file's (at most 16 bytes).
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+        /// Don't back up the slot first.
+        #[arg(long)]
+        no_backup: bool,
     },
 }
 

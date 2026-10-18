@@ -803,6 +803,56 @@ mod flows {
     }
 
     #[test]
+    fn slot_outputs() {
+        use gamepadii_core::slots::{SlotFile, SlotWrite};
+        let rig = Rig::new(
+            SimPad::new(s16_dir(), InputMode::Xinput)
+                .with_channel()
+                .channel(|c| *c = c.clone().with_slots()),
+        );
+        let show = rig.run(|env| flow::profile_show(env, None)).unwrap();
+        let file = SlotFile::parse(
+            r#"{"label": "Hades", "pins": [{"gpio": 2, "action": "B2"}, {"gpio": 0, "action": 7}]}"#,
+        )
+        .unwrap();
+        let ram = rig
+            .run(|env| {
+                let write = SlotWrite {
+                    slot: 6,
+                    select: true,
+                    ..SlotWrite::default()
+                };
+                flow::profile_write(env, &file, &write, &mut Silent)
+            })
+            .unwrap();
+        let saved = rig
+            .run(|env| {
+                let write = SlotWrite {
+                    slot: 5,
+                    save: true,
+                    ..SlotWrite::default()
+                };
+                flow::profile_write(env, &file, &write, &mut Silent)
+            })
+            .unwrap();
+        // The backup path has a temporary directory in it.
+        let plain = |r: &gamepadii_core::slots::SlotWriteReport| {
+            let mut r = r.clone();
+            r.backup = r.backup.map(|p| PathBuf::from(p.file_name().unwrap()));
+            r
+        };
+        let show_json = output::profile_show(json(), &show);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}",
+            output::profile_show(human(), &show),
+            output::profile_write(human(), &plain(&ram)),
+            output::profile_write(human(), &plain(&saved)),
+            &show_json[..show_json.find("\"pins\"").unwrap()],
+            output::profile_write(json(), &plain(&ram)),
+        ));
+    }
+
+    #[test]
     fn lights_outputs() {
         use gamepadii_core::leds::{LedChange, Level, LightsPick};
         let dir =

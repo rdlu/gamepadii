@@ -1,6 +1,6 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
 //! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
-//! and the v1.3 board ID of §3.9):
+//! the v1.3 board ID of §3.9, and the v1.4 profile slots of §3.10):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -17,18 +17,21 @@ pub const TYPE_OUT: u8 = 0x40;
 pub const REQUEST: u8 = 0x47;
 /// The high byte of `wIndex` (`'P'`); the low byte is the command.
 pub const INDEX_MAGIC: u8 = 0x50;
-/// Every request and reply fits one 64-byte EP0 packet.
+/// One 64-byte EP0 packet: the limit of every request and reply except
+/// the slots ([`Command::max_len`]).
 pub const MAX_LEN: u16 = 64;
 /// The first bytes of a HELLO reply.
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.3: the board ID). A pad's
-/// minor tells which STRING ids it has; what else it can do is in its
-/// capabilities.
-pub const MINOR: u8 = 3;
+/// The newest protocol minor this host knows (v1.4: the profile slots). A
+/// pad's minor tells which STRING ids it has; what else it can do is in
+/// its capabilities.
+pub const MINOR: u8 = 4;
 /// The first minor with STRING [`string::BOARD_ID`].
 pub const BOARD_ID_MINOR: u8 = 3;
+/// The first minor with READ_SLOT and WRITE_SLOT ([`Caps::SLOTS`]).
+pub const SLOTS_MINOR: u8 = 4;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -86,7 +89,8 @@ impl Setup {
     }
 }
 
-/// The v1 commands, v1.1's LED ones and v1.2's lights ones.
+/// The v1 commands, v1.1's LED ones, v1.2's lights ones and v1.4's slot
+/// ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
@@ -97,6 +101,8 @@ pub enum Command {
     LedStatus = 0x04,
     /// v1.2, behind [`Caps::LIGHTS`].
     LightsStatus = 0x05,
+    /// v1.4, behind [`Caps::SLOTS`]: `wValue` is the profile (1–6).
+    ReadSlot = 0x06,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
@@ -104,20 +110,24 @@ pub enum Command {
     SetLed = 0x13,
     /// v1.2, behind [`Caps::LIGHTS`].
     SetLights = 0x14,
+    /// v1.4, behind [`Caps::SLOTS`].
+    WriteSlot = 0x15,
 }
 
 impl Command {
-    pub const ALL: [Command; 10] = [
+    pub const ALL: [Command; 12] = [
         Command::Hello,
         Command::Status,
         Command::String,
         Command::LedStatus,
         Command::LightsStatus,
+        Command::ReadSlot,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
         Command::SetLed,
         Command::SetLights,
+        Command::WriteSlot,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -133,6 +143,7 @@ impl Command {
                 | Command::String
                 | Command::LedStatus
                 | Command::LightsStatus
+                | Command::ReadSlot
         )
     }
 
@@ -148,10 +159,13 @@ impl Command {
             Command::SetLed => "SET_LED",
             Command::LightsStatus => "LIGHTS_STATUS",
             Command::SetLights => "SET_LIGHTS",
+            Command::ReadSlot => "READ_SLOT",
+            Command::WriteSlot => "WRITE_SLOT",
         }
     }
 
-    /// The OUT payload length after the header.
+    /// The OUT payload length after the header. WRITE_SLOT has none: its
+    /// length comes from the pin count ([`Slot::len`]).
     pub fn payload_len(self) -> Option<usize> {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
@@ -162,7 +176,19 @@ impl Command {
             | Command::Status
             | Command::String
             | Command::LedStatus
-            | Command::LightsStatus => None,
+            | Command::LightsStatus
+            | Command::ReadSlot
+            | Command::WriteSlot => None,
+        }
+    }
+
+    /// The longest data stage the firmware takes in SETUP: one packet, but
+    /// a slot is longer (§3.10).
+    pub fn max_len(self) -> u16 {
+        match self {
+            Command::ReadSlot => u16::MAX,
+            Command::WriteSlot => (HEADER_LEN + Slot::len(SLOT_MAX_PINS)) as u16,
+            _ => MAX_LEN,
         }
     }
 }
@@ -215,8 +241,10 @@ impl Caps {
     /// v1.2: LIGHTS_STATUS and SET_LIGHTS, main's lights profiles. Set only
     /// when the LEDs run (`NeoPicoLEDAddon` is set up).
     pub const LIGHTS: u32 = 1 << 9;
+    /// v1.4: READ_SLOT and WRITE_SLOT, the pin mappings of a profile.
+    pub const SLOTS: u32 = 1 << 10;
 
-    const NAMES: [(u32, &'static str); 10] = [
+    const NAMES: [(u32, &'static str); 11] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -227,6 +255,7 @@ impl Caps {
         (Self::CFG_WRITE, "cfg_write"),
         (Self::LEDS, "leds"),
         (Self::LIGHTS, "lights"),
+        (Self::SLOTS, "slots"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -322,6 +351,12 @@ impl Hello {
     /// later, with the STRING capability. Never ask an older pad.
     pub fn has_board_id(&self) -> bool {
         self.major == MAJOR && self.minor >= BOARD_ID_MINOR && self.caps.has(Caps::STRING)
+    }
+
+    /// Whether the pad has READ_SLOT and WRITE_SLOT: protocol 1.4 or later,
+    /// with [`Caps::SLOTS`]. Never send them to an older pad.
+    pub fn has_slots(&self) -> bool {
+        self.major == MAJOR && self.minor >= SLOTS_MINOR && self.caps.has(Caps::SLOTS)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -600,6 +635,9 @@ impl LightsStatus {
     pub const UNSAVED: u8 = 1 << 1;
     /// A web-config preview runs: SET_LIGHTS is BUSY.
     pub const PREVIEW: u8 = 1 << 2;
+    /// v1.5: a SET_LIGHTS (or WRITE_LIGHTS) change waits for core 1, for
+    /// about 33 to 57 ms. Older firmware never sets it.
+    pub const PENDING: u8 = 1 << 3;
     /// An effect or cycle time when the lights are off.
     pub const NONE: u8 = 255;
 
@@ -651,6 +689,10 @@ impl LightsStatus {
 
     pub fn preview(&self) -> bool {
         self.flags & Self::PREVIEW != 0
+    }
+
+    pub fn pending(&self) -> bool {
+        self.flags & Self::PENDING != 0
     }
 
     /// The lights profile, `None` when the lights are off.
@@ -715,6 +757,167 @@ impl SetLights {
     /// Whether it changes nothing (a bare save, with `persist`).
     pub fn is_empty(&self) -> bool {
         self.mask() == 0
+    }
+}
+
+/// The bytes before the pins of a slot.
+pub const SLOT_HEAD_LEN: usize = 20;
+/// The bytes of each pin: `i16` action, `u32` button mask, `u32` D-pad mask.
+pub const SLOT_PIN_LEN: usize = 10;
+/// The label bytes: UTF-8, padded with NUL, no NUL needed.
+pub const SLOT_LABEL_LEN: usize = 16;
+/// The most pins a chip has (`NUM_BANK0_GPIOS`: 30 on RP2040, 48 on
+/// RP2350).
+pub const SLOT_MAX_PINS: usize = 48;
+/// The `wLength` of a READ_SLOT: the host doesn't know the pin count
+/// before the reply.
+pub const READ_SLOT_LEN: u16 = 512;
+/// The `GpioAction` range of main (cb01f703): `NONE` to
+/// `SUSTAIN_PROFILE_SLIDER_POSITION_8`. WRITE_SLOT refuses others.
+pub const ACTION_MIN: i16 = -10;
+pub const ACTION_MAX: i16 = 138;
+
+/// One pin of a slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct SlotPin {
+    /// The `GpioAction`.
+    pub action: i16,
+    /// `customButtonMask`, for `CUSTOM_BUTTON_COMBO`.
+    pub button_mask: u32,
+    /// `customDpadMask`.
+    pub dpad_mask: u32,
+}
+
+/// A READ_SLOT reply, or a WRITE_SLOT argument (§3.10): the pin mappings
+/// and label of one profile.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Slot {
+    /// 1–6.
+    pub profile: u8,
+    /// [`Slot::ENABLED`], [`Slot::ACTIVE`], [`Slot::SAVE`].
+    pub flags: u8,
+    /// At most [`SLOT_LABEL_LEN`] bytes of UTF-8.
+    pub label: String,
+    /// One for each GPIO, from GPIO 0.
+    pub pins: Vec<SlotPin>,
+}
+
+impl Slot {
+    /// The profile is enabled (READ_SLOT), or WRITE_SLOT enables it.
+    pub const ENABLED: u8 = 1 << 0;
+    /// The profile is the active one, or WRITE_SLOT selects it.
+    pub const ACTIVE: u8 = 1 << 1;
+    /// WRITE_SLOT only: save to flash.
+    pub const SAVE: u8 = 1 << 2;
+    pub const FLAGS: u8 = 0x07;
+
+    /// The bytes of a slot with `pins` pins.
+    pub const fn len(pins: usize) -> usize {
+        SLOT_HEAD_LEN + SLOT_PIN_LEN * pins
+    }
+
+    /// A reply: `None` when it is shorter than its head says, or the pins
+    /// have a size other than [`SLOT_PIN_LEN`].
+    pub fn parse(reply: &[u8]) -> Option<Slot> {
+        if reply.len() < SLOT_HEAD_LEN || usize::from(reply[3]) != SLOT_PIN_LEN {
+            return None;
+        }
+        let count = usize::from(reply[2]);
+        let body = reply.get(SLOT_HEAD_LEN..Self::len(count))?;
+        let label = &reply[4..4 + SLOT_LABEL_LEN];
+        let end = label.iter().position(|b| *b == 0).unwrap_or(SLOT_LABEL_LEN);
+        Some(Slot {
+            profile: reply[0],
+            flags: reply[1],
+            label: String::from_utf8_lossy(&label[..end]).into_owned(),
+            pins: body
+                .as_chunks::<SLOT_PIN_LEN>()
+                .0
+                .iter()
+                .map(|p| SlotPin {
+                    action: u16_at(p, 0) as i16,
+                    button_mask: u32_at(p, 2),
+                    dpad_mask: u32_at(p, 6),
+                })
+                .collect(),
+        })
+    }
+
+    /// The wire bytes. The label is cut at [`SLOT_LABEL_LEN`] bytes (the
+    /// host checks it before, see [`Slot::check`]).
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = vec![0u8; Self::len(self.pins.len())];
+        b[0] = self.profile;
+        b[1] = self.flags;
+        b[2] = u8::try_from(self.pins.len()).unwrap_or(u8::MAX);
+        b[3] = SLOT_PIN_LEN as u8;
+        let label = self.label.as_bytes();
+        let n = label.len().min(SLOT_LABEL_LEN);
+        b[4..4 + n].copy_from_slice(&label[..n]);
+        for (i, p) in self.pins.iter().enumerate() {
+            let at = SLOT_HEAD_LEN + i * SLOT_PIN_LEN;
+            b[at..at + 2].copy_from_slice(&p.action.to_le_bytes());
+            b[at + 2..at + 6].copy_from_slice(&p.button_mask.to_le_bytes());
+            b[at + 6..at + 10].copy_from_slice(&p.dpad_mask.to_le_bytes());
+        }
+        b
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.flags & Self::ENABLED != 0
+    }
+
+    pub fn active(&self) -> bool {
+        self.flags & Self::ACTIVE != 0
+    }
+
+    /// What WRITE_SLOT refuses with BAD_ARG on a pad with `pins` pins, or
+    /// PROFILE_DISABLED when `active_now` is the profile the pad runs; the
+    /// reason, for the user. The host checks before it sends.
+    pub fn check(&self, pins: usize, active_now: u8) -> std::result::Result<(), String> {
+        if !(2..=6).contains(&self.profile) {
+            return Err(format!(
+                "profile {}: only profiles 2 to 6 can be written (profile 1 is the board's own \
+                 mapping)",
+                self.profile
+            ));
+        }
+        if self.flags & !Self::FLAGS != 0 {
+            return Err(format!("unknown flags {:#04x}", self.flags & !Self::FLAGS));
+        }
+        if self.pins.len() != pins {
+            return Err(format!("{} pins, but this pad has {pins}", self.pins.len()));
+        }
+        if self.label.len() > SLOT_LABEL_LEN {
+            return Err(format!(
+                "the label {:?} is {} bytes; the pad keeps {SLOT_LABEL_LEN}",
+                self.label,
+                self.label.len()
+            ));
+        }
+        if let Some((gpio, p)) = self
+            .pins
+            .iter()
+            .enumerate()
+            .find(|(_, p)| !(ACTION_MIN..=ACTION_MAX).contains(&p.action))
+        {
+            return Err(format!(
+                "GPIO {gpio}: action {} is not in {ACTION_MIN} to {ACTION_MAX}",
+                p.action
+            ));
+        }
+        if !self.enabled() && (self.active() || self.profile == active_now) {
+            return Err(format!(
+                "profile {} must stay enabled: it is {}",
+                self.profile,
+                if self.active() {
+                    "the one to select"
+                } else {
+                    "the active profile"
+                }
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -927,6 +1130,108 @@ mod tests {
         assert_eq!(Command::SetLed.payload_len(), Some(8));
         assert_eq!(Caps(0x12f).names().last(), Some(&"leds"));
         assert!(Caps(0x12f).has(Caps::LEDS) && !Caps(0x2f).has(Caps::LEDS));
+    }
+
+    #[test]
+    fn v1_4_slot_commands() {
+        let s = Setup::read(Command::ReadSlot, 6);
+        assert_eq!((s.request_type, s.index, s.value), (TYPE_IN, 0x5006, 6));
+        assert!(Command::ReadSlot.is_in() && !Command::WriteSlot.is_in());
+        assert_eq!(Setup::command(Command::WriteSlot).index, 0x5015);
+        assert_eq!(Command::from_byte(0x15), Some(Command::WriteSlot));
+        assert_eq!(Command::WriteSlot.max_len(), 8 + 20 + 480);
+        assert_eq!(Command::Status.max_len(), 64);
+        assert_eq!(Caps(0x62f).names().last(), Some(&"slots"));
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(4, 0x62f).has_slots());
+        assert!(!hello(3, 0x62f).has_slots(), "1.3 never gets them");
+        assert!(!hello(4, 0x22f).has_slots());
+    }
+
+    fn s16_slot() -> Slot {
+        let mut pins = vec![SlotPin::default(); 30];
+        pins[0] = SlotPin {
+            action: 5,
+            button_mask: 0,
+            dpad_mask: 0,
+        };
+        pins[1] = SlotPin {
+            action: 40,
+            button_mask: 0x0003,
+            dpad_mask: 0x8,
+        };
+        pins[29] = SlotPin {
+            action: -10,
+            ..SlotPin::default()
+        };
+        Slot {
+            profile: 6,
+            flags: Slot::ENABLED | Slot::ACTIVE,
+            label: "Hollow Knight".into(),
+            pins,
+        }
+    }
+
+    #[test]
+    fn a_slot_round_trips() {
+        let s = s16_slot();
+        let b = s.encode();
+        assert_eq!(b.len(), 320, "20 + 10 x 30; 328 with the header");
+        assert_eq!(&b[0..4], &[6, 3, 30, 10]);
+        assert_eq!(&b[4..17], b"Hollow Knight");
+        assert_eq!(b[17], 0);
+        assert_eq!(&b[20..22], &[5, 0]);
+        assert_eq!(&b[30..40], &[40, 0, 3, 0, 0, 0, 8, 0, 0, 0]);
+        assert_eq!(&b[310..312], &[0xf6, 0xff], "-10");
+        assert_eq!(Slot::parse(&b), Some(s.clone()));
+        assert_eq!(Slot::parse(&b[..319]), None);
+        let mut odd = b.clone();
+        odd[3] = 9;
+        assert_eq!(Slot::parse(&odd), None);
+        // A label of 16 bytes has no NUL.
+        let full = Slot {
+            label: "0123456789abcdef".into(),
+            ..s.clone()
+        };
+        assert_eq!(Slot::parse(&full.encode()).unwrap().label, full.label);
+        // A slot that was never written: zeros after the head.
+        let mut empty = vec![0u8; 320];
+        empty[..4].copy_from_slice(&[6, 0, 30, 10]);
+        let e = Slot::parse(&empty).unwrap();
+        assert!(e.label.is_empty() && !e.enabled());
+        assert!(e.pins.iter().all(|p| p.action == 0));
+    }
+
+    #[test]
+    fn the_host_checks_a_slot_as_the_firmware_does() {
+        let ok = s16_slot();
+        assert_eq!(ok.check(30, 2), Ok(()));
+        let bad = |f: &dyn Fn(&mut Slot), active| {
+            let mut s = s16_slot();
+            f(&mut s);
+            s.check(30, active).unwrap_err()
+        };
+        assert!(bad(&|s| s.profile = 1, 2).contains("profiles 2 to 6"));
+        assert!(bad(&|s| s.profile = 7, 2).contains("profiles 2 to 6"));
+        assert!(bad(&|s| s.flags |= 0x08, 2).contains("unknown flags 0x08"));
+        assert!(bad(&|s| s.pins.pop().map(|_| ()).unwrap(), 2).contains("29 pins"));
+        assert!(bad(&|s| s.label = "a label that is too long".into(), 2).contains("24 bytes"));
+        assert!(bad(&|s| s.pins[3].action = 139, 2).contains("GPIO 3: action 139"));
+        assert!(bad(&|s| s.pins[3].action = -11, 2).contains("action -11"));
+        assert!(bad(&|s| s.flags = Slot::ACTIVE, 2).contains("the one to select"));
+        assert!(bad(&|s| s.flags = 0, 6).contains("the active profile"));
+        // Disabled, and not the active one: allowed.
+        let off = Slot {
+            flags: 0,
+            ..s16_slot()
+        };
+        assert_eq!(off.check(30, 2), Ok(()));
     }
 
     #[test]

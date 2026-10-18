@@ -55,9 +55,11 @@ it here in the same change.
 | OLED | The small display on the pad. It shows the buttons and the active profile. |
 | PR (pull request) | A request to merge a branch into `main` on GitHub. |
 | profile | A set of button mappings on the pad. The pad has up to 6 profiles. |
+| profile slot | One of the 6 places on the pad for a profile. Profile 1 is the board's own mapping. gamepadii can write slots 2 to 6. |
 | RAM only | A change that the pad keeps until it restarts. The pad does not write it to flash memory. |
 | release | A firmware version that the GP2040-CE project published with a version number, for example v0.7.12. |
 | S16 | The Haute42 S16, the first pad that gamepadii supports. |
+| slot file | A JSON file with the pin mappings and the label of one profile. `gamepadii profile show --json` makes one, and `gamepadii profile write` reads one. |
 | simulated pad | A model of the S16 in the code. Tests and demos use it in place of a real pad. |
 | snapshot | A recorded output of gamepadii that a test compares with the new output. |
 | STALL | The USB reply that tells the host that the firmware did not accept a request. |

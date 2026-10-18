@@ -66,7 +66,8 @@ The control endpoint, from `headers/tusb_config.h` and `usbd_control.c`:
   `tud_control_xfer()`, a longer transfer works packet by packet from a
   caller-owned buffer, which must stay valid until the transfer completes.
   v1 keeps every request and response at **64 bytes or less** (one packet),
-  with static buffers.
+  with static buffers. v1.4 adds the first longer transfers: READ_SLOT and
+  WRITE_SLOT move one slot (§3.10) in one static buffer, packet by packet.
 - For an OUT request with data, the callback gets `CONTROL_STAGE_DATA` once
   all the data has arrived. If it returns `false` there, the status stage
   STALLs, so a bad payload is reported to the host as an error.
@@ -216,11 +217,15 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x03` | IN | STRING | string id | reply: raw string, ≤ 63 bytes | v1 |
 | `0x04` | IN | LED_STATUS | 0 | reply: 12 bytes (§3.7); v0.7.12 line only | v1.1 |
 | `0x05` | IN | LIGHTS_STATUS | 0 | reply: 16 bytes (§3.8); main line | v1.2 |
+| `0x06` | IN | READ_SLOT | profile (1–6) | reply: one slot, 20 + 10 × pin count bytes (§3.10); `wLength` 512 | v1.4 |
+| `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: a lights profile; host side not done | v1.5 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
 | `0x13` | OUT | SET_LED | 0 | header + 8 bytes: mask, values, persist (§3.7); v0.7.12 line only | v1.1 |
 | `0x14` | OUT | SET_LIGHTS | 0 | header + 4 bytes: mask, profile, brightness, persist (§3.8); main line | v1.2 |
+| `0x15` | OUT | WRITE_SLOT | 0 | header + one slot (§3.10) | v1.4 |
+| `0x16` | OUT | WRITE_LIGHTS | 0 | header + a lights profile; host side not done | v1.5 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -283,8 +288,10 @@ Capability bits:
 | 7 | CFG_WRITE |
 | 8 | LEDS: LED_STATUS and SET_LED (v1.1, §3.7; the v0.7.12 line only) |
 | 9 | LIGHTS: LIGHTS_STATUS and SET_LIGHTS (v1.2, §3.8; the main line) |
+| 10 | SLOTS: READ_SLOT and WRITE_SLOT (v1.4, §3.10) |
+| 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5; set only when the LEDs run) |
 
-Bits 10–31 are reserved.
+Bits 12–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -561,7 +568,7 @@ not in the bitmap.
 
 | Offset | Type | Field |
 |---|---|---|
-| 0 | u8 | flags: bit 0 the lights run (always set in a reply), bit 1 unsaved (below), bit 2 a web-config preview runs; bits 3–7 are 0 |
+| 0 | u8 | flags: bit 0 the lights run (always set in a reply), bit 1 unsaved (below), bit 2 a web-config preview runs, bit 3 (v1.5) a change waits for core 1; bits 4–7 are 0 |
 | 1 | i8 | lights profile: -1 off, or 0–3 (`AnimationStation::GetSavedMode()`) |
 | 2 | u8 | enabled profiles: bit `n` is `animationOptions.profiles[n].bEnabled` |
 | 3 | u8 | profile count: 4 |
@@ -653,6 +660,68 @@ makes the serial from the ID (`cache::PadId::same`), and the first read
 with the ID replaces that file. When two connected pads give the same ID,
 `status` tells them apart by USB port, and shows a warning. Before 1.3,
 the key stays the USB serial.
+
+### 3.10 v1.4: profile slots
+
+Additive. The protocol minor is **4**, and capability **bit 10, SLOTS**,
+covers READ_SLOT and WRITE_SLOT. The fork's commit is cb01f703. A host
+sends them only when HELLO gives major 1, minor 4 or higher, and bit 10.
+They let a host read and change the pin mappings of a profile with no
+reboot, for example a per-game profile.
+
+A **slot** (READ_SLOT reply, WRITE_SLOT argument after the header), in
+little-endian:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | profile |
+| 1 | u8 | flags: bit 0 enabled, bit 1 active (selected), bit 2 save to flash (WRITE_SLOT only) |
+| 2 | u8 | pin count (`NUM_BANK0_GPIOS`: 30 on RP2040, 48 on RP2350) |
+| 3 | u8 | bytes for each pin: 10 |
+| 4 | 16 bytes | label, UTF-8, padded with NUL; no NUL is necessary |
+| 20 | pins | for each GPIO from 0: `i16` action (`GpioAction`), `u32` `customButtonMask`, `u32` `customDpadMask` |
+
+**READ_SLOT** (`0x06`, IN, `wValue` the profile). The host does not know
+the pin count before the reply, so the firmware does not limit `wLength`
+for this command; a host asks for 512 bytes. Profiles 0 and 7 or more
+STALL. A slot that was never written gives zeros after the head. The
+active bit comes from `profileNumber` in RAM.
+
+**WRITE_SLOT** (`0x15`, OUT). The arguments must be exactly 20 + 10 × pin
+count bytes (328 with the header on RP2040), else BAD_LENGTH. A transfer
+longer than 8 + 20 + 10 × 48 bytes STALLs in SETUP, with BAD_LENGTH and
+`last_seq` 0.
+
+- **Checks, in this order:** token, BUSY, length; then BAD_ARG for a
+  profile that is not 2–6, an unknown flag bit, a pin count that is not
+  `NUM_BANK0_GPIOS`, bytes for each pin that are not 10, or an action that
+  is not -10 to 138; then PROFILE_DISABLED for a slot without "enabled"
+  that has "active", or that is the active profile now.
+- **All or nothing:** a refused WRITE_SLOT changes nothing.
+- **Profile 1's fixed pins:** a pin that profile 1 gives as RESERVED (-5)
+  or ASSIGNED_TO_ADDON (0) keeps profile 1's action, with masks 0. In a
+  slot, these two actions mean "the pin of profile 1".
+- **The direction of a pin** is not on the wire. WRITE_SLOT keeps it.
+- **Configs from before profile 6** have only 4 extra slots (the S16). A
+  WRITE_SLOT to profile 6 adds the missing slots, empty and disabled.
+- **Apply:** when the profile is active after the write, the firmware
+  forces the reinit. STATUS flag bit 0 (PROFILE_PENDING) is set until it is
+  done, 9 to 12 ms on the S16. A host reads STATUS until bit 0 is clear,
+  `last_command` is `0x15`, and `last_seq` is its sequence number.
+- **RAM only** without bit 2: a restart gives the saved profiles again.
+  With bit 2, the normal storage save.
+
+Host side: `Channel::read_slot` / `write_slot`, the module `slots`
+(action names, the slot file, `plan`, `expected`), and `flow::profile_show`
+/ `profile_write` (`gamepadii profile show [PROFILE]`, `profile write FILE
+--slot N [--select] [--save] [--label TEXT]`). The JSON of `profile show`
+is a slot file. A slot file can leave out pins: they get 0, so they follow
+profile 1. Before a write, gamepadii checks what the firmware checks, and
+backs up the slot in the slot file format
+(`<time>-<board>-profile<N>.json`), so a write of the backup undoes the
+change. After the write, it waits for STATUS and reads the slot back. A
+saved write also updates the device cache. `channel/sim.rs` models the
+slots with `SimChannel::with_slots`.
 
 ## 4. Firmware implementation
 

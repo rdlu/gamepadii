@@ -15,6 +15,7 @@ use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
 use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, LightsPick, Pick};
 use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::sim::{self, SimPad, UserAction};
+use gamepadii_core::slots::{SlotFile, SlotWrite, SlotWriteReport};
 use gamepadii_core::transport::Method;
 use gamepadii_core::transport::mock::Mock;
 use gamepadii_core::wait::{Clock, ManualClock};
@@ -2554,6 +2555,222 @@ fn leds_set_on_main_refuses_what_main_lacks() {
     .unwrap_err();
     assert_eq!(e.exit_code(), exit::USAGE);
     assert!(rig.channel_commands().is_empty());
+}
+
+#[test]
+fn leds_set_on_main_waits_for_pending() {
+    // v1.5: LIGHTS_STATUS shows the change before core 1 applies it.
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| c.lights_limits.pending_reads = 3),
+    );
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            brightness: Some(Level::To(2)),
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(r.verified);
+    assert_eq!(r.leds.brightness, Some(2));
+    let reads = rig
+        .pad
+        .control_log()
+        .into_iter()
+        .filter(|s| s.setup.is_in() && s.setup.command_byte() == 0x05)
+        .count();
+    // The read before, 3 that show PENDING, then the one without it.
+    assert!(reads >= 5, "{reads}");
+    assert!(rig.pad.firmware().lights_pending == 0);
+}
+
+// ---- profile slots (control channel v1.4) ------------------------------------
+
+fn slots_rig(mode: InputMode) -> Rig {
+    Rig::new(
+        SimPad::new(s16_dir(), mode)
+            .with_channel()
+            .channel(|c| *c = c.clone().with_slots()),
+    )
+}
+
+fn slot_file(json: &str) -> SlotFile {
+    SlotFile::parse(json).unwrap()
+}
+
+fn write_slot(
+    rig: &Rig,
+    file: &SlotFile,
+    write: &SlotWrite,
+) -> gamepadii_core::Result<SlotWriteReport> {
+    rig.run(|env| flow::profile_write(env, file, write, &mut Log::default()))
+}
+
+#[test]
+fn profile_show_reads_a_slot_live() {
+    let rig = slots_rig(InputMode::Xinput);
+    let r = rig.run(|env| flow::profile_show(env, None)).unwrap();
+    assert_eq!((r.profile, r.label.as_str()), (2, "SilkSong"));
+    assert!(r.active && r.enabled);
+    assert_eq!(r.board.as_deref(), Some("Haute42COSMOX"));
+    assert_eq!(r.pins.len(), 30);
+    assert_eq!(r.pins[2].action_name.as_deref(), Some("B1"));
+    assert!(r.pins[0].from_profile_1);
+    let by_label = rig
+        .run(|env| flow::profile_show(env, Some(&"celeste".parse().unwrap())))
+        .unwrap();
+    assert_eq!(by_label.profile, 3);
+    let base = rig
+        .run(|env| flow::profile_show(env, Some(&"1".parse().unwrap())))
+        .unwrap();
+    assert!(base.pins.iter().all(|p| !p.from_profile_1));
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn profile_write_selects_a_scratch_slot_in_ram() {
+    let rig = slots_rig(InputMode::Xinput).with_cache();
+    let file = slot_file(
+        r#"{"label": "Hades", "pins": [
+            {"gpio": 2, "action": "B2"}, {"gpio": 13, "action": "B1"},
+            {"gpio": 0, "action": "B3"}
+        ]}"#,
+    );
+    let write = SlotWrite {
+        slot: 6,
+        select: true,
+        ..SlotWrite::default()
+    };
+    let r = write_slot(&rig, &file, &write).unwrap();
+    assert_eq!((r.profile, r.label.as_str()), (6, "Hades"));
+    assert!(r.active && r.enabled && !r.saved && r.verified);
+    assert_eq!(r.applied, Some(true));
+    assert_eq!((r.before_label.as_str(), r.before_enabled), ("", false));
+    let note = r.note.unwrap();
+    assert!(note.contains("GPIO 0 keeps profile 1's action"), "{note}");
+    assert!(note.contains("not saved"), "{note}");
+    assert_eq!(rig.channel_commands(), [0x15]);
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.active, 6);
+    assert_eq!(fw.slots[&6].pins[2].action, 6);
+    assert!(!fw.saved_slots.contains_key(&6), "flash untouched");
+    // The backup is the empty slot 6, as a slot file.
+    let backup = r.backup.unwrap();
+    let back = SlotFile::parse(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+    assert_eq!((back.profile, back.enabled), (Some(6), Some(false)));
+    assert!(
+        backup
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("-Haute42COSMOX-profile6.json")
+    );
+    // The cache follows the running profile, and keeps the saved pins.
+    let c = cache::load_latest(&rig.cache_dir()).unwrap();
+    assert_eq!(c.running_profile.unwrap().number, 6);
+    assert!(c.profile_options["alternativePinMappings"].get(4).is_none());
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn profile_write_save_updates_flash_and_the_cache() {
+    let rig = slots_rig(InputMode::Xinput).with_cache();
+    let shown = rig
+        .run(|env| flow::profile_show(env, Some(&"3".parse().unwrap())))
+        .unwrap();
+    let mut file = shown.file();
+    file.pins[6].action = gamepadii_core::slots::Action(8);
+    let write = SlotWrite {
+        slot: 3,
+        save: true,
+        label: Some("Celeste 2".into()),
+        ..SlotWrite::default()
+    };
+    let r = write_slot(&rig, &file, &write).unwrap();
+    assert_eq!(r.changed_pins, [6]);
+    assert!(r.saved && !r.active);
+    assert_eq!(r.applied, None, "not the active profile");
+    assert_eq!(r.note, None);
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.saved_slots[&3].label, "Celeste 2");
+    let c = cache::load_latest(&rig.cache_dir()).unwrap();
+    let alt = &c.profile_options["alternativePinMappings"][1];
+    assert_eq!(alt["profileLabel"], "Celeste 2");
+    assert_eq!(alt["pin06"]["action"], 8);
+    // The backup undoes it.
+    let backup = SlotFile::parse(&std::fs::read_to_string(r.backup.unwrap()).unwrap()).unwrap();
+    let undo = SlotWrite {
+        slot: 3,
+        save: true,
+        ..SlotWrite::default()
+    };
+    let r = write_slot(&rig, &backup, &undo).unwrap();
+    assert_eq!(
+        (r.label.as_str(), r.changed_pins.as_slice()),
+        ("Celeste", &[6u8][..])
+    );
+}
+
+#[test]
+fn profile_write_refuses_before_it_sends() {
+    let rig = slots_rig(InputMode::Xinput);
+    let w = |slot, select| SlotWrite {
+        slot,
+        select,
+        ..SlotWrite::default()
+    };
+    for (json, write, says) in [
+        (
+            r#"{"board": "Pico", "pins": []}"#,
+            w(6, false),
+            "for board Pico",
+        ),
+        (
+            r#"{"pins": [{"gpio": 30, "action": 5}]}"#,
+            w(6, false),
+            "GPIO 0 to 29",
+        ),
+        (
+            r#"{"label": "an 18-byte label!!", "pins": []}"#,
+            w(6, false),
+            "16",
+        ),
+        (
+            r#"{"enabled": false, "pins": []}"#,
+            w(2, false),
+            "the active profile",
+        ),
+        (
+            r#"{"enabled": false, "pins": []}"#,
+            w(6, true),
+            "the one to select",
+        ),
+        (r#"{"pins": []}"#, w(1, false), "profiles 2 to 6"),
+    ] {
+        let e = write_slot(&rig, &slot_file(json), &write).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup either");
+    // No v1.4 channel: exit 5, nothing sent.
+    let file = slot_file(r#"{"pins": []}"#);
+    for (rig, says) in [
+        (Rig::cc(InputMode::Xinput), "v1.0"),
+        (Rig::s16(InputMode::Xinput), "control channel v1.4"),
+        (main_lights(InputMode::Xinput), "v1.2"),
+    ] {
+        let e = write_slot(&rig, &file, &w(6, true)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(rig.channel_commands().is_empty());
+        let e = rig.run(|env| flow::profile_show(env, None)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    }
 }
 
 // ---- the board ID (control channel v1.3) -------------------------------------

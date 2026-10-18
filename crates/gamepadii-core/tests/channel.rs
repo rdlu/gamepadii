@@ -917,3 +917,187 @@ fn a_ram_lights_change_is_lost_on_reboot_and_a_saved_one_is_not() {
     replug(&pad);
     assert_eq!(connect(&pad).lights_status().unwrap().brightness, 2);
 }
+
+// ---- v1.4: the profile slots (§3.10) --------------------------------------------
+
+/// The S16 (v0.7.12 fixtures: profiles 1 to 5) on a v1.4 build, in `mode`.
+fn s16_slots(mode: InputMode) -> Arc<SimPad> {
+    Arc::new(
+        SimPad::new(s16_dir(), mode)
+            .with_channel()
+            .channel(|c| *c = c.clone().with_slots()),
+    )
+}
+
+/// Profile `n` of the S16 with GPIO 6 on B4 and the label `label`.
+fn changed(ch: &Channel, n: u8, label: &str, flags: u8) -> proto::Slot {
+    let mut s = ch.read_slot(2).unwrap();
+    s.profile = n;
+    s.flags = flags;
+    s.label = label.into();
+    s.pins[6].action = 8;
+    s
+}
+
+#[test]
+fn a_1_4_build_reads_every_slot() {
+    let ch = connect(&s16_slots(InputMode::Xinput));
+    assert!(ch.hello().has_slots());
+    assert_eq!(ch.caps().names().last(), Some(&"slots"));
+    let base = ch.read_slot(1).unwrap();
+    assert_eq!((base.profile, base.pins.len()), (1, 30));
+    assert!(base.enabled());
+    let silk = ch.read_slot(2).unwrap();
+    assert_eq!(silk.label, "SilkSong");
+    assert!(silk.enabled() && silk.active());
+    assert_eq!(silk.pins[2].action, 5);
+    // Profile 6 was never written: zeros.
+    let empty = ch.read_slot(6).unwrap();
+    assert!(empty.label.is_empty() && !empty.enabled());
+    assert!(empty.pins.iter().all(|p| p.action == 0));
+    let e = ch.read_slot(7).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    // On the wire, 0 and 7 STALL.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_slots();
+    for n in [0, 7] {
+        let r = sim.control_in(Setup::read(proto::Command::ReadSlot, n), 512);
+        assert!(matches!(r, Err(UsbError::Stall)), "{n}");
+    }
+}
+
+#[test]
+fn a_1_3_build_never_gets_a_slot_command() {
+    let ch = connect(&s16(InputMode::Xinput));
+    let e = ch.read_slot(2).unwrap_err();
+    assert!(e.to_string().contains("no READ_SLOT"), "{e}");
+    let e = ch.write_slot(&proto::Slot::default()).unwrap_err();
+    assert!(e.to_string().contains("no WRITE_SLOT"), "{e}");
+    // Even with bit 10, a 1.3 HELLO is not enough.
+    let sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_board_id("433030383835362E")
+        .with_slots();
+    let mut sim = sim;
+    sim.minor = 3;
+    let ch = channel::hello(standalone(sim), 5).found().unwrap();
+    assert!(ch.read_slot(2).is_err());
+}
+
+#[test]
+fn write_slot_checks_everything_before_a_change() {
+    let pad = s16_slots(InputMode::Xinput);
+    let ch = connect(&pad);
+    let before = ch.read_slot(3).unwrap();
+    let token = pad.firmware().token;
+    let t = open(&pad);
+    let out = |data: &[u8]| {
+        t.control_out(
+            Setup::command(proto::Command::WriteSlot),
+            data,
+            Duration::from_secs(1),
+        )
+    };
+    let send = |slot: &proto::Slot, extra: &[u8]| {
+        let mut args = slot.encode();
+        args.extend_from_slice(extra);
+        let r = out(&proto::payload(token, 11, &args));
+        (
+            r.is_ok(),
+            Outcome::from_byte(ch.status().unwrap().last_result),
+        )
+    };
+    let good = changed(&ch, 3, "Celeste", proto::Slot::ENABLED);
+    let with = |f: &dyn Fn(&mut proto::Slot)| {
+        let mut s = good.clone();
+        f(&mut s);
+        s
+    };
+    for (slot, extra, want) in [
+        (with(&|s| s.profile = 1), vec![], Outcome::BadArg),
+        (with(&|s| s.profile = 7), vec![], Outcome::BadArg),
+        (with(&|s| s.flags = 0x09), vec![], Outcome::BadArg),
+        (with(&|s| s.pins[0].action = 139), vec![], Outcome::BadArg),
+        (with(&|s| s.pins[0].action = -11), vec![], Outcome::BadArg),
+        (
+            with(&|s| s.flags = proto::Slot::ACTIVE),
+            vec![],
+            Outcome::ProfileDisabled,
+        ),
+        (good.clone(), vec![0], Outcome::BadLength),
+    ] {
+        let (ok, o) = send(&slot, &extra);
+        assert!(!ok);
+        assert_eq!(o, want, "{:?}", slot.flags);
+    }
+    // One byte short: the pin count says 30, the data has less.
+    let mut short = good.encode();
+    short.pop();
+    assert!(out(&proto::payload(token, 12, &short)).is_err());
+    let st = ch.status().unwrap();
+    assert_eq!(
+        (st.last_seq, Outcome::from_byte(st.last_result)),
+        (12, Outcome::BadLength)
+    );
+    // Disabling the active profile 2.
+    let (ok, o) = send(&changed(&ch, 2, "SilkSong", 0), &[]);
+    assert!(!ok);
+    assert_eq!(o, Outcome::ProfileDisabled);
+    assert_eq!(ch.read_slot(3).unwrap(), before, "nothing changed");
+    // Too long for any chip: refused in SETUP.
+    let long = vec![0u8; 8 + 20 + 480 + 1];
+    assert!(out(&long).is_err());
+    let st = ch.status().unwrap();
+    assert_eq!(
+        (st.last_seq, Outcome::from_byte(st.last_result)),
+        (0, Outcome::BadLength)
+    );
+}
+
+#[test]
+fn a_ram_slot_write_selects_and_goes_away_at_a_restart() {
+    let pad = s16_slots(InputMode::Xinput);
+    let ch = connect(&pad);
+    let base = ch.read_slot(1).unwrap();
+    // Profile 6 on a config with 4 extra slots: the firmware adds it.
+    let mut slot = changed(&ch, 6, "Hades", proto::Slot::ENABLED | proto::Slot::ACTIVE);
+    slot.pins[0].action = 5; // profile 1 gives GPIO 0 to an add-on
+    ch.write_slot(&slot).unwrap();
+    let st = ch.status().unwrap();
+    assert_eq!(st.profile, 6);
+    assert_eq!(st.last_command, proto::Command::WriteSlot as u8);
+    assert_eq!(st.last_seq, ch.last_seq());
+    assert!(st.profile_enabled(6));
+    let after = ch.read_slot(6).unwrap();
+    assert!(after.active() && after.enabled());
+    assert_eq!(after.label, "Hades");
+    assert_eq!(after.pins[6].action, 8);
+    assert_eq!(
+        after.pins[0].action, base.pins[0].action,
+        "profile 1's add-on pin"
+    );
+    assert_eq!(
+        ch.string(proto::string::profile_label(6))
+            .unwrap()
+            .as_deref(),
+        Some("Hades")
+    );
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    let st = ch.status().unwrap();
+    assert_eq!(st.profile, 2);
+    assert!(!st.profile_enabled(6));
+    assert!(!ch.read_slot(6).unwrap().enabled());
+}
+
+#[test]
+fn a_saved_slot_write_survives_a_restart() {
+    let pad = s16_slots(InputMode::Xinput);
+    let ch = connect(&pad);
+    let slot = changed(&ch, 4, "DKC 2", proto::Slot::ENABLED | proto::Slot::SAVE);
+    ch.write_slot(&slot).unwrap();
+    assert_eq!(ch.status().unwrap().profile, 2, "not selected");
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let after = connect(&pad).read_slot(4).unwrap();
+    assert_eq!((after.label.as_str(), after.pins[6].action), ("DKC 2", 8));
+}

@@ -19,6 +19,7 @@ use gamepadii_core::discovery::Device;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Env, Timeouts};
 use gamepadii_core::mode::BootMode;
+use gamepadii_core::slots::{SlotFile, SlotWrite};
 use gamepadii_core::sysfs::Root;
 use gamepadii_core::transport::http::{self, Http};
 use gamepadii_core::transport::mock::Mock;
@@ -201,6 +202,59 @@ fn main() -> ExitCode {
             let mut progress = reporter(format);
             let result = flow::profile_switch(&env, &profile, save, &mut progress)
                 .map(|r| output::profile_switch(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Profile {
+            command: ProfileCommand::Show { profile },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result =
+                flow::profile_show(&env, profile.as_ref()).map(|r| output::profile_show(style, &r));
+            finish(format, result)
+        }
+        Some(Command::Profile {
+            command:
+                ProfileCommand::Write {
+                    file,
+                    slot,
+                    select,
+                    save,
+                    label,
+                    no_backup,
+                },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let write = SlotWrite {
+                slot,
+                select,
+                save,
+                label,
+            };
+            let mut progress = reporter(format);
+            let result = read_slot_file(&file)
+                .and_then(|f| flow::profile_write(&env, &f, &write, &mut progress))
+                .map(|r| output::profile_write(style, &r));
             drop(progress);
             finish(format, result)
         }
@@ -449,6 +503,20 @@ fn control_opener<'a>(cli: &Cli, root: &'a Root) -> Option<Box<OpenControl<'a>>>
     }
 }
 
+/// A slot file for `profile write`: a path, or `-` for standard input.
+fn read_slot_file(path: &std::path::Path) -> Result<SlotFile, Error> {
+    let text = if path == std::path::Path::new("-") {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)
+            .map_err(|e| Error::io("reading standard input", e))?;
+        s
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| Error::io(format!("reading {}", path.display()), e))?
+    };
+    SlotFile::parse(&text)
+}
+
 /// `--mock-channel`: the firmware for `d`, in the mode its ids say.
 fn mock_control(
     kind: MockChannel,
@@ -473,6 +541,12 @@ fn mock_control(
             None => SimChannel::gamepadii(running),
         }
         .with_lights(),
+        MockChannel::Slots => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        }
+        .with_lights()
+        .with_slots(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the

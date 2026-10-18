@@ -4,7 +4,7 @@
 //! (`docs/design/control-channel.md`).
 //!
 //! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
-//!   commands, v1.3's board ID.
+//!   commands, v1.3's board ID, v1.4's profile slots.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -33,7 +33,8 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Status,
+    Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Slot,
+    SlotPin, Status,
 };
 
 /// How long a HELLO may take: short, since most pads have no channel.
@@ -277,8 +278,11 @@ impl Channel {
     }
 
     fn read(&self, cmd: Command, value: u16) -> Result<Vec<u8>, UsbError> {
-        self.t
-            .control_in(Setup::read(cmd, value), proto::MAX_LEN, TIMEOUT)
+        self.read_len(cmd, value, proto::MAX_LEN)
+    }
+
+    fn read_len(&self, cmd: Command, value: u16, len: u16) -> Result<Vec<u8>, UsbError> {
+        self.t.control_in(Setup::read(cmd, value), len, TIMEOUT)
     }
 
     fn fail(&self, e: UsbError, cmd: Command) -> Error {
@@ -488,6 +492,58 @@ impl Channel {
     pub fn set_lights(&self, set: &SetLights) -> Result<()> {
         self.need(Caps::LIGHTS, Command::SetLights)?;
         self.command(Command::SetLights, &set.encode(), "the lights change")
+    }
+
+    /// READ_SLOT and WRITE_SLOT need protocol 1.4 and [`Caps::SLOTS`]: a
+    /// 1.3 pad never gets them, whatever its capability bits say.
+    fn need_slots(&self, cmd: Command) -> Result<()> {
+        if self.hello.has_slots() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.4)",
+                cmd.name()
+            )))
+        }
+    }
+
+    /// READ_SLOT (v1.4): the pin mappings and label of profile `n` (1–6),
+    /// as the pad has them in RAM.
+    pub fn read_slot(&self, n: u8) -> Result<Slot> {
+        self.need_slots(Command::ReadSlot)?;
+        if !(1..=6).contains(&n) {
+            return Err(Error::Usage(format!("profile {n}: profiles are 1 to 6")));
+        }
+        let reply = self
+            .read_len(Command::ReadSlot, n.into(), proto::READ_SLOT_LEN)
+            .map_err(|e| self.fail(e, Command::ReadSlot))?;
+        Slot::parse(&reply)
+            .filter(|s| s.profile == n)
+            .ok_or_else(|| {
+                Error::Protocol(format!(
+                    "READ_SLOT {n} on {}: a reply of {} bytes that is not a slot of profile {n}",
+                    self.node(),
+                    reply.len()
+                ))
+            })
+    }
+
+    /// WRITE_SLOT (v1.4): writes `slot` in RAM, and enables, selects and
+    /// saves it as its flags say. All or nothing. The caller checks it
+    /// first ([`Slot::check`]) and then waits for STATUS: the reinit of an
+    /// active profile comes after the ACK.
+    pub fn write_slot(&self, slot: &Slot) -> Result<()> {
+        self.need_slots(Command::WriteSlot)?;
+        self.command(
+            Command::WriteSlot,
+            &slot.encode(),
+            &format!("the write of profile {}", slot.profile),
+        )
+    }
+
+    /// The sequence number of the last OUT command, as STATUS echoes it.
+    pub fn last_seq(&self) -> u16 {
+        self.seq.get()
     }
 
     /// Saves `mode` as the input mode and restarts into it.

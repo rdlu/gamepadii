@@ -21,6 +21,7 @@ use gamepadii_core::flow::{
 };
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
+use gamepadii_core::slots::{PinView, SlotReport, SlotWriteReport};
 use gamepadii_core::udev;
 use serde::Serialize;
 
@@ -876,6 +877,119 @@ pub fn profile_switch(style: Style, r: &ProfileReport) -> String {
                 "no (RAM only)".into()
             },
         ));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// `2 SilkSong`, or `6` with no label.
+fn slot_name(profile: u8, label: &str) -> String {
+    if label.is_empty() {
+        profile.to_string()
+    } else {
+        format!("{profile} {label}")
+    }
+}
+
+/// One pin of `profile show`: the GPIO, the action, and the key printed on
+/// the case (profile 1's button there).
+fn pin_line(p: &PinView) -> String {
+    let action = match (&p.action_name, p.action) {
+        (Some(n), 40) => format!("{n} {:#x}/{:#x}", p.button_mask, p.dpad_mask),
+        (Some(n), _) => n.clone(),
+        (None, a) => a.to_string(),
+    };
+    let action = if p.from_profile_1 {
+        "same as profile 1".to_string()
+    } else {
+        action
+    };
+    let key = p.key.map_or_else(|| "-".into(), |b| b.both());
+    format!("{:>4}  {action:<24}{key}", p.gpio)
+}
+
+pub fn profile_show(style: Style, r: &SlotReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let name = format!("Profile {}", slot_name(r.profile, &r.label));
+    let mut out = format!("{}\n", style.bold(&name));
+    let state = match (r.enabled, r.active) {
+        (true, true) => "enabled, active",
+        (true, false) => "enabled",
+        (false, true) => "disabled, active",
+        (false, false) => "disabled",
+    };
+    let pins = std::iter::once(format!("{:<6}{:<24}{}", "GPIO", "action", "key"))
+        .chain(r.pins.iter().map(pin_line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rw = vec![
+        ("state", state.to_string()),
+        ("board", r.board.clone().unwrap_or_else(|| "-".into())),
+        ("pins", pins),
+        ("via", format!("the control channel ({})", r.host)),
+    ];
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let what = match (r.active, r.saved) {
+        (true, true) => "written, active and saved",
+        (true, false) => "written and active",
+        (false, true) => "written and saved",
+        (false, false) => "written",
+    };
+    let name = format!("Profile {}", slot_name(r.profile, &r.label));
+    let mut out = format!("{} {what}\n", style.bold(&name));
+    let was = if r.before_label.is_empty() {
+        "no label".into()
+    } else {
+        r.before_label.clone()
+    };
+    let mut rw = vec![(
+        "was",
+        format!("{was}{}", if r.before_enabled { "" } else { ", disabled" }),
+    )];
+    rw.push((
+        "changed",
+        match r.changed_pins.len() {
+            0 => "no pins".into(),
+            n => format!(
+                "{n} pin{}: GPIO {}",
+                if n == 1 { "" } else { "s" },
+                r.changed_pins
+                    .iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+    ));
+    if !r.enabled {
+        rw.push(("enabled", "no".into()));
+    }
+    if let Some(a) = r.applied {
+        rw.push(("applied", if a { "yes" } else { "not yet" }.into()));
+    }
+    rw.push((
+        "saved",
+        if r.saved {
+            "yes, in flash".into()
+        } else {
+            "no (RAM only)".into()
+        },
+    ));
+    if let Some(b) = &r.backup {
+        rw.push(("backup", b.display().to_string()));
     }
     rw.push(("via", format!("the control channel ({})", r.host)));
     if let Some(n) = &r.note {
