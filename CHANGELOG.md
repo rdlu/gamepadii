@@ -191,8 +191,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the file before it sends a command. It backs up the profile first
   (`--no-backup` to skip), waits for the LEDs to apply it, and reads it
   back. A small protobuf codec (`pb`) reads and writes the profile.
-  `--mock-channel lights-profiles` simulates it. The build 48a9521
-  (control channel 1.7) counts as main.
+  `--mock-channel lights-profiles` simulates it. The builds 48a9521
+  (control channel 1.7) and a51474c (1.8) count as main.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.
