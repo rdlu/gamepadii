@@ -21,6 +21,7 @@
 //! device cache, so the key hints stay right after a `profile switch`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -2645,12 +2646,15 @@ pub fn input(env: &Env) -> Result<InputReport> {
 }
 
 /// What `input find-pin` asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct FindPin {
     /// Send PIN_SCAN 1 first, so a pin with no action can be read too.
     pub scan: bool,
     /// How long to wait for the press.
     pub timeout: Duration,
+    /// Set (by the CLI's Ctrl-C handler) to stop the search; the scan
+    /// then stops as on any other path.
+    pub stop: Option<&'static AtomicBool>,
 }
 
 impl FindPin {
@@ -2666,6 +2670,7 @@ impl Default for FindPin {
         Self {
             scan: false,
             timeout: Self::TIMEOUT,
+            stop: None,
         }
     }
 }
@@ -2681,7 +2686,7 @@ pub fn find_pin(env: &Env, find: &FindPin, progress: &mut dyn Progress) -> Resul
         ch.pin_scan(true)?;
     }
     progress.step(Step::PushButton { scan: find.scan });
-    let found = seek_press(env, &ch, find.timeout, progress);
+    let found = seek_press(env, &ch, find, progress);
     let stopped = find.scan.then(|| ch.pin_scan(false));
     let (gpio, released) = found?;
     let mut report = FoundPin::new(ch.node(), &names, gpio, find.scan, released);
@@ -2698,9 +2703,21 @@ pub fn find_pin(env: &Env, find: &FindPin, progress: &mut dyn Progress) -> Resul
 fn seek_press(
     env: &Env,
     ch: &Channel,
-    timeout: Duration,
+    find: &FindPin,
     progress: &mut dyn Progress,
 ) -> Result<(u8, bool)> {
+    let timeout = find.timeout;
+    let stopped = || find.stop.is_some_and(|s| s.load(Ordering::Relaxed));
+    let stop_error = || {
+        Error::NeedsUser(format!(
+            "stopped (Ctrl-C) before a button press{}",
+            if find.scan {
+                "; gamepadii stops the pin scan"
+            } else {
+                ""
+            }
+        ))
+    };
     let mut finder = Finder::new();
     // The spinner moves every 200 ms, not at each read.
     let mut shown = None;
@@ -2723,6 +2740,7 @@ fn seek_press(
         env.clock,
         poll,
         || match ch.read_input() {
+            _ if stopped() => Some(Err(stop_error())),
             Ok(snap) => finder.feed(snap.pressed).map(Ok),
             Err(e) => Some(Err(e)),
         },
@@ -2747,6 +2765,8 @@ fn seek_press(
         env.clock,
         poll,
         || match ch.read_input() {
+            // The pin is found: give it, released or not.
+            _ if stopped() => Some(Err(Error::NeedsUser(String::new()))),
             Ok(snap) if snap.is_pressed(gpio) => {
                 up = 0;
                 None
@@ -2760,6 +2780,7 @@ fn seek_press(
         |e| tick(Awaiting::Release, e, FindPin::RELEASE),
     );
     match released {
+        Some(Err(_)) if stopped() => Ok((gpio, false)),
         Some(r) => r.map(|()| (gpio, true)),
         None => Ok((gpio, false)),
     }

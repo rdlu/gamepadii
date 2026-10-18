@@ -408,6 +408,8 @@ fn main() -> ExitCode {
             let find = flow::FindPin {
                 scan,
                 timeout: Duration::from_secs(timeout),
+                // Ctrl-C must not leave the pin scan on.
+                stop: scan.then(ctrl_c::catch),
             };
             let mut progress = reporter(format);
             let result =
@@ -667,6 +669,37 @@ fn control_opener<'a>(cli: &Cli, root: &'a Root) -> Option<Box<OpenControl<'a>>>
 }
 
 /// A slot file for `profile write`: a path, or `-` for standard input.
+/// Ctrl-C while the pad has the pin scan on: the first one sets a flag, so
+/// the flow can stop the scan; the second one stops the program.
+mod ctrl_c {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(target_os = "linux")]
+    extern "C" fn on_sigint(_: libc::c_int) {
+        STOP.store(true, Ordering::Relaxed);
+        // SAFETY: signal() is async-signal-safe; SIG_DFL ends the program at
+        // the next Ctrl-C.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+    }
+
+    /// Installs the handler; the flag it sets.
+    pub fn catch() -> &'static AtomicBool {
+        #[cfg(target_os = "linux")]
+        // SAFETY: the handler only stores to an atomic and calls signal().
+        unsafe {
+            libc::signal(
+                libc::SIGINT,
+                on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+        &STOP
+    }
+}
+
 fn read_slot_file(path: &std::path::Path) -> Result<SlotFile, Error> {
     SlotFile::parse(&read_file(path)?)
 }

@@ -237,6 +237,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `input find-pin --scan` stops the pin scan at Ctrl-C. Before, the scan
+  stayed on until the firmware's 10 s timeout. The result says "pin scan
+  used, now off" in place of "on", which looked like the scan still ran.
+- The live test `hello_status_and_strings` accepts any protocol 1.x.
 - `info` no longer marks the saved profile as active after a RAM-only
   `profile switch` (#14). Web-config only knows the saved profile, so the
   rows are now labelled `saved` and `running` separately; the running one
