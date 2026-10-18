@@ -141,12 +141,14 @@ pub const KNOWN_BUILDS: &[(&str, FirmwareLine)] = &[
     ("8013b41", FirmwareLine::Main),
     // Our fork, on main: control channel v1.2 with the test boot option
     // (on the S16 since 2026-10-18, `v0.7.12-128-ga42b806-dirty`), and
-    // v1.3 with the board ID, v1.4 with the profile slots and v1.5 with the
-    // LED profiles (on the S16 since 2026-10-18, `v0.7.12-131-g77620cd`).
+    // v1.3 with the board ID, v1.4 with the profile slots, v1.5 with the
+    // LED profiles and v1.6 with the config blob (on the S16 since
+    // 2026-10-18, `v0.7.12-132-g61ab30f`).
     ("a42b806", FirmwareLine::Main),
     ("6160a03", FirmwareLine::Main),
     ("cb01f70", FirmwareLine::Main),
     ("77620cd", FirmwareLine::Main),
+    ("61ab30f", FirmwareLine::Main),
 ];
 
 /// Upstream main builds with none of our fixes: `getConfig` still hangs
