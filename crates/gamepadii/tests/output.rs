@@ -801,4 +801,36 @@ mod flows {
             output::leds_set(json(), &ram),
         ));
     }
+
+    #[test]
+    fn lights_outputs() {
+        use gamepadii_core::leds::{LedChange, Level, LightsPick};
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main");
+        let rig = Rig::new(SimPad::new(dir, InputMode::Xinput).with_lights());
+        let (read, _) = rig.run(|env| flow::leds(env, false, &mut Silent)).unwrap();
+        let set = |c: LedChange| rig.run(|env| flow::leds_set(env, &c)).unwrap();
+        let ram = set(LedChange {
+            lights_profile: Some(LightsPick::Number(3)),
+            brightness: Some(Level::Down),
+            ..LedChange::default()
+        });
+        let off = set(LedChange {
+            lights_profile: Some(LightsPick::Off),
+            save: true,
+            ..LedChange::default()
+        });
+        let (dark, _) = rig.run(|env| flow::leds(env, false, &mut Silent)).unwrap();
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            output::leds(human(), &read, None),
+            output::leds(human(), &dark, None),
+            output::waybar_leds(&read).to_line(),
+            output::waybar_leds(&dark).to_line(),
+            output::leds_set(human(), &ram),
+            output::leds_set(human(), &off),
+            output::leds(json(), &read, None),
+            output::leds_set(json(), &ram),
+        ));
+    }
 }

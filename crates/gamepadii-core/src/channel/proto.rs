@@ -1,5 +1,6 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
-//! §3, the v1.1 LED commands of §3.7, and the v1.3 board ID of §3.9):
+//! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
+//! and the v1.3 board ID of §3.9):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -31,6 +32,7 @@ pub const BOARD_ID_MINOR: u8 = 3;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
+pub const LIGHTS_STATUS_LEN: usize = 16;
 /// The token and sequence header every OUT payload starts with.
 pub const HEADER_LEN: usize = 8;
 
@@ -84,7 +86,7 @@ impl Setup {
     }
 }
 
-/// The v1 commands, and the v1.1 LED ones.
+/// The v1 commands, v1.1's LED ones and v1.2's lights ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
@@ -93,23 +95,29 @@ pub enum Command {
     String = 0x03,
     /// v1.1, behind [`Caps::LEDS`].
     LedStatus = 0x04,
+    /// v1.2, behind [`Caps::LIGHTS`].
+    LightsStatus = 0x05,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
     /// v1.1, behind [`Caps::LEDS`].
     SetLed = 0x13,
+    /// v1.2, behind [`Caps::LIGHTS`].
+    SetLights = 0x14,
 }
 
 impl Command {
-    pub const ALL: [Command; 8] = [
+    pub const ALL: [Command; 10] = [
         Command::Hello,
         Command::Status,
         Command::String,
         Command::LedStatus,
+        Command::LightsStatus,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
         Command::SetLed,
+        Command::SetLights,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -120,7 +128,11 @@ impl Command {
     pub fn is_in(self) -> bool {
         matches!(
             self,
-            Command::Hello | Command::Status | Command::String | Command::LedStatus
+            Command::Hello
+                | Command::Status
+                | Command::String
+                | Command::LedStatus
+                | Command::LightsStatus
         )
     }
 
@@ -134,6 +146,8 @@ impl Command {
             Command::SetInputMode => "SET_INPUT_MODE",
             Command::LedStatus => "LED_STATUS",
             Command::SetLed => "SET_LED",
+            Command::LightsStatus => "LIGHTS_STATUS",
+            Command::SetLights => "SET_LIGHTS",
         }
     }
 
@@ -143,7 +157,12 @@ impl Command {
             Command::SetProfile | Command::SetInputMode => Some(2),
             Command::Reboot => Some(1),
             Command::SetLed => Some(SET_LED_LEN),
-            Command::Hello | Command::Status | Command::String | Command::LedStatus => None,
+            Command::SetLights => Some(SET_LIGHTS_LEN),
+            Command::Hello
+            | Command::Status
+            | Command::String
+            | Command::LedStatus
+            | Command::LightsStatus => None,
         }
     }
 }
@@ -193,8 +212,11 @@ impl Caps {
     /// v1.1: LED_STATUS and SET_LED. Set only when the LEDs run
     /// (AnimationStation is enabled on the build and board).
     pub const LEDS: u32 = 1 << 8;
+    /// v1.2: LIGHTS_STATUS and SET_LIGHTS, main's lights profiles. Set only
+    /// when the LEDs run (`NeoPicoLEDAddon` is set up).
+    pub const LIGHTS: u32 = 1 << 9;
 
-    const NAMES: [(u32, &'static str); 9] = [
+    const NAMES: [(u32, &'static str); 10] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -204,6 +226,7 @@ impl Caps {
         (Self::CFG_READ, "cfg_read"),
         (Self::CFG_WRITE, "cfg_write"),
         (Self::LEDS, "leds"),
+        (Self::LIGHTS, "lights"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -540,6 +563,161 @@ impl SetLed {
     }
 }
 
+/// A LIGHTS_STATUS reply (v1.2): main's lights profile and brightness,
+/// and the effects of that profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LightsStatus {
+    /// [`LightsStatus::RUNNING`], [`LightsStatus::UNSAVED`],
+    /// [`LightsStatus::PREVIEW`].
+    pub flags: u8,
+    /// -1 off, or 0 to `profiles - 1` (`GetSavedMode()`).
+    pub profile: i8,
+    /// Bit n: profile n is enabled (`bEnabled`).
+    pub enabled_profiles: u8,
+    /// How many profiles there are: 4.
+    pub profiles: u8,
+    /// `animationOptions.brightness`, 0 to `brightness_steps`.
+    pub brightness: u8,
+    pub brightness_steps: u8,
+    /// `ledOptions.brightnessMaximum`, 0-255.
+    pub brightness_maximum: u8,
+    /// The effects and cycle times of `profile`; [`LightsStatus::NONE`]
+    /// when the lights are off.
+    pub idle_effect: u8,
+    pub pressed_effect: u8,
+    pub case_effect: u8,
+    pub idle_cycle_time: u8,
+    pub pressed_cycle_time: u8,
+    pub case_cycle_time: u8,
+    /// Seconds without input before the lights go dark; 0 is never.
+    pub idle_timeout_s: u16,
+}
+
+impl LightsStatus {
+    /// The lights run (always set in a reply).
+    pub const RUNNING: u8 = 1 << 0;
+    /// The profile or the brightness differs from the saved settings.
+    pub const UNSAVED: u8 = 1 << 1;
+    /// A web-config preview runs: SET_LIGHTS is BUSY.
+    pub const PREVIEW: u8 = 1 << 2;
+    /// An effect or cycle time when the lights are off.
+    pub const NONE: u8 = 255;
+
+    pub fn parse(reply: &[u8]) -> Option<LightsStatus> {
+        (reply.len() >= LIGHTS_STATUS_LEN).then(|| LightsStatus {
+            flags: reply[0],
+            profile: reply[1] as i8,
+            enabled_profiles: reply[2],
+            profiles: reply[3],
+            brightness: reply[4],
+            brightness_steps: reply[5],
+            brightness_maximum: reply[6],
+            idle_effect: reply[7],
+            pressed_effect: reply[8],
+            case_effect: reply[9],
+            idle_cycle_time: reply[10],
+            pressed_cycle_time: reply[11],
+            case_cycle_time: reply[12],
+            idle_timeout_s: u16_at(reply, 14),
+        })
+    }
+
+    pub fn encode(&self) -> [u8; LIGHTS_STATUS_LEN] {
+        let mut b = [0u8; LIGHTS_STATUS_LEN];
+        b[0] = self.flags;
+        b[1] = self.profile as u8;
+        b[2] = self.enabled_profiles;
+        b[3] = self.profiles;
+        b[4] = self.brightness;
+        b[5] = self.brightness_steps;
+        b[6] = self.brightness_maximum;
+        b[7] = self.idle_effect;
+        b[8] = self.pressed_effect;
+        b[9] = self.case_effect;
+        b[10] = self.idle_cycle_time;
+        b[11] = self.pressed_cycle_time;
+        b[12] = self.case_cycle_time;
+        b[14..16].copy_from_slice(&self.idle_timeout_s.to_le_bytes());
+        b
+    }
+
+    pub fn running(&self) -> bool {
+        self.flags & Self::RUNNING != 0
+    }
+
+    pub fn unsaved(&self) -> bool {
+        self.flags & Self::UNSAVED != 0
+    }
+
+    pub fn preview(&self) -> bool {
+        self.flags & Self::PREVIEW != 0
+    }
+
+    /// The lights profile, `None` when the lights are off.
+    pub fn on(&self) -> Option<u8> {
+        u8::try_from(self.profile).ok()
+    }
+
+    pub fn profile_enabled(&self, n: u8) -> bool {
+        n < self.profiles.min(8) && self.enabled_profiles & (1 << n) != 0
+    }
+}
+
+/// SET_LIGHTS's arguments, after the header.
+pub const SET_LIGHTS_LEN: usize = 4;
+
+/// A SET_LIGHTS (v1.2): the fields that are `Some` change, the rest stay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SetLights {
+    /// -1 off, or an enabled profile from 0.
+    pub profile: Option<i8>,
+    pub brightness: Option<u8>,
+    /// Save to flash; else RAM only.
+    pub persist: bool,
+}
+
+impl SetLights {
+    pub const PROFILE: u8 = 1 << 0;
+    pub const BRIGHTNESS: u8 = 1 << 1;
+    /// The mask bits v1.2 defines; any other is BAD_ARG.
+    pub const MASK: u8 = 0x03;
+
+    pub fn mask(&self) -> u8 {
+        let bit = |on: bool, b: u8| if on { b } else { 0 };
+        bit(self.profile.is_some(), Self::PROFILE)
+            | bit(self.brightness.is_some(), Self::BRIGHTNESS)
+    }
+
+    pub fn encode(&self) -> [u8; SET_LIGHTS_LEN] {
+        [
+            self.mask(),
+            self.profile.unwrap_or(0) as u8,
+            self.brightness.unwrap_or(0),
+            u8::from(self.persist),
+        ]
+    }
+
+    /// The firmware's reading of `args` (at least [`SET_LIGHTS_LEN`]
+    /// bytes): `None` for unknown mask bits or a persist byte other than
+    /// 0/1 (BAD_ARG).
+    pub fn parse(args: &[u8]) -> Option<SetLights> {
+        let (mask, persist) = (args[0], args[3]);
+        if mask & !Self::MASK != 0 || persist > 1 {
+            return None;
+        }
+        Some(SetLights {
+            profile: (mask & Self::PROFILE != 0).then_some(args[1] as i8),
+            brightness: (mask & Self::BRIGHTNESS != 0).then_some(args[2]),
+            persist: persist == 1,
+        })
+    }
+
+    /// Whether it changes nothing (a bare save, with `persist`).
+    pub fn is_empty(&self) -> bool {
+        self.mask() == 0
+    }
+}
+
 /// The result of the last command, in STATUS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -749,6 +927,69 @@ mod tests {
         assert_eq!(Command::SetLed.payload_len(), Some(8));
         assert_eq!(Caps(0x12f).names().last(), Some(&"leds"));
         assert!(Caps(0x12f).has(Caps::LEDS) && !Caps(0x2f).has(Caps::LEDS));
+    }
+
+    #[test]
+    fn v1_2_lights_commands() {
+        let s = Setup::read(Command::LightsStatus, 0);
+        assert_eq!((s.request_type, s.index), (TYPE_IN, 0x5005));
+        assert!(Command::LightsStatus.is_in() && !Command::SetLights.is_in());
+        assert_eq!(Setup::command(Command::SetLights).index, 0x5014);
+        assert_eq!(Command::from_byte(0x14), Some(Command::SetLights));
+        assert_eq!(Command::SetLights.payload_len(), Some(4));
+        assert_eq!(Caps(0x22f).names().last(), Some(&"lights"));
+        assert!(Caps(0x22f).has(Caps::LIGHTS) && !Caps(0x22f).has(Caps::LEDS));
+    }
+
+    #[test]
+    fn lights_status_round_trips() {
+        let s = LightsStatus {
+            flags: LightsStatus::RUNNING | LightsStatus::UNSAVED,
+            profile: 2,
+            enabled_profiles: 0b0111,
+            profiles: 4,
+            brightness: 7,
+            brightness_steps: 10,
+            brightness_maximum: 255,
+            idle_effect: 3,
+            pressed_effect: 4,
+            case_effect: 1,
+            idle_cycle_time: 5,
+            pressed_cycle_time: 0,
+            case_cycle_time: 9,
+            idle_timeout_s: 300,
+        };
+        let b = s.encode();
+        assert_eq!(b[1], 2);
+        assert_eq!(&b[14..16], &[0x2c, 0x01]);
+        assert_eq!(LightsStatus::parse(&b), Some(s));
+        assert_eq!(LightsStatus::parse(&b[..15]), None);
+        assert!(s.unsaved() && !s.preview());
+        assert_eq!(s.on(), Some(2));
+        assert!(s.profile_enabled(2) && !s.profile_enabled(3) && !s.profile_enabled(4));
+        let off = LightsStatus { profile: -1, ..s };
+        assert_eq!(off.encode()[1], 0xff);
+        assert_eq!(LightsStatus::parse(&off.encode()).unwrap().on(), None);
+    }
+
+    #[test]
+    fn set_lights_masks_what_it_sets() {
+        let off = SetLights {
+            profile: Some(-1),
+            ..SetLights::default()
+        };
+        assert_eq!(off.encode(), [0x01, 0xff, 0, 0]);
+        assert_eq!(SetLights::parse(&off.encode()), Some(off));
+        let both = SetLights {
+            profile: Some(1),
+            brightness: Some(4),
+            persist: true,
+        };
+        assert_eq!(both.encode(), [0x03, 1, 4, 1]);
+        assert_eq!(SetLights::parse(&both.encode()), Some(both));
+        assert!(SetLights::default().is_empty());
+        assert_eq!(SetLights::parse(&[0x04, 0, 0, 0]), None);
+        assert_eq!(SetLights::parse(&[0x01, 0, 0, 2]), None);
     }
 
     #[test]

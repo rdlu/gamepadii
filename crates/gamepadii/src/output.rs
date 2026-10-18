@@ -998,8 +998,28 @@ fn on_off(b: Option<bool>) -> String {
     }
 }
 
+/// A lights profile: `profile 2`, or `off`.
+fn lights_profile(s: &LedState) -> String {
+    match (s.lights_off, s.lights_profile) {
+        (Some(true), _) => "off".into(),
+        (_, Some(n)) => format!("profile {n}"),
+        _ => "-".into(),
+    }
+}
+
 /// The rows of an LED state.
 fn led_rows(s: &LedState, via: Route) -> Vec<(&'static str, String)> {
+    if s.lights_off.is_some() {
+        // Main firmware: no animation, colours or theme of the v0.7.12 kind.
+        let mut rw = vec![
+            ("lights", lights_profile(s)),
+            ("brightness", brightness(s, via)),
+        ];
+        if s.unsaved == Some(true) {
+            rw.push(("saved", "no: changed since the last save (RAM only)".into()));
+        }
+        return rw;
+    }
     let mut rw = vec![
         ("animation", named(&s.animation, via)),
         ("brightness", brightness(s, via)),
@@ -1037,7 +1057,8 @@ fn theme_colors(c: &[ButtonColor]) -> String {
         .join("\n")
 }
 
-/// Main firmware's LED profiles: one line each, the start-up one marked.
+/// Main firmware's lights profiles: one line each, the one that runs
+/// marked.
 fn lights_rows(l: &Lights) -> Vec<(&'static str, String)> {
     let name = |n: &Option<Named>| n.as_ref().map_or_else(|| "-".into(), Named::display);
     let profiles = l
@@ -1046,10 +1067,14 @@ fn lights_rows(l: &Lights) -> Vec<(&'static str, String)> {
         .map(|p| {
             let mark = if l.profile == Some(p.index) { "*" } else { " " };
             let off = if p.enabled == Some(false) {
-                ", off"
+                ", disabled"
             } else {
                 ""
             };
+            if p.idle_effect.is_none() && p.pressed_effect.is_none() && p.case_effect.is_none() {
+                // The channel gives the effects of the running profile only.
+                return format!("{mark}{}{off}", p.index);
+            }
             format!(
                 "{mark}{} idle {}, pressed {}, case {}{off}",
                 p.index,
@@ -1060,7 +1085,7 @@ fn lights_rows(l: &Lights) -> Vec<(&'static str, String)> {
         })
         .collect::<Vec<_>>();
     let mut rw = vec![(
-        "led profiles",
+        "profiles",
         if profiles.is_empty() {
             "-".into()
         } else {
@@ -1068,7 +1093,7 @@ fn lights_rows(l: &Lights) -> Vec<(&'static str, String)> {
         },
     )];
     if let Some(n) = l.light_count {
-        rw.push(("lights", n.to_string()));
+        rw.push(("light count", n.to_string()));
     }
     if let Some(s) = l.idle_timeout_s {
         let v = if s == 0 {
@@ -1091,7 +1116,7 @@ pub fn leds(style: Style, r: &LedReport, trip: Option<&Trip>) -> String {
     };
     let mut out = format!("{}\n", style.bold(head));
     let mut rw = led_rows(&r.state, r.via);
-    if r.lights.is_some() {
+    if r.lights.is_some() && r.state.lights_off.is_none() {
         // Main firmware: no animation, colours or theme of the v0.7.12 kind.
         rw.retain(|(k, _)| *k == "brightness");
     }
@@ -1150,6 +1175,7 @@ pub fn leds_set(style: Style, r: &LedSetReport) -> String {
                 named(&r.before.button_color, r.via),
                 named(&r.leds.button_color, r.via),
             ),
+            "lights_profile" => ("lights", lights_profile(&r.before), lights_profile(&r.leds)),
             _ => (
                 "theme",
                 named(&r.before.theme, r.via),
@@ -1182,7 +1208,8 @@ pub fn leds_set(style: Style, r: &LedSetReport) -> String {
 pub const LED_GLYPH: &str = "\u{f0335}";
 
 /// `leds --format waybar`: the brightness in the bar, the rest in the
-/// tooltip; the class is the animation's name (`custom-theme`, ...).
+/// tooltip; the class is the animation's name (`custom-theme`, ...), or
+/// on main the lights profile (`lights-2`, `lights-off`).
 pub fn waybar_leds(r: &LedReport) -> Waybar {
     let s = &r.state;
     let text = match (s.brightness, s.brightness_steps) {
@@ -1190,11 +1217,12 @@ pub fn waybar_leds(r: &LedReport) -> Waybar {
         (Some(b), None) => format!("{LED_GLYPH} {b}"),
         _ => LED_GLYPH.to_string(),
     };
-    let class = s
-        .animation
-        .as_ref()
-        .and_then(|a| a.name.clone())
-        .unwrap_or_else(|| "leds".into());
+    let class = match (s.lights_off, &s.animation) {
+        (Some(true), _) => "lights-off".into(),
+        (Some(false), _) => format!("lights-{}", level(s.lights_profile)),
+        (None, Some(a)) => a.name.clone().unwrap_or_else(|| "leds".into()),
+        (None, None) => "leds".into(),
+    };
     let mut tooltip = "LEDs".to_string();
     for (label, value) in led_rows(s, r.via) {
         tooltip.push_str(&format!("\n{label}: {value}"));

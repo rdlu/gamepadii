@@ -468,6 +468,11 @@ fn mock_control(
             None => SimChannel::gamepadii(running),
         }
         .with_leds(),
+        MockChannel::Lights => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        }
+        .with_lights(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the

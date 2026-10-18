@@ -750,3 +750,170 @@ fn a_new_node_gets_a_moment_for_its_acl() {
     assert!(matches!(r, Err(UsbError::Gone)));
     assert_eq!(clock.elapsed(), start);
 }
+
+// ---- v1.2: the lights commands on main (§3.8) ---------------------------------
+
+fn main_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main")
+}
+
+/// The S16 on a main-line build, in `mode`.
+fn s16_lights(mode: InputMode) -> Arc<SimPad> {
+    Arc::new(SimPad::new(main_dir(), mode).with_lights())
+}
+
+#[test]
+fn a_main_build_has_the_lights_commands_and_not_the_led_ones() {
+    let ch = connect(&s16_lights(InputMode::Xinput));
+    assert_eq!((ch.hello().major, ch.hello().minor), (1, 2));
+    assert!(ch.caps().has(Caps::LIGHTS) && !ch.caps().has(Caps::LEDS));
+    assert_eq!(ch.caps().0, 0x22f);
+    assert!(ch.hello().boots(InputMode::Switch2Pro));
+    let l = ch.lights_status().unwrap();
+    assert!(l.running() && !l.unsaved() && !l.preview());
+    assert_eq!((l.profile, l.enabled_profiles, l.profiles), (0, 0b1111, 4));
+    assert_eq!(
+        (l.brightness, l.brightness_steps, l.brightness_maximum),
+        (5, 10, 128)
+    );
+    // Profile 0 of the fixture: rainbow synced, idle and case.
+    assert_eq!((l.idle_effect, l.pressed_effect, l.case_effect), (1, 0, 1));
+    assert_eq!(l.idle_cycle_time, 0);
+    let e = ch.led_status().unwrap_err();
+    assert!(e.to_string().contains("no LED_STATUS"), "{e}");
+    // On the wire, main doesn't know the v1.1 commands.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights();
+    let r = sim.control_in(Setup::read(proto::Command::LedStatus, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = sim.token;
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLed),
+        &proto::payload(token, 9, &[2, 0, 3, 0, 0, 0, 0, 0]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(sim.status().last_seq, 0, "rejected in SETUP");
+}
+
+#[test]
+fn a_v1_1_build_has_no_lights_commands() {
+    let ch = connect(&s16_leds(InputMode::Xinput));
+    let e = ch.lights_status().unwrap_err();
+    assert!(e.to_string().contains("no LIGHTS_STATUS"), "{e}");
+    let e = ch.set_lights(&channel::SetLights::default()).unwrap_err();
+    assert!(e.to_string().contains("no SET_LIGHTS"), "{e}");
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    let r = sim.control_in(Setup::read(proto::Command::LightsStatus, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = sim.token;
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLights),
+        &proto::payload(token, 9, &[1, 0, 0, 0]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let st = sim.status();
+    assert_eq!((st.last_seq, st.last_command), (0, 0x14));
+}
+
+#[test]
+fn main_without_leds_refuses_set_lights_after_the_length_check() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    sim.lights_limits.running = false;
+    let mut sim = sim.with_lights();
+    assert!(!sim.caps.has(Caps::LIGHTS));
+    let r = sim.control_in(Setup::read(proto::Command::LightsStatus, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(
+        sim.status().last_command,
+        0,
+        "an IN changes no STATUS field"
+    );
+    let token = sim.token;
+    let out = |sim: &mut SimChannel, token, args: &[u8]| {
+        let r = sim.control_out(
+            Setup::command(proto::Command::SetLights),
+            &proto::payload(token, 7, args),
+        );
+        assert!(matches!(r, Err(UsbError::Stall)));
+        Outcome::from_byte(sim.status().last_result)
+    };
+    assert_eq!(out(&mut sim, token ^ 1, &[1, 0, 0, 0]), Outcome::BadToken);
+    assert_eq!(out(&mut sim, token, &[1, 0, 0]), Outcome::BadLength);
+    assert_eq!(out(&mut sim, token, &[1, 0, 0, 0]), Outcome::Unsupported);
+    assert_eq!(sim.status().last_seq, 7);
+}
+
+#[test]
+fn set_lights_checks_in_the_spec_order_and_changes_all_or_nothing() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights();
+    sim.lights_limits.profiles[2].enabled = false;
+    let token = sim.token;
+    let mut out = |args: &[u8]| {
+        let r = sim.control_out(
+            Setup::command(proto::Command::SetLights),
+            &proto::payload(token, 3, args),
+        );
+        let st = sim.status();
+        (r.is_ok(), Outcome::from_byte(st.last_result), sim.lights)
+    };
+    let before = out(&[0, 0, 0, 0]).2;
+    // Mask bits 2-7, a persist byte above 1, a disabled or unknown profile,
+    // a brightness past the steps: BAD_ARG, and nothing changes.
+    for args in [
+        [0x04, 0, 0, 0],
+        [0x01, 0, 0, 2],
+        [0x03, 2, 3, 0],
+        [0x01, 4, 0, 0],
+        [0x01, 0xfe, 0, 0],
+        [0x03, 1, 11, 0],
+    ] {
+        let (ok, o, now) = out(&args);
+        assert!(!ok, "{args:?}");
+        assert_eq!(o, Outcome::BadArg, "{args:?}");
+        assert_eq!(now, before, "{args:?}");
+    }
+    let (ok, _, now) = out(&[0x03, 0xff, 10, 0]);
+    assert!(ok);
+    assert_eq!((now.profile, now.brightness), (-1, 10));
+    // Off: the effects read 255.
+    let l = sim.lights_status();
+    assert_eq!(l.on(), None);
+    assert_eq!(l.idle_effect, proto::LightsStatus::NONE);
+    assert!(l.unsaved());
+    // A web-config preview: BUSY, after the argument checks.
+    sim.lights_limits.preview = true;
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLights),
+        &proto::payload(token, 4, &[0x01, 0, 0, 0]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(Outcome::from_byte(sim.status().last_result), Outcome::Busy);
+    assert!(sim.lights_status().preview());
+}
+
+#[test]
+fn a_ram_lights_change_is_lost_on_reboot_and_a_saved_one_is_not() {
+    let pad = s16_lights(InputMode::Xinput);
+    let ch = connect(&pad);
+    ch.set_lights(&channel::SetLights {
+        profile: Some(3),
+        ..Default::default()
+    })
+    .unwrap();
+    let l = ch.lights_status().unwrap();
+    assert_eq!((l.profile, l.idle_effect, l.pressed_effect), (3, 14, 4));
+    assert!(l.unsaved());
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    assert_eq!(ch.lights_status().unwrap().profile, 0);
+    ch.set_lights(&channel::SetLights {
+        brightness: Some(2),
+        persist: true,
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(!ch.lights_status().unwrap().unsaved());
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    assert_eq!(connect(&pad).lights_status().unwrap().brightness, 2);
+}

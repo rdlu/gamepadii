@@ -3,7 +3,8 @@
 //! with no descriptor change and no kernel driver detached
 //! (`docs/design/control-channel.md`).
 //!
-//! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.3's board ID.
+//! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
+//!   commands, v1.3's board ID.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -31,7 +32,9 @@ use crate::error::{Error, Result};
 use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
-pub use proto::{Caps, Command, Hello, LedStatus, Outcome, SetLed, Setup, Status};
+pub use proto::{
+    Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Status,
+};
 
 /// How long a HELLO may take: short, since most pads have no channel.
 pub const HELLO_TIMEOUT: Duration = Duration::from_millis(200);
@@ -461,6 +464,30 @@ impl Channel {
     pub fn set_led(&self, set: &SetLed) -> Result<()> {
         self.need(Caps::LEDS, Command::SetLed)?;
         self.command(Command::SetLed, &set.encode(), "the LED change")
+    }
+
+    /// LIGHTS_STATUS (v1.2, main): the lights profile and brightness
+    /// running now.
+    pub fn lights_status(&self) -> Result<LightsStatus> {
+        self.need(Caps::LIGHTS, Command::LightsStatus)?;
+        let reply = self
+            .read(Command::LightsStatus, 0)
+            .map_err(|e| self.fail(e, Command::LightsStatus))?;
+        LightsStatus::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "LIGHTS_STATUS on {}: {} bytes, expected {}",
+                self.node(),
+                reply.len(),
+                proto::LIGHTS_STATUS_LEN
+            ))
+        })
+    }
+
+    /// SET_LIGHTS (v1.2, main): changes the fields `set` has, live; saved
+    /// to flash only with `set.persist`. All or nothing.
+    pub fn set_lights(&self, set: &SetLights) -> Result<()> {
+        self.need(Caps::LIGHTS, Command::SetLights)?;
+        self.command(Command::SetLights, &set.encode(), "the lights change")
     }
 
     /// Saves `mode` as the input mode and restarts into it.

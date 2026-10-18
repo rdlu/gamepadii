@@ -811,3 +811,58 @@ fn leds_exit_codes() {
     assert_eq!(v["via"], "web_config");
     assert_eq!(v["custom_theme_colors"][4]["button"], "B1");
 }
+
+#[test]
+fn lights_exit_codes() {
+    // The fork's main line (v1.2): the lights commands.
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "lights",
+            "--mock-api",
+            "%s16-main",
+        ];
+        a.extend_from_slice(args);
+        webconfig(&a)
+    };
+    let (code, stdout, _) = run(&["leds"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("lights        profile 0"), "{stdout}");
+    let (code, stdout, _) = run(&[
+        "--json",
+        "leds",
+        "set",
+        "--lights-profile",
+        "off",
+        "--brightness",
+        "up",
+    ]);
+    assert_eq!(code, 0, "{stdout}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        v["changed"],
+        serde_json::json!(["lights_profile", "brightness"])
+    );
+    assert_eq!(v["leds"]["lights_off"], true);
+    assert_eq!(v["leds"]["brightness"], 6);
+    // The pad keeps its state for the whole process only, so a new run
+    // starts from the fixture again.
+    let (code, stdout, _) = run(&["leds", "--format", "waybar"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["class"], "lights-0");
+    // A v0.7.12 option on main, an unknown lights profile: 3.
+    let (code, _, stderr) = run(&["leds", "set", "--animation", "chase"]);
+    assert_eq!(code, 3);
+    assert!(
+        stderr.contains("main firmware has lights profiles"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run(&["leds", "set", "--lights-profile", "7"]);
+    assert_eq!(code, 3);
+    assert!(stderr.contains("is not on this pad"), "{stderr}");
+    let (code, _, stderr) = run(&["leds", "set", "--lights-profile", "dim"]);
+    assert_eq!(code, 3, "{stderr}");
+}

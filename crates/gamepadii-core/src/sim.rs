@@ -153,6 +153,13 @@ impl SimPad {
         self.with_channel().channel(|c| *c = c.clone().with_leds())
     }
 
+    /// The fork's main line with control channel v1.2: the lights
+    /// commands, from the mock's `getAnimationProtoOptions` when it has one.
+    pub fn with_lights(self) -> Self {
+        self.with_channel()
+            .channel(|c| *c = c.clone().with_lights())
+    }
+
     /// Changes the simulated firmware (locks, capabilities, garbage).
     pub fn channel(self, f: impl FnOnce(&mut SimChannel)) -> Self {
         f(&mut self.lock().channel);

@@ -60,7 +60,9 @@ note          already at the brightest level (5)
       "name": "static-rainbow"
     },
     "custom_theme": true,
-    "unsaved": false
+    "unsaved": false,
+    "lights_off": null,
+    "lights_profile": null
   },
   "leds": {
     "running": true,
@@ -84,7 +86,9 @@ note          already at the brightest level (5)
       "name": "tekken"
     },
     "custom_theme": true,
-    "unsaved": true
+    "unsaved": true,
+    "lights_off": null,
+    "lights_profile": null
   },
   "changed": [
     "animation",

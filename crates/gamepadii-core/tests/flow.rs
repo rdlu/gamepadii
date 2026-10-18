@@ -12,7 +12,7 @@ use gamepadii_core::cache::{self, DeviceCache};
 use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
-use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, Pick};
+use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, LightsPick, Pick};
 use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::sim::{self, SimPad, UserAction};
 use gamepadii_core::transport::Method;
@@ -2380,6 +2380,180 @@ fn leds_set_refuses_what_the_pad_lacks() {
     let e = rig.run(flow::leds_now).unwrap_err();
     assert_eq!(e.exit_code(), exit::NEEDS_USER);
     assert!(reboots(&rig).is_empty());
+}
+
+// ---- lights on main (control channel v1.2) ------------------------------------
+
+fn main_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main")
+}
+
+fn main_lights(mode: InputMode) -> Rig {
+    Rig::new(SimPad::new(main_dir(), mode).with_lights())
+}
+
+/// The IN commands the pad got.
+fn reads(rig: &Rig) -> Vec<u8> {
+    rig.pad
+        .control_log()
+        .into_iter()
+        .filter(|s| s.setup.is_in())
+        .map(|s| s.setup.command_byte())
+        .collect()
+}
+
+#[test]
+fn leds_on_main_read_lights_status_with_no_reboot() {
+    let rig = main_lights(InputMode::Xinput);
+    let (r, trip) = leds_read(&rig).unwrap();
+    assert_eq!(trip, None);
+    assert_eq!(r.via, flow::Route::Control);
+    assert_eq!(
+        (r.state.lights_off, r.state.lights_profile),
+        (Some(false), Some(0))
+    );
+    assert_eq!(r.state.brightness, Some(5));
+    assert_eq!(r.state.brightness_steps, Some(10));
+    assert_eq!(r.state.animation, None);
+    let lights = r.lights.unwrap();
+    assert_eq!(lights.profile, Some(0));
+    assert_eq!(
+        lights.profiles[0].idle_effect.as_ref().unwrap().display(),
+        "rainbow-synced (1)"
+    );
+    assert_eq!(lights.profiles[1].idle_effect, None);
+    assert_eq!(r.note, None);
+    assert!(reads(&rig).contains(&0x05) && !reads(&rig).contains(&0x04));
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+    // waybar's read takes the same path.
+    let r = rig.run(flow::leds_now).unwrap();
+    assert_eq!(r.state.lights_profile, Some(0));
+}
+
+#[test]
+fn leds_set_on_main_is_set_lights() {
+    let rig = main_lights(InputMode::Xinput);
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            lights_profile: Some(LightsPick::Number(3)),
+            brightness: Some(Level::Up),
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(r.changed, ["lights_profile", "brightness"]);
+    assert!(r.verified && !r.saved);
+    assert_eq!(
+        (r.before.lights_profile, r.leds.lights_profile),
+        (Some(0), Some(3))
+    );
+    assert_eq!(r.leds.brightness, Some(6));
+    assert!(r.note.unwrap().contains("not saved"));
+    assert_eq!(
+        rig.pad.firmware().saved_lights.profile,
+        0,
+        "flash untouched"
+    );
+    assert_eq!(rig.channel_commands(), [0x14]);
+    // Off, and saved.
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            lights_profile: Some(LightsPick::Off),
+            save: true,
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(r.saved && r.verified);
+    assert_eq!(
+        (r.leds.lights_off, r.leds.lights_profile),
+        (Some(true), None)
+    );
+    assert_eq!(r.note, None);
+    let saved = rig.pad.firmware().saved_lights;
+    assert_eq!((saved.profile, saved.brightness), (-1, 6));
+    // Nothing left to save: --save alone sends nothing.
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            save: true,
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(r.changed.is_empty() && !r.saved);
+    assert_eq!(rig.channel_commands(), [0x14, 0x14]);
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn leds_set_on_main_refuses_what_main_lacks() {
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| c.lights_limits.profiles[1].enabled = false),
+    );
+    for (change, says) in [
+        (
+            LedChange {
+                animation: pick("rainbow"),
+                ..LedChange::default()
+            },
+            "option --animation: main firmware",
+        ),
+        (
+            LedChange {
+                lights_profile: Some(LightsPick::Number(1)),
+                ..LedChange::default()
+            },
+            "lights profile 1 is disabled; this pad has 0, 2, 3, off",
+        ),
+        (
+            LedChange {
+                brightness: Some(Level::To(11)),
+                ..LedChange::default()
+            },
+            "levels 0 to 10",
+        ),
+    ] {
+        let e = leds_set(&rig, &change).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    // A web-config preview runs: the user stops it first.
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| c.lights_limits.preview = true),
+    );
+    let (r, _) = leds_read(&rig).unwrap();
+    assert!(r.note.unwrap().contains("preview"));
+    let e = leds_set(
+        &rig,
+        &LedChange {
+            brightness: Some(Level::Down),
+            ..LedChange::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("stop the preview"), "{e}");
+    assert!(rig.channel_commands().is_empty());
+    // A v1.1 pad has no lights profiles.
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let e = leds_set(
+        &rig,
+        &LedChange {
+            lights_profile: Some(LightsPick::Off),
+            ..LedChange::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(rig.channel_commands().is_empty());
 }
 
 // ---- the board ID (control channel v1.3) -------------------------------------

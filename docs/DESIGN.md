@@ -218,13 +218,12 @@ main, so Pico 2 builds need the main line (#21).
 
 | Branch | Base | What it has |
 |---|---|---|
-| `gamepadii/control-channel-led` | v0.7.12 | the fixes, control channel v1.1 (LEDs). On the S16 now (`v0.7.12-7-g0a23ea3`). |
-| `gamepadii/main` | upstream main | the fixes, control channel v1.2 (lights). Not tested yet (#21). |
+| `gamepadii/main` | upstream main | the fixes, control channel v1.2 (lights) and v1.3 (board ID). On the S16 now (`v0.7.12-128-ga42b806`). The tests of #21 step 5 are not complete. |
+| `gamepadii/control-channel-led` | v0.7.12 | retired: the fixes, control channel v1.1 (LEDs). The tags `archive/v0.7.12/*` keep its branch heads. |
 
-The main line becomes our main firmware line when its S16 test passes.
-The v0.7.12 line then gets only fixes. Older branches
-(`gamepadii/freeze-investigation`, `gamepadii/control-channel`) are kept
-for reference.
+The main line is our one firmware line. gamepadii still supports pads on
+the v0.7.12 line. Older branches (`gamepadii/freeze-investigation`,
+`gamepadii/control-channel`) are kept for reference.
 
 ### The fixes
 
@@ -369,8 +368,10 @@ indexes), and the lights are clusters tied to GPIO pins
 `getAnimationProtoOptions` and `getLightsDataOptions` and reports
 `lights` (the start-up profile, each profile's effects by name, the light
 count, the idle timeout); v0.7.12's animation, colours and theme stay
-`null`, never mapped. The control channel's LED commands speak v0.7.12's
-model, so `leds set` on main waits for the channel's port (#21 step 2).
+`null`, never mapped. Over the channel, main has the v1.2 lights commands
+in place of v0.7.12's LED commands: `leds` reads LIGHTS_STATUS and `leds
+set --lights-profile N|off --brightness ...` sends SET_LIGHTS. v1.2 does
+not change the effects of a profile.
 
 **To verify on a main pad** (the main session's captures replace the
 synthetic fixtures): every allowlisted getter's real shape and its answer

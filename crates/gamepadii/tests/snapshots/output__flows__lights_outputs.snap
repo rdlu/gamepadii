@@ -1,0 +1,154 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::leds(human(), &read, None),\noutput::leds(human(), &dark, None), output::waybar_leds(&read).to_line(),\noutput::waybar_leds(&dark).to_line(), output::leds_set(human(), &ram),\noutput::leds_set(human(), &off), output::leds(json(), &read, None),\noutput::leds_set(json(), &ram),)"
+---
+LEDs
+lights        profile 0
+brightness    5 of 10 (maximum 128/255)
+profiles      *0 idle rainbow-synced (1), pressed static-color (0), case rainbow-synced (1)
+               1
+               2
+               3
+idle timeout  never
+via           the control channel (/dev/bus/usb/003/007)
+
+LEDs
+lights        off
+brightness    4 of 10 (maximum 128/255)
+profiles       0
+               1
+               2
+               3
+idle timeout  never
+via           the control channel (/dev/bus/usb/003/007)
+
+{"text":"󰌵 5/10","tooltip":"LEDs\nlights: profile 0\nbrightness: 5 of 10 (maximum 128/255)","class":"lights-0","alt":"lights-0"}
+{"text":"󰌵 4/10","tooltip":"LEDs\nlights: off\nbrightness: 4 of 10 (maximum 128/255)","class":"lights-off","alt":"lights-off"}
+LEDs changed
+lights        profile 3, was profile 0
+brightness    4 of 10, was 5
+saved         no (RAM only)
+via           the control channel (/dev/bus/usb/003/007)
+note          not saved: the pad goes back to its saved LED settings when it restarts, unless something saves its settings first (any hotkey, turbo or saved profile change does); --save keeps it
+
+LEDs changed and saved
+lights        off, was profile 3
+saved         yes, in flash
+via           the control channel (/dev/bus/usb/003/007)
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "running": true,
+  "animation": null,
+  "brightness": 5,
+  "brightness_steps": 10,
+  "brightness_maximum": 128,
+  "static_color": null,
+  "button_color": null,
+  "theme": null,
+  "custom_theme": null,
+  "unsaved": false,
+  "lights_off": false,
+  "lights_profile": 0,
+  "custom_theme_colors": null,
+  "lights": {
+    "profile": 0,
+    "profiles": [
+      {
+        "index": 0,
+        "enabled": true,
+        "idle_effect": {
+          "index": 1,
+          "name": "rainbow-synced"
+        },
+        "pressed_effect": {
+          "index": 0,
+          "name": "static-color"
+        },
+        "case_effect": {
+          "index": 1,
+          "name": "rainbow-synced"
+        },
+        "idle_cycle_time": 0,
+        "pressed_cycle_time": 0,
+        "case_cycle_time": 0
+      },
+      {
+        "index": 1,
+        "enabled": true,
+        "idle_effect": null,
+        "pressed_effect": null,
+        "case_effect": null,
+        "idle_cycle_time": null,
+        "pressed_cycle_time": null,
+        "case_cycle_time": null
+      },
+      {
+        "index": 2,
+        "enabled": true,
+        "idle_effect": null,
+        "pressed_effect": null,
+        "case_effect": null,
+        "idle_cycle_time": null,
+        "pressed_cycle_time": null,
+        "case_cycle_time": null
+      },
+      {
+        "index": 3,
+        "enabled": true,
+        "idle_effect": null,
+        "pressed_effect": null,
+        "case_effect": null,
+        "idle_cycle_time": null,
+        "pressed_cycle_time": null,
+        "case_cycle_time": null
+      }
+    ],
+    "idle_timeout_s": 0,
+    "light_count": null
+  },
+  "note": null,
+  "trip": null
+}
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "before": {
+    "running": true,
+    "animation": null,
+    "brightness": 5,
+    "brightness_steps": 10,
+    "brightness_maximum": 128,
+    "static_color": null,
+    "button_color": null,
+    "theme": null,
+    "custom_theme": null,
+    "unsaved": false,
+    "lights_off": false,
+    "lights_profile": 0
+  },
+  "leds": {
+    "running": true,
+    "animation": null,
+    "brightness": 4,
+    "brightness_steps": 10,
+    "brightness_maximum": 128,
+    "static_color": null,
+    "button_color": null,
+    "theme": null,
+    "custom_theme": null,
+    "unsaved": true,
+    "lights_off": false,
+    "lights_profile": 3
+  },
+  "changed": [
+    "lights_profile",
+    "brightness"
+  ],
+  "saved": false,
+  "verified": true,
+  "note": "not saved: the pad goes back to its saved LED settings when it restarts, unless something saves its settings first (any hotkey, turbo or saved profile change does); --save keeps it"
+}
