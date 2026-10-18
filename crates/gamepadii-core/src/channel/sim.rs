@@ -74,10 +74,11 @@ impl Default for SimLeds {
 /// What the LED values are checked against, and the fixed flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimLedLimits {
-    /// AnimationStation runs.
+    /// The LEDs are set up (`dataPin >= 0`), so AnimationStation runs: the
+    /// LED capability is only advertised then.
     pub running: bool,
+    /// `hasCustomTheme`: the custom-theme effect (4) is there too.
     pub custom_theme: bool,
-    pub animations: u8,
     pub brightness_steps: u8,
     pub brightness_maximum: u8,
     pub colors: u8,
@@ -85,13 +86,12 @@ pub struct SimLedLimits {
 }
 
 impl Default for SimLedLimits {
-    /// v0.7.12 on the S16: 5 effects, 5 steps up to 100, 16 colours, 20
-    /// static themes.
+    /// v0.7.12 on the S16: 5 effects with the custom theme, 5 steps up to
+    /// 100, 16 colours, 20 static themes.
     fn default() -> Self {
         Self {
             running: true,
             custom_theme: true,
-            animations: 5,
             brightness_steps: 5,
             brightness_maximum: 100,
             colors: 16,
@@ -99,6 +99,23 @@ impl Default for SimLedLimits {
         }
     }
 }
+
+impl SimLedLimits {
+    /// The effects the firmware cycles through: 4, and the custom theme
+    /// when there is one.
+    pub fn animations(&self) -> u8 {
+        4 + u8::from(self.custom_theme)
+    }
+}
+
+/// The firmware's names for the effects (STRING `0x20 + n`).
+const EFFECT_NAMES: [&str; 5] = [
+    "EFFECT_STATIC_COLOR",
+    "EFFECT_RAINBOW",
+    "EFFECT_CHASE",
+    "EFFECT_STATIC_THEME",
+    "EFFECT_CUSTOM_THEME",
+];
 
 #[derive(Debug, Clone)]
 pub struct SimChannel {
@@ -174,10 +191,13 @@ impl SimChannel {
         }
     }
 
-    /// A v1.1 build: protocol minor 1, with the LED commands.
+    /// A v1.1 build: protocol minor 1, with the LED commands (advertised
+    /// only when the LEDs are set up).
     pub fn with_leds(mut self) -> Self {
         self.minor = 1;
-        self.caps = Caps(self.caps.0 | Caps::LEDS);
+        if self.led_limits.running {
+            self.caps = Caps(self.caps.0 | Caps::LEDS);
+        }
         self
     }
 
@@ -290,11 +310,12 @@ impl SimChannel {
         let (l, k) = (&self.leds, &self.led_limits);
         let flag = |on: bool, bit: u8| if on { bit } else { 0 };
         LedStatus {
-            flags: flag(k.running, LedStatus::RUNNING)
+            // Bit 0 is always set: without the LEDs there is no reply.
+            flags: LedStatus::RUNNING
                 | flag(k.custom_theme, LedStatus::CUSTOM_THEME)
                 | flag(self.leds != self.saved_leds, LedStatus::UNSAVED),
             animation: l.animation,
-            animations: k.animations,
+            animations: k.animations(),
             brightness: l.brightness,
             brightness_steps: k.brightness_steps,
             brightness_maximum: k.brightness_maximum,
@@ -405,8 +426,13 @@ impl SimChannel {
             Command::String => match self.strings.get(&setup.value) {
                 Some(v) => v.as_bytes().iter().copied().take(63).collect(),
                 None if (0x11..=0x16).contains(&setup.value) => Vec::new(),
-                None if self.caps.has(Caps::LEDS) && (0x20..0x40).contains(&setup.value) => {
-                    Vec::new()
+                None if self.caps.has(Caps::LEDS)
+                    && (0x20..0x20 + u16::from(self.led_limits.animations()))
+                        .contains(&setup.value) =>
+                {
+                    EFFECT_NAMES[usize::from(setup.value - 0x20)]
+                        .as_bytes()
+                        .to_vec()
                 }
                 None => return Err(UsbError::Stall),
             },
@@ -531,7 +557,7 @@ impl SimChannel {
                 let set = SetLed::parse(args).ok_or(Outcome::BadArg)?;
                 let k = self.led_limits;
                 let fits = |v: Option<u8>, below: u16| v.is_none_or(|v| u16::from(v) < below);
-                let ok = fits(set.animation, k.animations.into())
+                let ok = fits(set.animation, k.animations().into())
                     && fits(set.brightness, u16::from(k.brightness_steps) + 1)
                     && fits(set.static_color, k.colors.into())
                     && fits(set.button_color, k.colors.into())

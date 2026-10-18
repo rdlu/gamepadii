@@ -692,3 +692,30 @@ fn a_saved_led_change_reaches_the_fork_config() {
     assert_eq!(config["animationOptions"]["themeIndex"], 7);
     assert_eq!(config["animationOptions"]["brightness"], 3);
 }
+
+#[test]
+fn the_effect_count_follows_the_custom_theme() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    sim.led_limits.custom_theme = false;
+    let ch = channel::hello(standalone(sim), 7).found().unwrap();
+    let l = ch.led_status().unwrap();
+    assert_eq!(l.animations, 4);
+    assert!(l.running() && !l.custom_theme());
+    assert_eq!(
+        ch.string(proto::string::effect_name(0)).unwrap().as_deref(),
+        Some("EFFECT_STATIC_COLOR")
+    );
+    // n at or past the count STALLs: no name.
+    assert_eq!(ch.string(proto::string::effect_name(4)).unwrap(), None);
+    let e = ch
+        .set_led(&channel::SetLed {
+            animation: Some(4),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(e.to_string().contains("bad argument"), "{e}");
+    // LEDs not set up: no capability.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    sim.led_limits.running = false;
+    assert!(!sim.with_leds().caps.has(Caps::LEDS));
+}
