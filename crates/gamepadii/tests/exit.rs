@@ -732,3 +732,82 @@ fn profile_switch_keeps_the_cache_and_the_hints_current() {
     assert!(!stderr.contains("R1 (RB)"), "{stderr}");
     assert!(stderr.contains("last reported running"), "{stderr}");
 }
+
+#[test]
+fn leds_exit_codes() {
+    let run = |kind: &str, args: &[&str]| {
+        let mut a = vec!["--sysroot", "@s16-xinput", "--mock-channel", kind];
+        a.extend_from_slice(args);
+        cc(&a)
+    };
+    let (code, stdout, _) = run("leds", &["leds"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("animation     custom-theme (4)"),
+        "{stdout}"
+    );
+    let (code, stdout, _) = run("leds", &["leds", "--format", "waybar"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["class"], "custom-theme");
+    let (code, stdout, _) = run(
+        "leds",
+        &[
+            "--json",
+            "leds",
+            "set",
+            "--animation",
+            "chase",
+            "--brightness",
+            "up",
+        ],
+    );
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["changed"], serde_json::json!(["animation", "brightness"]));
+    assert_eq!(v["leds"]["brightness"], 2);
+    assert_eq!(v["saved"], false);
+    let (code, stdout, _) = run("leds", &["leds", "brightness", "down", "--save"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("LEDs changed and saved\n"), "{stdout}");
+    // A value the pad doesn't have: 3.
+    let (code, _, stderr) = run("leds", &["leds", "set", "--static-color", "mauve"]);
+    assert_eq!(code, 3);
+    assert!(stderr.contains("no colour \"mauve\""), "{stderr}");
+    let (code, _, _) = run("leds", &["leds", "brightness", "9"]);
+    assert_eq!(code, 3);
+    // No LED commands (v1.0, stock), no permission: 5, with the JSON error.
+    for kind in ["channel", "stock", "no-access"] {
+        let (code, stdout, stderr) = run(kind, &["--json", "leds", "set", "--brightness", "1"]);
+        assert_eq!(code, 5, "{kind}: {stderr}");
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(v["error"]["kind"], "needs_user");
+    }
+    // waybar on a v1.0 pad: one valid line, exit 5, no trip.
+    let (code, stdout, _) = run("channel", &["leds", "--format", "waybar"]);
+    assert_eq!(code, 5);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["class"], "disconnected");
+    // Stock in a gamepad mode: switch to web-config first.
+    let (code, _, stderr) = run("stock", &["leds"]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("not web-config"), "{stderr}");
+    // In web-config on stock: what it can tell.
+    let (code, stdout, _) = webconfig(&[
+        "--sysroot",
+        "@s16-webconfig",
+        "--mock-channel",
+        "stock",
+        "--mock-api",
+        "%s16-v0.7.12",
+        "leds",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v["animation"].is_null() && v["brightness"].is_null());
+    assert_eq!(v["brightness_steps"], 5);
+    assert_eq!(v["via"], "web_config");
+    assert_eq!(v["custom_theme_colors"][4]["button"], "B1");
+}

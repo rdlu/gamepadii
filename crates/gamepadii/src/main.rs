@@ -202,6 +202,56 @@ fn main() -> ExitCode {
             drop(progress);
             finish(format, result)
         }
+        Some(Command::Leds {
+            command: None,
+            trip,
+        }) => {
+            let result = if format == Format::Waybar {
+                // A status bar polls: never a trip through web-config.
+                let clock = SystemClock::new();
+                let open = || open(&cli);
+                let env = env(
+                    &cli,
+                    &root,
+                    &clock,
+                    &open,
+                    control,
+                    Timeouts::default(),
+                    false,
+                );
+                flow::leds_now(&env).map(|r| output::waybar_leds(&r).to_line())
+            } else {
+                match &cli.host {
+                    Some(_) => connect(&cli, &root)
+                        .and_then(|c| gamepadii_core::leds::read_webconfig(&c))
+                        .map(|r| (r, None)),
+                    None => on_usb(&cli, &root, control, format, &trip, |env, progress| {
+                        flow::leds(env, trip.stay, progress)
+                    }),
+                }
+                .map(|(r, t)| output::leds(style, &r, t.as_ref()))
+            };
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command: Some(command),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result =
+                flow::leds_set(&env, &command.change()).map(|r| output::leds_set(style, &r));
+            finish(format, result)
+        }
         Some(Command::Display { command }) => {
             let arg = command.layout_arg();
             let DisplayCommand::Layout {
@@ -410,6 +460,11 @@ fn mock_control(
             Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
             None => SimChannel::gamepadii(running),
         },
+        MockChannel::Leds => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        }
+        .with_leds(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     Ok(Box::new(Standalone::new(sim, node)))

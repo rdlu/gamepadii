@@ -1,7 +1,8 @@
 //! Command line: `gamepadii status [--format human|json|waybar] [--json]`,
 //! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
-//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `tui` (also
+//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `leds [set
+//! ... | brightness up|down|N]`, `tui` (also
 //! no command on a terminal), `setup udev [--print|--install]`, `--host HOST`
 //! for the
 //! web-config ones and `--no-channel` to leave the control channel alone.
@@ -18,6 +19,7 @@ use clap_complete::Shell;
 
 use gamepadii_core::display::LayoutArg;
 use gamepadii_core::flow::{self, ProfileArg};
+use gamepadii_core::leds::{LedChange, Level, Pick};
 use gamepadii_core::mode::{BootMode, InputMode};
 
 use crate::output::Format;
@@ -83,6 +85,8 @@ pub enum MockChannel {
     Stock,
     /// The gamepadii firmware (profiles from `--mock-api`, when given).
     Channel,
+    /// The same with control channel v1.1: the LED commands.
+    Leds,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -93,7 +97,7 @@ pub enum FormatArg {
     Human,
     /// The versioned JSON contract ("schema": 1).
     Json,
-    /// One line of waybar custom-module JSON; `status` only.
+    /// One line of waybar custom-module JSON; `status` and `leds` only.
     Waybar,
 }
 
@@ -175,6 +179,17 @@ pub enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// The per-button RGB LEDs: animation, brightness, colours and the
+    /// custom theme. Over the control channel when the firmware has the LED
+    /// commands (no reboot); else from web-config, where stock firmware
+    /// doesn't show the animation or brightness (in a gamepad mode the
+    /// control channel takes the pad there and back).
+    Leds {
+        #[command(subcommand)]
+        command: Option<LedsCommand>,
+        #[command(flatten)]
+        trip: TripArgs,
+    },
     /// The terminal UI: the pad, its input modes and profiles, web-config
     /// and backups. `gamepadii` with no command opens it on a terminal.
     Tui,
@@ -224,6 +239,84 @@ pub enum ProfileCommand {
         #[arg(long)]
         save: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum LedsCommand {
+    /// Change the LEDs live, with no reboot (needs control channel v1.1 of
+    /// the gamepadii firmware). RAM only unless --save: the pad goes back
+    /// to its saved LED settings when it restarts.
+    Set {
+        /// The animation: static-color, rainbow, chase, static-theme,
+        /// custom-theme, or its number.
+        #[arg(long, value_name = "NAME|N", value_parser = pick_parser)]
+        animation: Option<Pick>,
+        /// The brightness level (0 to the pad's steps), up or down.
+        #[arg(long, value_name = "N|up|down", value_parser = level_parser)]
+        brightness: Option<Level>,
+        /// The static-color animation's colour: black, white, red, orange,
+        /// yellow, limegreen, green, seafoam, aqua, skyblue, blue, purple,
+        /// pink, magenta, indigo, violet, or its number.
+        #[arg(long, value_name = "NAME|N", value_parser = pick_parser)]
+        static_color: Option<Pick>,
+        /// The colour of a pressed button (same names).
+        #[arg(long, value_name = "NAME|N", value_parser = pick_parser)]
+        button_color: Option<Pick>,
+        /// The static-theme animation's theme: static-rainbow, xbox,
+        /// playstation, neogeo, street-fighter-2, tekken, ..., or its number.
+        #[arg(long, value_name = "NAME|N", value_parser = pick_parser)]
+        theme: Option<Pick>,
+        /// Also save it to flash, as the LED hotkeys do (alone: save what
+        /// runs now). In PS4/PS5 mode the firmware skips saves while the
+        /// controller authentication needs the flash.
+        #[arg(long)]
+        save: bool,
+    },
+    /// One brightness step up or down, or a level, live (as `set
+    /// --brightness`).
+    Brightness {
+        #[arg(value_name = "up|down|N", value_parser = level_parser)]
+        level: Level,
+        /// Also save it to flash.
+        #[arg(long)]
+        save: bool,
+    },
+}
+
+impl LedsCommand {
+    /// What to change.
+    pub fn change(&self) -> LedChange {
+        match self.clone() {
+            LedsCommand::Set {
+                animation,
+                brightness,
+                static_color,
+                button_color,
+                theme,
+                save,
+            } => LedChange {
+                animation,
+                brightness,
+                static_color,
+                button_color,
+                theme,
+                save,
+            },
+            LedsCommand::Brightness { level, save } => LedChange {
+                brightness: Some(level),
+                save,
+                ..LedChange::default()
+            },
+        }
+    }
+}
+
+fn pick_parser(s: &str) -> Result<Pick, String> {
+    s.parse()
+}
+
+fn level_parser(s: &str) -> Result<Level, String> {
+    s.parse()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -334,13 +427,18 @@ impl Cli {
     /// The output format with `--json` folded in; an error for combinations
     /// clap can't express.
     pub fn output_format(&self) -> Result<Format, String> {
-        let waybar_ok = matches!(self.command, Some(Command::Status));
+        let waybar_ok = matches!(
+            self.command,
+            Some(Command::Status | Command::Leds { command: None, .. })
+        );
         match (self.json, self.format) {
             (true, FormatArg::Waybar) => Err("--json conflicts with --format waybar".into()),
             (true, _) | (false, FormatArg::Json) => Ok(Format::Json),
             (false, FormatArg::Human) => Ok(Format::Human),
             (false, FormatArg::Waybar) if waybar_ok => Ok(Format::Waybar),
-            (false, FormatArg::Waybar) => Err("--format waybar is only supported by status".into()),
+            (false, FormatArg::Waybar) => {
+                Err("--format waybar is only supported by status and leds".into())
+            }
         }
     }
 }

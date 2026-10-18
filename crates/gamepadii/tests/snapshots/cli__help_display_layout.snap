@@ -17,7 +17,7 @@ Options:
           Possible values:
           - human:  Text for people
           - json:   The versioned JSON contract ("schema": 1)
-          - waybar: One line of waybar custom-module JSON; `status` only
+          - waybar: One line of waybar custom-module JSON; `status` and `leds` only
           
           [default: human]
 

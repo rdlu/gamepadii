@@ -3,7 +3,7 @@
 //! with no descriptor change and no kernel driver detached
 //! (`docs/design/control-channel.md`).
 //!
-//! - [`proto`]: the v1 wire format.
+//! - [`proto`]: the v1 wire format, and v1.1's LED commands.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -30,7 +30,7 @@ use crate::discovery::Device;
 use crate::error::{Error, Result};
 use crate::mode::{BootMode, InputMode};
 
-pub use proto::{Caps, Command, Hello, Outcome, Setup, Status};
+pub use proto::{Caps, Command, Hello, LedStatus, Outcome, SetLed, Setup, Status};
 
 /// How long a HELLO may take: short, since most pads have no channel.
 pub const HELLO_TIMEOUT: Duration = Duration::from_millis(200);
@@ -379,6 +379,30 @@ impl Channel {
             &[mode.api_value()],
             &format!("a reboot into {}", mode.label()),
         )
+    }
+
+    /// LED_STATUS (v1.1): the animation, brightness and colours running now.
+    pub fn led_status(&self) -> Result<LedStatus> {
+        self.need(Caps::LEDS, Command::LedStatus)?;
+        let reply = self
+            .read(Command::LedStatus, 0)
+            .map_err(|e| self.fail(e, Command::LedStatus))?;
+        LedStatus::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "LED_STATUS on {}: {} bytes, expected {}",
+                self.node(),
+                reply.len(),
+                proto::LED_STATUS_LEN
+            ))
+        })
+    }
+
+    /// SET_LED (v1.1): changes the fields `set` has, live; saved to flash
+    /// only with `set.persist`. All or nothing: a value out of range
+    /// changes none of them.
+    pub fn set_led(&self, set: &SetLed) -> Result<()> {
+        self.need(Caps::LEDS, Command::SetLed)?;
+        self.command(Command::SetLed, &set.encode(), "the LED change")
     }
 
     /// Saves `mode` as the input mode and restarts into it.

@@ -1,0 +1,43 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"leds\"])"
+---
+The per-button RGB LEDs: animation, brightness, colours and the custom theme. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
+
+Usage: gamepadii leds [OPTIONS] [COMMAND]
+
+Commands:
+  set         Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
+  brightness  One brightness step up or down, or a level, live (as `set --brightness`)
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` and `leds` only
+          
+          [default: human]
+
+      --json
+          Same as `--format json`
+
+      --stay
+          Leave the pad in web-config afterwards instead of rebooting it back into its gamepad mode
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --timeout <SECS>
+          How long to wait for the pad on USB after each reboot
+          
+          [default: 10]
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
+  -h, --help
+          Print help (see a summary with '-h')

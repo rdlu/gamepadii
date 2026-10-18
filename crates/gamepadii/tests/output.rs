@@ -711,4 +711,63 @@ mod flows {
         assert_eq!(v["choices"][3]["models"], serde_json::json!(["G16", "S16"]));
         assert!(v["trip"].is_null());
     }
+
+    fn fork_dir() -> PathBuf {
+        s16_dir().join("../s16-fork")
+    }
+
+    /// `leds` over each route: LED_STATUS, stock web-config, the fork's
+    /// getConfig through a trip; and waybar.
+    #[test]
+    fn leds_outputs() {
+        let read = |rig: &Rig| rig.run(|env| flow::leds(env, false, &mut Silent)).unwrap();
+        let live = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+        let (channel, _) = read(&live);
+        let (stock, _) = read(&Rig::s16(InputMode::Webconfig));
+        let fork = Rig::new(SimPad::new(fork_dir(), InputMode::Xinput).with_channel());
+        let (forked, trip) = read(&fork);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            output::leds(human(), &channel, None),
+            output::leds(human(), &stock, None),
+            output::leds(human(), &forked, trip.as_ref()),
+            output::waybar_leds(&channel).to_line(),
+            output::leds(json(), &channel, None),
+            output::leds(json(), &stock, None),
+        ));
+    }
+
+    #[test]
+    fn leds_set_outputs() {
+        use gamepadii_core::leds::{LedChange, Level};
+        let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+        let set = |c: LedChange| rig.run(|env| flow::leds_set(env, &c)).unwrap();
+        let ram = set(LedChange {
+            animation: Some("static-theme".parse().unwrap()),
+            theme: Some("tekken".parse().unwrap()),
+            brightness: Some(Level::Up),
+            ..LedChange::default()
+        });
+        let saved = set(LedChange {
+            save: true,
+            ..LedChange::default()
+        });
+        let top = set(LedChange {
+            brightness: Some(Level::To(5)),
+            save: true,
+            ..LedChange::default()
+        });
+        let already = set(LedChange {
+            brightness: Some(Level::Up),
+            ..LedChange::default()
+        });
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}",
+            output::leds_set(human(), &ram),
+            output::leds_set(human(), &saved),
+            output::leds_set(human(), &top),
+            output::leds_set(human(), &already),
+            output::leds_set(json(), &ram),
+        ));
+    }
 }

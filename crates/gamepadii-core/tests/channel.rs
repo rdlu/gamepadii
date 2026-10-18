@@ -475,3 +475,247 @@ fn setup_stage_rejections_and_trailing_bytes() {
     .unwrap();
     assert_eq!(sim.status().profile, 3);
 }
+
+// ---- v1.1: the LED commands (§3.7) --------------------------------------------
+
+fn fork_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-fork")
+}
+
+/// The S16 on a v1.1 build, in `mode`.
+fn s16_leds(mode: InputMode) -> Arc<SimPad> {
+    Arc::new(SimPad::new(s16_dir(), mode).with_leds())
+}
+
+fn replug(pad: &Arc<SimPad>) {
+    for _ in 0..gamepadii_core::sim::OFF_USB_SCANS {
+        gamepadii_core::discovery::Scan::scan(&**pad);
+    }
+}
+
+#[test]
+fn a_v1_1_build_has_the_led_commands() {
+    let ch = connect(&s16_leds(InputMode::Xinput));
+    assert_eq!((ch.hello().major, ch.hello().minor), (1, 1));
+    assert!(ch.caps().has(Caps::LEDS));
+    assert_eq!(ch.caps().names().last(), Some(&"leds"));
+    let l = ch.led_status().unwrap();
+    assert!(l.running() && l.custom_theme() && !l.unsaved());
+    assert_eq!(
+        (
+            l.animation,
+            l.brightness,
+            l.static_color,
+            l.button_color,
+            l.theme
+        ),
+        (4, 1, 2, 1, 0)
+    );
+    assert_eq!(
+        (
+            l.animations,
+            l.brightness_steps,
+            l.brightness_maximum,
+            l.colors,
+            l.themes
+        ),
+        (5, 5, 100, 16, 20)
+    );
+}
+
+#[test]
+fn a_v1_0_build_has_no_led_commands() {
+    let pad = s16(InputMode::Xinput);
+    let ch = connect(&pad);
+    assert_eq!(ch.hello().minor, 0);
+    let e = ch.led_status().unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(e.to_string().contains("no LED_STATUS"), "{e}");
+    let e = ch.set_led(&channel::SetLed::default()).unwrap_err();
+    assert!(e.to_string().contains("no SET_LED"), "{e}");
+    // On the wire: LED_STATUS STALLs, SET_LED is an unknown command.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    let r = sim.control_in(Setup::read(proto::Command::LedStatus, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = sim.token;
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLed),
+        &proto::payload(token, 9, &[2, 0, 3, 0, 0, 0, 0, 0]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let st = sim.status();
+    assert_eq!((st.last_seq, st.last_command), (0, 0x13));
+    assert_eq!(Outcome::from_byte(st.last_result), Outcome::Unsupported);
+}
+
+#[test]
+fn a_ram_led_change_is_lost_on_reboot() {
+    let pad = s16_leds(InputMode::Xinput);
+    let ch = connect(&pad);
+    ch.set_led(&channel::SetLed {
+        animation: Some(1),
+        brightness: Some(4),
+        ..Default::default()
+    })
+    .unwrap();
+    let l = ch.led_status().unwrap();
+    assert_eq!((l.animation, l.brightness, l.theme), (1, 4, 0));
+    assert!(l.unsaved());
+    assert_eq!(pad.firmware().saved_leds.brightness, 1);
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let l = connect(&pad).led_status().unwrap();
+    assert_eq!((l.animation, l.brightness), (4, 1));
+    assert!(!l.unsaved());
+}
+
+#[test]
+fn a_persisted_led_change_survives_a_reboot() {
+    let pad = s16_leds(InputMode::Xinput);
+    let ch = connect(&pad);
+    ch.set_led(&channel::SetLed {
+        static_color: Some(10),
+        persist: true,
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(!ch.led_status().unwrap().unsaved());
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    assert_eq!(connect(&pad).led_status().unwrap().static_color, 10);
+}
+
+#[test]
+fn any_save_keeps_a_ram_led_change() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    sim.enabled_profiles = 0b11;
+    let ch = channel::hello(standalone(sim), 5).found().unwrap();
+    ch.set_led(&channel::SetLed {
+        brightness: Some(0),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(ch.led_status().unwrap().unsaved());
+    ch.set_profile(2, true).unwrap();
+    assert!(!ch.led_status().unwrap().unsaved());
+}
+
+#[test]
+fn an_led_value_out_of_range_changes_nothing() {
+    let ch = connect(&s16_leds(InputMode::Xinput));
+    for set in [
+        channel::SetLed {
+            animation: Some(0),
+            brightness: Some(6),
+            ..Default::default()
+        },
+        channel::SetLed {
+            animation: Some(5),
+            ..Default::default()
+        },
+        channel::SetLed {
+            button_color: Some(16),
+            ..Default::default()
+        },
+        channel::SetLed {
+            theme: Some(20),
+            ..Default::default()
+        },
+    ] {
+        let e = ch.set_led(&set).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{set:?}");
+        assert!(e.to_string().contains("bad argument"), "{e}");
+    }
+    let l = ch.led_status().unwrap();
+    assert_eq!((l.animation, l.brightness), (4, 1), "all or nothing");
+    // The top of the range is fine: brightness goes up to the steps.
+    ch.set_led(&channel::SetLed {
+        brightness: Some(5),
+        ..Default::default()
+    })
+    .unwrap();
+    // Unknown mask bits on the wire: BAD_ARG.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    let token = sim.token;
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLed),
+        &proto::payload(token, 3, &[0x40, 0, 0, 0, 0, 0, 0, 0]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(
+        Outcome::from_byte(sim.status().last_result),
+        Outcome::BadArg
+    );
+    // Short arguments: BAD_LENGTH.
+    let r = sim.control_out(
+        Setup::command(proto::Command::SetLed),
+        &proto::payload(token, 4, &[0x02, 0, 1]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(
+        Outcome::from_byte(sim.status().last_result),
+        Outcome::BadLength
+    );
+}
+
+#[test]
+fn an_led_change_is_busy_while_a_reboot_is_pending() {
+    let sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    let ch = channel::hello(standalone(sim), 12).found().unwrap();
+    ch.reboot(BootMode::Webconfig).unwrap();
+    let e = ch
+        .set_led(&channel::SetLed {
+            brightness: Some(2),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(e.exit_code(), exit::TRANSPORT);
+    assert!(e.to_string().contains("about to restart"), "{e}");
+    // LED_STATUS still answers.
+    assert_eq!(ch.led_status().unwrap().brightness, 1);
+}
+
+#[test]
+fn a_saved_led_change_reaches_the_fork_config() {
+    let pad = Arc::new(SimPad::new(fork_dir(), InputMode::Xinput).with_leds());
+    let ch = connect(&pad);
+    // From the fixture's animationOptions.
+    let l = ch.led_status().unwrap();
+    assert_eq!((l.animation, l.brightness), (2, 3));
+    ch.set_led(&channel::SetLed {
+        theme: Some(7),
+        persist: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let config = pad.mock().current("getConfig").unwrap();
+    assert_eq!(config["animationOptions"]["themeIndex"], 7);
+    assert_eq!(config["animationOptions"]["brightness"], 3);
+}
+
+#[test]
+fn the_effect_count_follows_the_custom_theme() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_leds();
+    sim.led_limits.custom_theme = false;
+    let ch = channel::hello(standalone(sim), 7).found().unwrap();
+    let l = ch.led_status().unwrap();
+    assert_eq!(l.animations, 4);
+    assert!(l.running() && !l.custom_theme());
+    assert_eq!(
+        ch.string(proto::string::effect_name(0)).unwrap().as_deref(),
+        Some("EFFECT_STATIC_COLOR")
+    );
+    // n at or past the count STALLs: no name.
+    assert_eq!(ch.string(proto::string::effect_name(4)).unwrap(), None);
+    let e = ch
+        .set_led(&channel::SetLed {
+            animation: Some(4),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(e.to_string().contains("bad argument"), "{e}");
+    // LEDs not set up: no capability.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    sim.led_limits.running = false;
+    assert!(!sim.with_leds().caps.has(Caps::LEDS));
+}

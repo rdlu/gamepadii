@@ -1,5 +1,5 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
-//! switch`, and the trip through web-config that `info` and `backup` take
+//! switch`, `leds` (and `leds set`, over the channel only), and the trip through web-config that `info` and `backup` take
 //! from a gamepad mode ([`through_webconfig`]). They poll USB through a
 //! [`Scan`] and time through a [`Clock`], open the web-config client and
 //! the control channel through closures, and report progress through a
@@ -29,6 +29,7 @@ use crate::client::{self, Client};
 use crate::commands::{self, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
+use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
 use crate::mode::{BootMode, Confidence, InputMode};
 use crate::wait::{Clock, Poll, wait_for};
 
@@ -724,15 +725,7 @@ pub enum Via {
     Control,
 }
 
-/// Which way a command reached the pad.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Route {
-    /// The web configurator's HTTP API.
-    WebConfig,
-    /// The USB control channel.
-    Control,
-}
+pub use crate::commands::Route;
 
 /// `gamepadii mode <mode>`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2147,4 +2140,207 @@ pub fn profile_switch(
         );
     }
     Ok(report)
+}
+
+// ---- leds -----------------------------------------------------------------------
+
+/// What an LED flow needs the channel for, for its error.
+#[derive(Debug, Clone, Copy)]
+enum LedUse {
+    Change,
+    ReadLive,
+}
+
+/// Why the LED commands aren't there on `pad`.
+fn no_led_channel(pad: &Device, use_: LedUse, why: Option<String>) -> Error {
+    let (what, otherwise) = match use_ {
+        LedUse::Change => (
+            "change its LEDs",
+            "Otherwise use the pad's LED hotkeys (animation and brightness up or down), \
+             which also save the change",
+        ),
+        LedUse::ReadLive => (
+            "read its LEDs live",
+            "Without it, `gamepadii leds` (not for a status bar) reads them through web-config",
+        ),
+    };
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with LED commands, so gamepadii can't \
+         {what}; that needs the gamepadii build of GP2040-CE with control channel v1.1. \
+         {otherwise}",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// The pad's control channel, when it has the LED commands (v1.1); else
+/// why not, as an error.
+fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
+    if pad.mode == Some(InputMode::Bootsel) {
+        return Err(Error::NeedsUser(
+            "the pad is in BOOTSEL (the boot ROM, for flashing); replug it first".into(),
+        ));
+    }
+    let Some(open) = env.control else {
+        return Err(no_led_channel(
+            pad,
+            use_,
+            Some("the control channel is off: --no-channel".into()),
+        ));
+    };
+    match channel::probe(open, pad) {
+        Probe::Found(ch) if ch.caps().has(Caps::LEDS) => Ok(ch),
+        Probe::Found(ch) => {
+            let h = ch.hello();
+            Err(no_led_channel(
+                pad,
+                use_,
+                Some(format!(
+                    "this build's channel speaks v{}.{} without the LED commands",
+                    h.major, h.minor
+                )),
+            ))
+        }
+        Probe::NoAccess { node } => Err(Error::NeedsUser(format!(
+            "{}; the LED commands need the control channel",
+            channel::udev_hint(&node)
+        ))),
+        Probe::Newer { major, .. } => Err(Error::Usage(commands::newer_protocol(major))),
+        Probe::Absent(_) => Err(no_led_channel(pad, use_, None)),
+    }
+}
+
+/// `gamepadii leds`: LED_STATUS on the control channel when the build has
+/// the LED commands (any mode, no reboot). Otherwise from the web
+/// configurator ([`leds::read_webconfig`]), and from a gamepad mode through
+/// web-config and back over the channel, as `info` does; on stock firmware
+/// in a gamepad mode, that is [`Error::NeedsUser`] with how to switch.
+pub fn leds(
+    env: &Env,
+    stay: bool,
+    progress: &mut dyn Progress,
+) -> Result<(LedReport, Option<Trip>)> {
+    let pad = pick(env.scan.scan())?;
+    if pad.mode != Some(InputMode::Bootsel)
+        && let Some(open) = env.control
+        && let Probe::Found(ch) = channel::probe(open, &pad)
+        && ch.caps().has(Caps::LEDS)
+    {
+        return leds::over_channel(&ch).map(|r| (r, None));
+    }
+    visit(
+        env,
+        stay,
+        true,
+        progress,
+        |c, _| leds::read_webconfig(c),
+        |_| "the LEDs were read".into(),
+    )
+}
+
+/// `gamepadii leds` with no trip: LED_STATUS only (for waybar, which must
+/// never reboot the pad).
+pub fn leds_now(env: &Env) -> Result<LedReport> {
+    let pad = pick(env.scan.scan())?;
+    leds::over_channel(&led_channel(env, &pad, LedUse::ReadLive)?)
+}
+
+/// `gamepadii leds set` and `leds brightness`: SET_LED on the control
+/// channel, live; saved to flash only with `change.save`. Read back with
+/// LED_STATUS.
+pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
+    let pad = pick(env.scan.scan())?;
+    let ch = led_channel(env, &pad, LedUse::Change)?;
+    let before = ch.led_status()?;
+    let extra = leds::extra_effects(&ch, before.animations);
+    let (set, changed) = leds::plan(change, &before, &extra)?;
+    let state = |l: &channel::LedStatus| LedState::from_status(l, &extra);
+    let mut report = LedSetReport {
+        via: Route::Control,
+        host: ch.node(),
+        before: state(&before),
+        leds: state(&before),
+        changed,
+        saved: false,
+        verified: true,
+        note: None,
+    };
+    let mut notes = Vec::new();
+    match change.brightness {
+        Some(leds::Level::Up) if before.brightness >= before.brightness_steps => notes.push(
+            format!("already at the brightest level ({})", before.brightness),
+        ),
+        Some(leds::Level::Down) if before.brightness == 0 => {
+            notes.push("already at the dimmest level (0)".to_string());
+        }
+        _ => {}
+    }
+    let save = change.save && (!report.changed.is_empty() || before.unsaved());
+    if report.changed.is_empty() && !save {
+        if change.save {
+            notes.push("nothing to save: the LED settings are saved already".into());
+        } else if before.unsaved() {
+            notes.push(not_saved_leds().into());
+        }
+        report.note = (!notes.is_empty()).then(|| notes.join("; "));
+        return Ok(report);
+    }
+    ch.set_led(&set)?;
+    report.saved = set.persist;
+    let after = wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(20),
+            timeout: Duration::from_secs(1),
+        },
+        || {
+            ch.led_status()
+                .ok()
+                .filter(|l| leds::shows(l, &set) && (!set.persist || !l.unsaved()))
+        },
+        |_| {},
+    );
+    let after = match after {
+        Some(l) => l,
+        None => {
+            let l = ch.led_status()?;
+            report.leds = state(&l);
+            if !leds::shows(&l, &set) {
+                report.verified = false;
+                return Err(Error::CheckFailed(format!(
+                    "the pad accepted the LED change, but LED_STATUS shows animation {}, \
+                     brightness {}, static colour {}, button colour {}, theme {}",
+                    l.animation, l.brightness, l.static_color, l.button_color, l.theme
+                )));
+            }
+            let mut note =
+                "the save isn't confirmed: the pad still shows unsaved LED changes after 1 s"
+                    .to_string();
+            let mode = ch.status().ok().and_then(|s| running(&s));
+            if matches!(mode, Some(InputMode::Ps4 | InputMode::Ps5)) {
+                note.push_str(
+                    " (in PS4/PS5 mode the firmware skips saves while the controller \
+                     authentication needs the flash)",
+                );
+            }
+            notes.push(note);
+            l
+        }
+    };
+    report.leds = state(&after);
+    if !set.persist && after.unsaved() {
+        notes.push(not_saved_leds().into());
+    }
+    report.note = (!notes.is_empty()).then(|| notes.join("; "));
+    Ok(report)
+}
+
+/// The note for an LED change left in RAM.
+fn not_saved_leds() -> &'static str {
+    "not saved: the pad goes back to its saved LED settings when it restarts, unless \
+     something saves its settings first (any hotkey, turbo or saved profile change does); \
+     --save keeps it"
 }

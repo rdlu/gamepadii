@@ -12,6 +12,7 @@ use gamepadii_core::cache::{self, DeviceCache};
 use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
+use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, Pick};
 use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::sim::{self, SimPad, UserAction};
 use gamepadii_core::transport::Method;
@@ -2151,4 +2152,224 @@ fn a_read_by_hand_is_attributed_when_the_pad_leaves_web_config() {
     let c = cache_file(&rig, "Haute42COSMOX-0C0FFEE.json");
     assert_eq!(c.pad.unwrap().serial, "0C0FFEE");
     assert_eq!(c.read_in, None);
+}
+
+// ---- leds -------------------------------------------------------------------------
+
+fn leds_read(rig: &Rig) -> gamepadii_core::Result<(LedReport, Option<flow::Trip>)> {
+    rig.run(|env| flow::leds(env, false, &mut Log::default()))
+}
+
+fn leds_set(rig: &Rig, change: &LedChange) -> gamepadii_core::Result<LedSetReport> {
+    rig.run(|env| flow::leds_set(env, change))
+}
+
+fn pick(s: &str) -> Option<Pick> {
+    Some(s.parse().unwrap())
+}
+
+#[test]
+fn leds_over_the_channel_need_no_reboot() {
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let (r, trip) = leds_read(&rig).unwrap();
+    assert_eq!(trip, None);
+    assert_eq!(r.via, flow::Route::Control);
+    assert_eq!(
+        r.state.animation.as_ref().unwrap().display(),
+        "custom-theme (4)"
+    );
+    assert_eq!(r.state.brightness, Some(1));
+    assert_eq!(r.state.brightness_steps, Some(5));
+    assert_eq!(r.state.static_color.unwrap().name.as_deref(), Some("red"));
+    assert_eq!(r.state.unsaved, Some(false));
+    assert_eq!(r.custom_theme_colors, None);
+    assert!(reboots(&rig).is_empty() && rig.requests().is_empty());
+    // In web-config the channel answers too: still LED_STATUS.
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Webconfig).with_leds());
+    let (r, _) = leds_read(&rig).unwrap();
+    assert_eq!(r.via, flow::Route::Control);
+    assert!(rig.requests().is_empty());
+}
+
+#[test]
+fn leds_on_stock_in_web_config_are_partly_unknown() {
+    let rig = Rig::s16(InputMode::Webconfig);
+    let (r, trip) = leds_read(&rig).unwrap();
+    assert_eq!(trip, None);
+    assert_eq!(r.via, flow::Route::WebConfig);
+    assert_eq!(r.state.animation, None);
+    assert_eq!(r.state.brightness, None);
+    assert_eq!(r.state.brightness_steps, Some(5));
+    assert_eq!(r.state.brightness_maximum, Some(100));
+    assert_eq!(r.state.custom_theme, Some(true));
+    assert_eq!(r.state.running, Some(true));
+    let colors = r.custom_theme_colors.unwrap();
+    assert_eq!(colors.len(), 18);
+    assert_eq!(colors[0].button, "Up");
+    assert_eq!(colors[0].normal.as_deref(), Some("#0000ff"));
+    assert_eq!(colors[0].pressed.as_deref(), Some("#0080ff"));
+    assert!(r.note.unwrap().contains("unknown on stock firmware"));
+    assert!(!asked_for_get_config(&rig));
+}
+
+#[test]
+fn leds_on_stock_in_a_gamepad_mode_need_the_user() {
+    let rig = Rig::s16(InputMode::Xinput);
+    let e = leds_read(&rig).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("XInput mode, not web-config"), "{e}");
+}
+
+#[test]
+fn leds_on_a_v1_0_fork_go_through_web_config() {
+    // The S16 today: the fork's v1.0 channel, no LED commands.
+    let rig = Rig::new(SimPad::new(fork_dir(), InputMode::Xinput).with_channel());
+    let (r, trip) = leds_read(&rig).unwrap();
+    let trip = trip.unwrap();
+    assert!(trip.verified);
+    assert_eq!(r.via, flow::Route::WebConfig);
+    assert!(asked_for_get_config(&rig));
+    assert_eq!(r.state.animation.unwrap().display(), "chase (2)");
+    assert_eq!(r.state.brightness, Some(3));
+    assert_eq!(
+        r.state.theme.unwrap().name.as_deref(),
+        Some("static-rainbow")
+    );
+    assert_eq!(r.note, None);
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+}
+
+#[test]
+fn leds_set_is_ram_only_by_default_and_verified() {
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let change = LedChange {
+        animation: pick("rainbow"),
+        brightness: Some(Level::To(3)),
+        ..LedChange::default()
+    };
+    let r = leds_set(&rig, &change).unwrap();
+    assert_eq!(r.changed, ["animation", "brightness"]);
+    assert!(r.verified && !r.saved);
+    assert_eq!(r.leds.animation.unwrap().display(), "rainbow (1)");
+    assert_eq!(r.leds.unsaved, Some(true));
+    assert!(r.note.unwrap().contains("not saved"));
+    assert_eq!(
+        rig.pad.firmware().saved_leds.animation,
+        4,
+        "flash untouched"
+    );
+    assert_eq!(rig.channel_commands(), [0x13]);
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn leds_set_save_and_a_bare_save() {
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            theme: pick("tekken"),
+            save: true,
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(r.saved && r.verified);
+    assert_eq!(r.note, None);
+    assert_eq!(rig.pad.firmware().saved_leds.theme, 13);
+    // Nothing unsaved: --save alone sends nothing.
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            save: true,
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(!r.saved && r.changed.is_empty());
+    assert!(r.note.unwrap().contains("nothing to save"));
+    assert_eq!(rig.channel_commands(), [0x13]);
+    // A RAM change, then --save alone saves it.
+    leds_set(
+        &rig,
+        &LedChange {
+            button_color: pick("blue"),
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    let r = leds_set(
+        &rig,
+        &LedChange {
+            save: true,
+            ..LedChange::default()
+        },
+    )
+    .unwrap();
+    assert!(r.saved);
+    assert_eq!(rig.pad.firmware().saved_leds.button_color, 10);
+}
+
+#[test]
+fn leds_brightness_steps_and_stops_at_the_ends() {
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let step = |level| {
+        leds_set(
+            &rig,
+            &LedChange {
+                brightness: Some(level),
+                ..LedChange::default()
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(step(Level::Down).leds.brightness, Some(0));
+    let r = step(Level::Down);
+    assert!(r.changed.is_empty());
+    assert!(r.note.unwrap().contains("dimmest"));
+    assert_eq!(step(Level::To(5)).leds.brightness, Some(5));
+    assert!(step(Level::Up).note.unwrap().contains("brightest"));
+}
+
+#[test]
+fn leds_set_refuses_what_the_pad_lacks() {
+    let rig = Rig::new(SimPad::new(s16_dir(), InputMode::Xinput).with_leds());
+    let e = leds_set(
+        &rig,
+        &LedChange {
+            static_color: pick("mauve"),
+            ..LedChange::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    // A v1.0 channel, stock firmware, no channel, BOOTSEL: exit 5.
+    let change = LedChange {
+        brightness: Some(Level::Up),
+        ..LedChange::default()
+    };
+    for (rig, says) in [
+        (Rig::cc(InputMode::Xinput), "v1.0 without the LED commands"),
+        (Rig::s16(InputMode::Xinput), "LED hotkeys"),
+        (Rig::cc(InputMode::Bootsel), "BOOTSEL"),
+    ] {
+        let e = leds_set(&rig, &change).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(rig.channel_commands().is_empty());
+    }
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_leds()
+            .no_access(),
+    );
+    let e = leds_set(&rig, &change).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("gamepadii setup udev"), "{e}");
+    // waybar's read never takes a trip.
+    let rig = Rig::cc(InputMode::Xinput);
+    let e = rig.run(flow::leds_now).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(reboots(&rig).is_empty());
 }

@@ -21,6 +21,16 @@ use crate::mode::{BootMode, InputMode};
 use crate::sysfs::Root;
 use crate::timestamp::Utc;
 
+/// Which way a command reached the pad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// The web configurator's HTTP API.
+    WebConfig,
+    /// The USB control channel.
+    Control,
+}
+
 /// `gamepadii status`: every GP2040-CE device on USB, with its mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {

@@ -205,6 +205,73 @@ fn help_profile_switch() {
 }
 
 #[test]
+fn help_leds() {
+    insta::assert_snapshot!(help(&["leds"]));
+}
+
+#[test]
+fn help_leds_set() {
+    insta::assert_snapshot!(help(&["leds", "set"]));
+}
+
+#[test]
+fn parses_leds() {
+    use gamepadii::cli::LedsCommand;
+    use gamepadii_core::leds::{LedChange, Level, Pick};
+    let change = |args: &[&str]| match parse(args).unwrap().command {
+        Some(Command::Leds {
+            command: Some(c), ..
+        }) => c.change(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        change(&["leds", "set", "--animation", "rainbow", "--brightness", "3"]),
+        LedChange {
+            animation: Some(Pick::Name("rainbow".into())),
+            brightness: Some(Level::To(3)),
+            ..LedChange::default()
+        }
+    );
+    assert_eq!(
+        change(&[
+            "leds",
+            "set",
+            "--static-color",
+            "2",
+            "--theme",
+            "xbox",
+            "--save"
+        ]),
+        LedChange {
+            static_color: Some(Pick::Number(2)),
+            theme: Some(Pick::Name("xbox".into())),
+            save: true,
+            ..LedChange::default()
+        }
+    );
+    assert_eq!(
+        change(&["leds", "brightness", "down"]).brightness,
+        Some(Level::Down)
+    );
+    assert!(parse(&["leds", "brightness", "dim"]).is_err());
+    assert!(parse(&["leds", "set", "--theme", "999"]).is_err());
+    assert!(matches!(
+        parse(&["leds", "--stay"]).unwrap().command,
+        Some(Command::Leds {
+            command: None,
+            trip: TripArgs { stay: true, .. }
+        })
+    ));
+    let _ = LedsCommand::Brightness {
+        level: Level::Up,
+        save: false,
+    };
+    // waybar: the read only.
+    assert_eq!(format(&["leds", "--format", "waybar"]), Ok(Format::Waybar));
+    assert!(format(&["leds", "set", "--save", "--format", "waybar"]).is_err());
+}
+
+#[test]
 fn help_setup_udev() {
     insta::assert_snapshot!(help(&["setup", "udev"]));
 }
