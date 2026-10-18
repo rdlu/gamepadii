@@ -40,7 +40,10 @@ GitHub issues (#1). The words that we use are in
   our own fork builds and do not wait for upstream to accept our changes.
   The upstream maintainers closed our first reports (too long, too
   technical). We do not send reports now. If we send one again, the owner
-  writes it, it is short, and we send one at a time.
+  writes it, it is short, and we send one at a time. gamepadii stays
+  compatible with stock firmware for the basic functions. The advanced
+  functions (the control channel, `getConfig`, the LED commands) need our
+  fork.
 - **Boards** (decided 2026-10-18): our firmware is only for RP2040 and
   RP2350 (Pico 2) boards. Other chips need their own maintainers. See
   "Fork firmware", "Boards".

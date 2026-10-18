@@ -127,7 +127,8 @@ after a reboot.
 
 ### The control channel
 
-The gamepadii build of GP2040-CE (a fork, on its way upstream; see
+Our fork of GP2040-CE ([rdlu/GP2040-CE](https://github.com/rdlu/GP2040-CE);
+the protocol is in
 [docs/design/control-channel.md](docs/design/control-channel.md)) answers
 vendor requests on the USB control endpoint in every mode, with no change
 to what consoles see. When gamepadii finds it (a HELLO with a random nonce
