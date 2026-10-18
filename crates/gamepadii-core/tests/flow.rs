@@ -13,6 +13,7 @@ use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
 use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, LightsPick, Pick};
+use gamepadii_core::lights::{LightsFile, LightsWrite, LightsWriteReport};
 use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::sim::{self, SimPad, UserAction};
 use gamepadii_core::slots::{SlotFile, SlotWrite, SlotWriteReport};
@@ -2769,6 +2770,164 @@ fn profile_write_refuses_before_it_sends() {
         assert!(e.to_string().contains(says), "{e}");
         assert!(rig.channel_commands().is_empty());
         let e = rig.run(|env| flow::profile_show(env, None)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    }
+}
+
+// ---- lights profiles (control channel v1.5) ----------------------------------
+
+fn lights_profiles_rig(pending_reads: u8) -> Rig {
+    Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles();
+                c.lights_limits.pending_reads = pending_reads;
+            }),
+    )
+}
+
+fn write_lights(
+    rig: &Rig,
+    file: &str,
+    write: &LightsWrite,
+) -> gamepadii_core::Result<LightsWriteReport> {
+    let file = LightsFile::parse(file)?;
+    rig.run(|env| flow::lights_write(env, &file, write, &mut Log::default()))
+}
+
+#[test]
+fn lights_show_reads_a_lights_profile_live() {
+    let rig = lights_profiles_rig(0);
+    let r = rig.run(|env| flow::lights_show(env, None)).unwrap();
+    assert_eq!(r.file.profile, Some(0));
+    assert!(r.active && r.file.enabled == Some(true));
+    assert_eq!(r.file.board.as_deref(), Some("Haute42COSMOX"));
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["idle_effect_name"], "rainbow-synced");
+    let r = rig.run(|env| flow::lights_show(env, Some(3))).unwrap();
+    assert!(!r.active);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn lights_show_needs_a_number_when_the_lights_are_off() {
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles();
+                c.lights.profile = -1;
+            }),
+    );
+    let e = rig.run(|env| flow::lights_show(env, None)).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(e.to_string().contains("the lights are off"), "{e}");
+}
+
+#[test]
+fn lights_write_selects_in_ram_and_waits_for_core_1() {
+    let rig = lights_profiles_rig(3);
+    let write = LightsWrite {
+        profile: 2,
+        select: true,
+        ..LightsWrite::default()
+    };
+    let r = write_lights(
+        &rig,
+        r#"{"idle_effect": "rain", "idle_cycle_time": 4}"#,
+        &write,
+    )
+    .unwrap();
+    assert!(r.active && r.applied && r.verified && !r.saved);
+    assert_eq!(r.changed, ["idle_effect", "idle_cycle_time"]);
+    assert!(r.note.unwrap().contains("not saved"));
+    assert_eq!(rig.channel_commands(), [0x16]);
+    let fw = rig.pad.firmware();
+    assert_eq!((fw.lights.profile, fw.lights_pending), (2, 0));
+    assert!(fw.saved_lights_profiles.is_some(), "flash untouched");
+    // The backup is profile 2 as it was: a write of it undoes the change.
+    let backup = r.backup.unwrap();
+    assert!(
+        backup
+            .to_str()
+            .unwrap()
+            .ends_with("-Haute42COSMOX-lights2.json")
+    );
+    let text = std::fs::read_to_string(&backup).unwrap();
+    let undo = LightsWrite {
+        profile: 2,
+        ..LightsWrite::default()
+    };
+    let r = write_lights(&rig, &text, &undo).unwrap();
+    assert_eq!(r.changed, ["idle_effect", "idle_cycle_time"]);
+    assert!(r.active, "it still runs");
+}
+
+#[test]
+fn lights_write_save_survives_a_restart() {
+    let rig = lights_profiles_rig(0);
+    let write = LightsWrite {
+        profile: 1,
+        save: true,
+        ..LightsWrite::default()
+    };
+    let r = write_lights(&rig, r##"{"pressed_special_color": "#123456"}"##, &write).unwrap();
+    assert!(r.saved && !r.active && r.note.is_none());
+    let fw = rig.pad.firmware();
+    assert!(fw.saved_lights_profiles.is_none(), "flash has it");
+    assert_eq!(
+        fw.lights_fields[1][&12],
+        gamepadii_core::pb::Value::Varint(0x123456)
+    );
+}
+
+#[test]
+fn lights_write_refuses_before_it_sends() {
+    let rig = lights_profiles_rig(0);
+    let w = |profile, select| LightsWrite {
+        profile,
+        select,
+        ..LightsWrite::default()
+    };
+    for (json, write, says) in [
+        (r#"{"board": "Pico"}"#, w(1, false), "for board Pico"),
+        (r#"{"enabled": false}"#, w(0, false), "runs now"),
+        (r#"{"enabled": false}"#, w(1, true), "the one to select"),
+        (r#"{"idle_effect": 20}"#, w(1, false), "0 to 19"),
+        (r#"{"case_cycle_time": -1}"#, w(1, false), "0 to 9"),
+        (r#"{}"#, w(4, false), "0 to 3"),
+    ] {
+        let e = write_lights(&rig, json, &write).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup either");
+    // A web-config preview: exit 5, nothing sent.
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles();
+                c.lights_limits.preview = true;
+            }),
+    );
+    let e = write_lights(&rig, "{}", &w(1, false)).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(rig.channel_commands().is_empty());
+    // No v1.5 channel: exit 5, nothing sent.
+    for (rig, says) in [
+        (main_lights(InputMode::Xinput), "v1.2"),
+        (Rig::s16(InputMode::Xinput), "control channel v1.5"),
+        (slots_rig(InputMode::Xinput), "v1.4"),
+    ] {
+        let e = write_lights(&rig, "{}", &w(1, false)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(rig.channel_commands().is_empty());
+        let e = rig.run(|env| flow::lights_show(env, Some(0))).unwrap_err();
         assert_eq!(e.exit_code(), exit::NEEDS_USER);
     }
 }

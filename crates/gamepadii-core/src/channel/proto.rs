@@ -24,14 +24,17 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.4: the profile slots). A
+/// The newest protocol minor this host knows (v1.5: the lights profiles). A
 /// pad's minor tells which STRING ids it has; what else it can do is in
 /// its capabilities.
-pub const MINOR: u8 = 4;
+pub const MINOR: u8 = 5;
 /// The first minor with STRING [`string::BOARD_ID`].
 pub const BOARD_ID_MINOR: u8 = 3;
 /// The first minor with READ_SLOT and WRITE_SLOT ([`Caps::SLOTS`]).
 pub const SLOTS_MINOR: u8 = 4;
+/// The first minor with READ_LIGHTS and WRITE_LIGHTS
+/// ([`Caps::LIGHTS_PROFILES`]).
+pub const LIGHTS_PROFILES_MINOR: u8 = 5;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -103,6 +106,9 @@ pub enum Command {
     LightsStatus = 0x05,
     /// v1.4, behind [`Caps::SLOTS`]: `wValue` is the profile (1–6).
     ReadSlot = 0x06,
+    /// v1.5, behind [`Caps::LIGHTS_PROFILES`]: `wValue` is the lights
+    /// profile (0–3).
+    ReadLights = 0x07,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
@@ -112,22 +118,26 @@ pub enum Command {
     SetLights = 0x14,
     /// v1.4, behind [`Caps::SLOTS`].
     WriteSlot = 0x15,
+    /// v1.5, behind [`Caps::LIGHTS_PROFILES`].
+    WriteLights = 0x16,
 }
 
 impl Command {
-    pub const ALL: [Command; 12] = [
+    pub const ALL: [Command; 14] = [
         Command::Hello,
         Command::Status,
         Command::String,
         Command::LedStatus,
         Command::LightsStatus,
         Command::ReadSlot,
+        Command::ReadLights,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
         Command::SetLed,
         Command::SetLights,
         Command::WriteSlot,
+        Command::WriteLights,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -144,6 +154,7 @@ impl Command {
                 | Command::LedStatus
                 | Command::LightsStatus
                 | Command::ReadSlot
+                | Command::ReadLights
         )
     }
 
@@ -161,11 +172,13 @@ impl Command {
             Command::SetLights => "SET_LIGHTS",
             Command::ReadSlot => "READ_SLOT",
             Command::WriteSlot => "WRITE_SLOT",
+            Command::ReadLights => "READ_LIGHTS",
+            Command::WriteLights => "WRITE_LIGHTS",
         }
     }
 
-    /// The OUT payload length after the header. WRITE_SLOT has none: its
-    /// length comes from the pin count ([`Slot::len`]).
+    /// The OUT payload length after the header. WRITE_SLOT and
+    /// WRITE_LIGHTS have none: the pin count or the protobuf gives it.
     pub fn payload_len(self) -> Option<usize> {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
@@ -178,15 +191,18 @@ impl Command {
             | Command::LedStatus
             | Command::LightsStatus
             | Command::ReadSlot
-            | Command::WriteSlot => None,
+            | Command::WriteSlot
+            | Command::ReadLights
+            | Command::WriteLights => None,
         }
     }
 
     /// The longest data stage the firmware takes in SETUP: one packet, but
-    /// a slot is longer (§3.10).
+    /// a slot (§3.10) and a lights profile (§3.11) are longer.
     pub fn max_len(self) -> u16 {
         match self {
-            Command::ReadSlot => u16::MAX,
+            Command::ReadSlot | Command::ReadLights => u16::MAX,
+            Command::WriteLights => (HEADER_LEN + LIGHTS_HEAD_LEN + ANIMATION_PROFILE_MAX) as u16,
             Command::WriteSlot => (HEADER_LEN + Slot::len(SLOT_MAX_PINS)) as u16,
             _ => MAX_LEN,
         }
@@ -243,8 +259,11 @@ impl Caps {
     pub const LIGHTS: u32 = 1 << 9;
     /// v1.4: READ_SLOT and WRITE_SLOT, the pin mappings of a profile.
     pub const SLOTS: u32 = 1 << 10;
+    /// v1.5: READ_LIGHTS and WRITE_LIGHTS, the effects and colours of a
+    /// lights profile. Set only when the LEDs run.
+    pub const LIGHTS_PROFILES: u32 = 1 << 11;
 
-    const NAMES: [(u32, &'static str); 11] = [
+    const NAMES: [(u32, &'static str); 12] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -256,6 +275,7 @@ impl Caps {
         (Self::LEDS, "leds"),
         (Self::LIGHTS, "lights"),
         (Self::SLOTS, "slots"),
+        (Self::LIGHTS_PROFILES, "lights_profiles"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -357,6 +377,15 @@ impl Hello {
     /// with [`Caps::SLOTS`]. Never send them to an older pad.
     pub fn has_slots(&self) -> bool {
         self.major == MAJOR && self.minor >= SLOTS_MINOR && self.caps.has(Caps::SLOTS)
+    }
+
+    /// Whether the pad has READ_LIGHTS and WRITE_LIGHTS: protocol 1.5 or
+    /// later, with [`Caps::LIGHTS_PROFILES`]. Never send them to an older
+    /// pad.
+    pub fn has_lights_profiles(&self) -> bool {
+        self.major == MAJOR
+            && self.minor >= LIGHTS_PROFILES_MINOR
+            && self.caps.has(Caps::LIGHTS_PROFILES)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -760,6 +789,56 @@ impl SetLights {
     }
 }
 
+/// The bytes before the protobuf of a lights profile: profile, flags, and
+/// a `u16` (the protobuf length in a READ_LIGHTS reply, 0 in WRITE_LIGHTS).
+pub const LIGHTS_HEAD_LEN: usize = 4;
+/// `AnimationProfile_size`: the longest encoded `AnimationProfile`.
+pub const ANIMATION_PROFILE_MAX: usize = 227;
+/// The `wLength` of a READ_LIGHTS.
+pub const READ_LIGHTS_LEN: u16 = 512;
+
+/// A READ_LIGHTS reply, or a WRITE_LIGHTS argument (§3.11): one lights
+/// profile, its `AnimationProfile` as protobuf ([`crate::pb`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LightsData {
+    /// 0–3.
+    pub profile: u8,
+    /// [`Slot::ENABLED`], [`Slot::ACTIVE`], [`Slot::SAVE`]: the same bits.
+    pub flags: u8,
+    /// The encoded `AnimationProfile`. In a WRITE_LIGHTS, only the fields
+    /// to change: the firmware keeps the others.
+    pub protobuf: Vec<u8>,
+}
+
+impl LightsData {
+    pub fn enabled(&self) -> bool {
+        self.flags & Slot::ENABLED != 0
+    }
+
+    pub fn active(&self) -> bool {
+        self.flags & Slot::ACTIVE != 0
+    }
+
+    /// A READ_LIGHTS reply: the head gives the protobuf length.
+    pub fn parse(b: &[u8]) -> Option<Self> {
+        let head = b.get(..LIGHTS_HEAD_LEN)?;
+        let len = usize::from(u16::from_le_bytes([head[2], head[3]]));
+        let protobuf = b.get(LIGHTS_HEAD_LEN..LIGHTS_HEAD_LEN + len)?.to_vec();
+        Some(Self {
+            profile: head[0],
+            flags: head[1],
+            protobuf,
+        })
+    }
+
+    /// The WRITE_LIGHTS argument: the `u16` is 0.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = vec![self.profile, self.flags, 0, 0];
+        b.extend_from_slice(&self.protobuf);
+        b
+    }
+}
+
 /// The bytes before the pins of a slot.
 pub const SLOT_HEAD_LEN: usize = 20;
 /// The bytes of each pin: `i16` action, `u32` button mask, `u32` D-pad mask.
@@ -1130,6 +1209,33 @@ mod tests {
         assert_eq!(Command::SetLed.payload_len(), Some(8));
         assert_eq!(Caps(0x12f).names().last(), Some(&"leds"));
         assert!(Caps(0x12f).has(Caps::LEDS) && !Caps(0x2f).has(Caps::LEDS));
+    }
+
+    #[test]
+    fn v1_5_lights_profile_commands() {
+        let s = Setup::read(Command::ReadLights, 3);
+        assert_eq!((s.request_type, s.index, s.value), (TYPE_IN, 0x5007, 3));
+        assert!(Command::ReadLights.is_in() && !Command::WriteLights.is_in());
+        assert_eq!(Command::from_byte(0x16), Some(Command::WriteLights));
+        assert_eq!(Command::WriteLights.max_len(), 8 + 4 + 227);
+        assert_eq!(Caps(0xe2f).names().last(), Some(&"lights_profiles"));
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(5, Caps::LIGHTS_PROFILES).has_lights_profiles());
+        assert!(!hello(4, Caps::LIGHTS_PROFILES).has_lights_profiles());
+        assert!(!hello(5, Caps::SLOTS).has_lights_profiles());
+        // The reply's u16 is the protobuf length; bytes after it are not
+        // the profile.
+        let d = LightsData::parse(&[2, 3, 2, 0, 0x10, 1, 0xee]).unwrap();
+        assert_eq!((d.profile, d.enabled(), d.active()), (2, true, true));
+        assert_eq!(d.protobuf, [0x10, 1]);
+        assert_eq!(LightsData::parse(&[2, 3, 5, 0, 0x10]), None, "short");
+        assert_eq!(d.encode(), [2, 3, 0, 0, 0x10, 1]);
     }
 
     #[test]

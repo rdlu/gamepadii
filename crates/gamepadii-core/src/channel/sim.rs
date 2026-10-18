@@ -16,7 +16,10 @@
 //! before that, the id STALLs. [`SimChannel::with_slots`] makes it a v1.4
 //! build with READ_SLOT and WRITE_SLOT: the pin mappings of each profile,
 //! in RAM and saved, from the mock's `getPinMappings` and
-//! `getProfileOptions`.
+//! `getProfileOptions`. [`SimChannel::with_lights_profiles`] makes it a
+//! v1.5 build with READ_LIGHTS and WRITE_LIGHTS: each lights profile's
+//! `AnimationProfile` fields, in RAM and saved, from the mock's
+//! `getAnimationProtoOptions`.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -29,12 +32,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Slot,
-    SlotPin, Status,
+    self, Caps, Command, Hello, LedStatus, LightsData, LightsStatus, Outcome, SetLed, SetLights,
+    Setup, Slot, SlotPin, Status,
 };
 use super::{ControlTransport, UsbError};
 use crate::api::{PinMappings, ProfileOptions};
+use crate::lights::LightsFile;
 use crate::mode::{BootMode, InputMode};
+use crate::pb;
 use crate::transport::mock::Mock;
 
 /// What the pad does after a command.
@@ -186,6 +191,9 @@ impl Default for SimLightsLimits {
     }
 }
 
+/// The lights profiles in flash: the fields and the limits' profiles.
+pub type SavedLightsProfiles = ([BTreeMap<u32, pb::Value>; 4], [SimLightsProfile; 4]);
+
 /// The pins of an RP2040 (`NUM_BANK0_GPIOS`).
 pub const RP2040_PINS: u8 = 30;
 
@@ -282,6 +290,15 @@ pub struct SimChannel {
     pub slots: BTreeMap<u8, SimSlot>,
     /// The same in flash.
     pub saved_slots: BTreeMap<u8, SimSlot>,
+    /// v1.5: each lights profile's `AnimationProfile` fields in RAM, by
+    /// number. `lights_limits.profiles` holds `bEnabled`, the effects and
+    /// the cycle times: they win over the fields here.
+    pub lights_fields: [BTreeMap<u32, pb::Value>; 4],
+    /// The lights profiles in flash, when a RAM-only WRITE_LIGHTS made them
+    /// differ; `None`: flash has what RAM has.
+    pub saved_lights_profiles: Option<SavedLightsProfiles>,
+    /// `customColors`: the colour indexes go to 14 plus this.
+    pub custom_colors: u8,
     pub log: Vec<Seen>,
 }
 
@@ -323,6 +340,9 @@ impl SimChannel {
             pin_count: RP2040_PINS,
             slots: default_slots(),
             saved_slots: default_slots(),
+            lights_fields: Default::default(),
+            saved_lights_profiles: None,
+            custom_colors: 0,
             log: Vec::new(),
         }
     }
@@ -485,6 +505,110 @@ impl SimChannel {
         }
     }
 
+    /// A v1.5 build: protocol minor 5, with READ_LIGHTS and WRITE_LIGHTS
+    /// (advertised only when the LEDs run). A main-line build.
+    pub fn with_lights_profiles(mut self) -> Self {
+        self = self.with_lights();
+        self.minor = self.minor.max(proto::LIGHTS_PROFILES_MINOR);
+        if self.lights_limits.running {
+            self.caps = Caps(self.caps.0 | Caps::LIGHTS_PROFILES);
+        }
+        self
+    }
+
+    /// The `AnimationProfile` of lights profile `n` as READ_LIGHTS gives
+    /// it: the fields, with `bEnabled`, the effects and the cycle times
+    /// from `lights_limits`.
+    pub fn lights_profile(&self, n: u8) -> LightsData {
+        let i = usize::from(n);
+        let p = self.lights_limits.profiles[i];
+        let mut fields = self.lights_fields[i].clone();
+        fields.insert(1, pb::Value::Varint(u64::from(p.enabled)));
+        for (number, v) in [
+            (2, p.idle_effect),
+            (3, p.pressed_effect),
+            (4, p.idle_cycle_time),
+            (10, p.case_effect),
+            (14, p.pressed_cycle_time),
+            (16, p.case_cycle_time),
+        ] {
+            fields.insert(number, pb::Value::Varint(u64::from(v)));
+        }
+        let fields: Vec<pb::Field> = fields.into_iter().collect();
+        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+        LightsData {
+            profile: n,
+            flags: flag(p.enabled, Slot::ENABLED)
+                | flag(
+                    i8::try_from(n).ok() == Some(self.lights.profile),
+                    Slot::ACTIVE,
+                ),
+            protobuf: pb::encode(&fields),
+        }
+    }
+
+    /// WRITE_LIGHTS, with the firmware's checks in its order (§3.11).
+    fn write_lights(&mut self, args: &[u8]) -> Result<(), Outcome> {
+        if args.len() < proto::LIGHTS_HEAD_LEN {
+            return Err(Outcome::BadLength);
+        }
+        if !self.caps.has(Caps::LIGHTS_PROFILES) {
+            return Err(Outcome::Unsupported);
+        }
+        let (n, flags) = (args[0], args[1]);
+        if n > 3 || flags & !Slot::FLAGS != 0 || args[2..4] != [0, 0] {
+            return Err(Outcome::BadArg);
+        }
+        if self.lights_limits.preview {
+            return Err(Outcome::Busy);
+        }
+        let enable = flags & Slot::ENABLED != 0;
+        let running = i8::try_from(n).ok() == Some(self.lights.profile);
+        if !enable && (flags & Slot::ACTIVE != 0 || running) {
+            return Err(Outcome::ProfileDisabled);
+        }
+        let sent = LightsData {
+            profile: n,
+            flags,
+            protobuf: args[proto::LIGHTS_HEAD_LEN..].to_vec(),
+        };
+        let file = LightsFile::from_data(&sent, None).ok_or(Outcome::BadArg)?;
+        file.check(Some(usize::from(self.custom_colors)))
+            .map_err(|_| Outcome::BadArg)?;
+        if self.saved_lights_profiles.is_none() {
+            self.saved_lights_profiles =
+                Some((self.lights_fields.clone(), self.lights_limits.profiles));
+        }
+        let i = usize::from(n);
+        let byte = |number, old: u8| {
+            file.values
+                .get(&number)
+                .and_then(pb::Value::as_u32)
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(old)
+        };
+        let p = &mut self.lights_limits.profiles[i];
+        *p = SimLightsProfile {
+            enabled: enable,
+            idle_effect: byte(2, p.idle_effect),
+            pressed_effect: byte(3, p.pressed_effect),
+            idle_cycle_time: byte(4, p.idle_cycle_time),
+            case_effect: byte(10, p.case_effect),
+            pressed_cycle_time: byte(14, p.pressed_cycle_time),
+            case_cycle_time: byte(16, p.case_cycle_time),
+        };
+        self.lights_fields[i].extend(file.values);
+        if flags & Slot::ACTIVE != 0 || running {
+            self.lights.profile = n as i8;
+        }
+        self.lights_pending = self.lights_limits.pending_reads;
+        if flags & Slot::SAVE != 0 {
+            self.save_all();
+            self.saved_profile = self.active;
+        }
+        Ok(())
+    }
+
     /// Main's lights from the mock: `getAnimationProtoOptions` and
     /// `getLedOptions`. A v0.7.12 mock has neither, and nothing changes.
     fn lights_from(&mut self, mock: &Mock) {
@@ -504,7 +628,17 @@ impl SimChannel {
             if let Some(v) = int(&a, "idletimeout").and_then(|v| u16::try_from(v).ok()) {
                 k.idle_timeout_s = v;
             }
+            if let Some(c) = a.get("customColors").and_then(Value::as_array) {
+                self.custom_colors = u8::try_from(c.len()).unwrap_or(u8::MAX);
+            }
             let profiles = a.get("profiles").and_then(Value::as_array);
+            for (fields, json) in self
+                .lights_fields
+                .iter_mut()
+                .zip(profiles.into_iter().flatten())
+            {
+                *fields = animation_fields(json);
+            }
             for (p, json) in k.profiles.iter_mut().zip(profiles.into_iter().flatten()) {
                 // The getter adds 1 to each cycle time.
                 let cycle = |key| byte(json, key).map_or(0, |v| v.saturating_sub(1));
@@ -573,6 +707,7 @@ impl SimChannel {
         self.saved_leds = self.leds;
         self.saved_lights = self.lights;
         self.saved_slots = self.slots.clone();
+        self.saved_lights_profiles = None;
     }
 
     /// The LED state from the mock: `animationOptions` from its `getConfig`
@@ -677,6 +812,10 @@ impl SimChannel {
             .collect();
         self.slots = self.saved_slots.clone();
         self.sync_slots(numbers);
+        if let Some((fields, profiles)) = self.saved_lights_profiles.take() {
+            self.lights_fields = fields;
+            self.lights_limits.profiles = profiles;
+        }
         self.pending = false;
         self.reboot_pending = false;
         self.last = (0, 0, 0);
@@ -700,6 +839,12 @@ impl SimChannel {
             Some(Command::LightsStatus) if !self.caps.has(Caps::LIGHTS) => Some(None),
             // Before 1.4 there are no slot commands.
             Some(Command::ReadSlot | Command::WriteSlot) if !self.caps.has(Caps::SLOTS) => {
+                Some(None)
+            }
+            // Before 1.5 there are no lights profile commands.
+            Some(Command::ReadLights | Command::WriteLights)
+                if !self.main || self.minor < proto::LIGHTS_PROFILES_MINOR =>
+            {
                 Some(None)
             }
             known => Some(known),
@@ -779,6 +924,17 @@ impl SimChannel {
                 Ok(n @ 1..=6) => self.slot(n).encode(),
                 _ => return Err(UsbError::Stall),
             },
+            // Without the LEDs, buildLights fails: a STALL.
+            Command::ReadLights => match u8::try_from(setup.value) {
+                Ok(n @ 0..=3) if self.caps.has(Caps::LIGHTS_PROFILES) => {
+                    let d = self.lights_profile(n);
+                    let mut b = vec![d.profile, d.flags];
+                    b.extend_from_slice(&(d.protobuf.len() as u16).to_le_bytes());
+                    b.extend_from_slice(&d.protobuf);
+                    b
+                }
+                _ => return Err(UsbError::Stall),
+            },
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -848,6 +1004,9 @@ impl SimChannel {
     fn apply(&mut self, cmd: Command, args: &[u8]) -> Result<Option<Effect>, Outcome> {
         if cmd == Command::WriteSlot {
             return self.write_slot(args).map(|()| None);
+        }
+        if cmd == Command::WriteLights {
+            return self.write_lights(args).map(|()| None);
         }
         // Bytes past the arguments are ignored, for later minors.
         if args.len() < cmd.payload_len().unwrap_or(usize::MAX) {
@@ -1121,4 +1280,66 @@ impl ControlTransport for Standalone {
     fn describe(&self) -> String {
         self.node.clone()
     }
+}
+
+/// The fields of one profile of `getAnimationProtoOptions`, as
+/// `AnimationProfile` has them: the getter adds 1 to the cycle times and
+/// splits `effectContextParam`.
+fn animation_fields(json: &Value) -> BTreeMap<u32, pb::Value> {
+    let int = |k: &str| json.get(k).and_then(Value::as_u64);
+    let mut f = BTreeMap::new();
+    for (number, key) in [
+        (2, "baseNonPressedEffect"),
+        (3, "basePressedEffect"),
+        (7, "buttonPressHoldTimeInMs"),
+        (8, "buttonPressFadeOutTimeInMs"),
+        (9, "nonPressedSpecialColor"),
+        (10, "baseCaseEffect"),
+        (12, "pressedSpecialColor"),
+        (15, "bUseCaseLightsInPressedAnimations"),
+        (17, "bNonPressedSpecialColorIsRainbow"),
+        (18, "bPressedSpecialColorIsRainbow"),
+        (19, "bCaseSpecialColorIsRainbow"),
+        (20, "caseSpecialColor"),
+    ] {
+        if let Some(v) = int(key) {
+            f.insert(number, pb::Value::Varint(v));
+        }
+    }
+    for (number, key) in [
+        (4, "baseCycleTime"),
+        (14, "basePressedCycleTime"),
+        (16, "baseCaseCycleTime"),
+    ] {
+        if let Some(v) = int(key) {
+            f.insert(number, pb::Value::Varint(v.saturating_sub(1)));
+        }
+    }
+    for (number, key) in [
+        (5, "notPressedStaticColors"),
+        (6, "pressedStaticColors"),
+        (11, "nonButtonStaticColors"),
+    ] {
+        if let Some(list) = json.get(key).and_then(Value::as_array) {
+            let bytes = list
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|b| b as u8)
+                .collect();
+            f.insert(number, pb::Value::Bytes(bytes));
+        }
+    }
+    let param = [
+        "nonPressedContextParam",
+        "pressedContextParam",
+        "caseContextParam",
+    ]
+    .iter()
+    .zip([0, 8, 16])
+    .filter_map(|(k, shift)| int(k).map(|v| (v & 0xff) << shift))
+    .fold(None, |a: Option<u64>, v| Some(a.unwrap_or(0) | v));
+    if let Some(p) = param {
+        f.insert(21, pb::Value::Varint(p));
+    }
+    f
 }

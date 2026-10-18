@@ -181,6 +181,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   up the profile first (`--no-backup` to skip). It waits for the pad to
   apply an active profile, and reads the profile back. A saved write also
   updates the device cache. `--mock-channel slots` simulates it.
+- Control channel 1.5, the lights profiles: `gamepadii leds profile show
+  [N]` reads the effects and colours of a lights profile live
+  (READ_LIGHTS). `gamepadii leds profile write FILE --profile N [--select]
+  [--save]` changes them (WRITE_LIGHTS), with no reboot, and RAM only
+  unless `--save`. The JSON of `leds profile show` is a lights file. A
+  lights file can leave out fields, and those fields keep their values.
+  Effects can be numbers or names. Colours are `#rrggbb`. gamepadii checks
+  the file before it sends a command. It backs up the profile first
+  (`--no-backup` to skip), waits for the LEDs to apply it, and reads it
+  back. A small protobuf codec (`pb`) reads and writes the profile.
+  `--mock-channel lights-profiles` simulates it. The build 48a9521
+  (control channel 1.7) counts as main.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.

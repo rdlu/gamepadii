@@ -968,3 +968,81 @@ fn slot_exit_codes() {
     assert_eq!(code, 5);
     assert!(stderr.contains("control channel v1.4"), "{stderr}");
 }
+
+#[test]
+fn lights_profile_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-main"
+    );
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "lights-profiles",
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, _) = run(&["leds", "profile", "show"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Lights profile 0\n"), "{stdout}");
+    // The JSON of `show` is a lights file for `write`.
+    let (code, stdout, _) = run(&["--json", "leds", "profile", "show", "0"]);
+    assert_eq!(code, 0);
+    let file = home.path().join("lights0.json");
+    std::fs::write(&file, &stdout).unwrap();
+    let path = file.to_str().unwrap();
+    let (code, stdout, stderr) = run(&[
+        "--json",
+        "leds",
+        "profile",
+        "write",
+        path,
+        "--profile",
+        "3",
+        "--select",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (v["profile"].as_u64(), v["active"].as_bool()),
+        (Some(3), Some(true))
+    );
+    let backup = v["backup"].as_str().unwrap();
+    assert!(
+        backup.starts_with(home.path().join("data").to_str().unwrap()),
+        "{backup}"
+    );
+    // Usage errors: 3.
+    let bad = home.path().join("bad.json");
+    std::fs::write(&bad, r#"{"idle_effect": 99}"#).unwrap();
+    let bad = bad.to_str().unwrap();
+    for args in [
+        &["leds", "profile", "write", path][..],
+        &["leds", "profile", "write", path, "--profile", "4"],
+        &["leds", "profile", "show", "4"],
+        &["leds", "profile", "write", bad, "--profile", "1"],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 3, "{args:?}: {stderr}");
+    }
+    // No v1.5 channel: 5.
+    let (code, _, stderr) = webconfig(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "slots",
+        "--mock-api",
+        "%s16-main",
+        "leds",
+        "profile",
+        "show",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.5"), "{stderr}");
+}

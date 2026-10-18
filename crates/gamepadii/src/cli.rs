@@ -92,6 +92,9 @@ pub enum MockChannel {
     /// The fork's main line, control channel v1.4: the lights commands and
     /// the profile slots.
     Slots,
+    /// The fork's main line, control channel v1.5: v1.4 and the lights
+    /// profiles.
+    LightsProfiles,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -323,12 +326,48 @@ pub enum LedsCommand {
         #[arg(long)]
         save: bool,
     },
+    /// Main firmware: read or write the effects and colours of a lights
+    /// profile, live (needs control channel v1.5).
+    Profile {
+        #[command(subcommand)]
+        command: LightsProfileCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum LightsProfileCommand {
+    /// Show a lights profile, live. The JSON is a lights file for `leds
+    /// profile write`.
+    Show {
+        /// The lights profile, 0 to 3. Default: the one that runs.
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=3))]
+        profile: Option<u8>,
+    },
+    /// Write a lights file (the JSON of `leds profile show`) to a lights
+    /// profile, live, with no reboot. Only the fields in the file change.
+    /// RAM only unless --save. gamepadii backs up the profile first.
+    Write {
+        /// The lights file, or - for standard input.
+        file: PathBuf,
+        /// The lights profile to write, 0 to 3.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=3))]
+        profile: u8,
+        /// Make it the lights profile that runs now.
+        #[arg(long)]
+        select: bool,
+        /// Also save it to flash.
+        #[arg(long)]
+        save: bool,
+        /// Don't back up the lights profile first.
+        #[arg(long)]
+        no_backup: bool,
+    },
 }
 
 impl LedsCommand {
-    /// What to change.
-    pub fn change(&self) -> LedChange {
-        match self.clone() {
+    /// What to change; `None` for `profile`, which is not a [`LedChange`].
+    pub fn change(&self) -> Option<LedChange> {
+        Some(match self.clone() {
             LedsCommand::Set {
                 animation,
                 brightness,
@@ -351,7 +390,8 @@ impl LedsCommand {
                 save,
                 ..LedChange::default()
             },
-        }
+            LedsCommand::Profile { .. } => return None,
+        })
     }
 }
 

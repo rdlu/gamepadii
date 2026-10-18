@@ -50,12 +50,14 @@ it here in the same change.
 | input mode | The type of controller that the pad shows to the host: XInput, Switch, PS4, keyboard, and others. |
 | KDL | A text format for configuration files. gamepadii will keep its profile library in KDL files. |
 | LED | A light under a button. The S16 has one LED for each button. |
+| lights file | A JSON file with the effects and colours of one lights profile. `gamepadii leds profile show --json` makes one, and `gamepadii leds profile write` reads one. |
 | lights profile | On main firmware, a set of LED effects: one when a button is released, one when it is pressed, and one for the case. The pad has 4, numbered from 0. The LEDs can also be off. |
 | main (upstream main) | The newest code of GP2040-CE. It is not a release. |
 | OLED | The small display on the pad. It shows the buttons and the active profile. |
 | PR (pull request) | A request to merge a branch into `main` on GitHub. |
 | profile | A set of button mappings on the pad. The pad has up to 6 profiles. |
 | profile slot | One of the 6 places on the pad for a profile. Profile 1 is the board's own mapping. gamepadii can write slots 2 to 6. |
+| protobuf | A binary format for structured data. The firmware keeps its settings in this format. |
 | RAM only | A change that the pad keeps until it restarts. The pad does not write it to flash memory. |
 | release | A firmware version that the GP2040-CE project published with a version number, for example v0.7.12. |
 | S16 | The Haute42 S16, the first pad that gamepadii supports. |

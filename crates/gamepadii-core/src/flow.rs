@@ -26,12 +26,13 @@ use serde::Serialize;
 use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
 use crate::buttons::{Button, Combo};
 use crate::cache::{self, DeviceCache, Key, PadId};
-use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
+use crate::channel::{self, Caps, Channel, Hello, OpenControl, Probe, proto};
 use crate::client::{self, Client};
 use crate::commands::{self, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
+use crate::lights::{self, LightsFile, LightsReport, LightsWrite, LightsWriteReport};
 use crate::mode::{BootMode, Confidence, InputMode};
 use crate::slots::{self, SlotFile, SlotReport, SlotWrite, SlotWriteReport};
 use crate::timestamp::Utc;
@@ -2170,6 +2171,20 @@ fn no_slot_channel(pad: &Device, why: Option<String>) -> Error {
 
 /// The pad and its control channel, when it has READ_SLOT and WRITE_SLOT.
 fn slot_channel(env: &Env) -> Result<(Device, Channel)> {
+    live_channel(env, Hello::has_slots, no_slot_channel, |h| {
+        format!("this build's channel speaks v{}.{}", h.major, h.minor)
+    })
+}
+
+/// The pad and its control channel, when `has` says the channel has the
+/// commands; else the error that `none` makes, with `why` for a channel
+/// without them.
+fn live_channel(
+    env: &Env,
+    has: fn(&Hello) -> bool,
+    none: fn(&Device, Option<String>) -> Error,
+    why: fn(&Hello) -> String,
+) -> Result<(Device, Channel)> {
     let pad = pick(env.scan.scan())?;
     if pad.mode == Some(InputMode::Bootsel) {
         return Err(Error::NeedsUser(
@@ -2177,24 +2192,20 @@ fn slot_channel(env: &Env) -> Result<(Device, Channel)> {
         ));
     }
     let Some(open) = env.control else {
-        return Err(no_slot_channel(
+        return Err(none(
             &pad,
             Some("the control channel is off: --no-channel".into()),
         ));
     };
     match commands::probe(open, &pad, env.cache_dir.as_deref()) {
-        Probe::Found(ch) if ch.hello().has_slots() => Ok((pad, ch)),
-        Probe::Found(ch) => {
-            let h = ch.hello();
-            let why = format!("this build's channel speaks v{}.{}", h.major, h.minor);
-            Err(no_slot_channel(&pad, Some(why)))
-        }
+        Probe::Found(ch) if has(ch.hello()) => Ok((pad, ch)),
+        Probe::Found(ch) => Err(none(&pad, Some(why(ch.hello())))),
         Probe::NoAccess { node } => Err(Error::NeedsUser(format!(
-            "{}; the profile slots need the control channel",
+            "{}; this command needs the control channel",
             channel::udev_hint(&node)
         ))),
         Probe::Newer { major, .. } => Err(Error::Usage(commands::newer_protocol(major))),
-        Probe::Stock(_) | Probe::Absent(_) => Err(no_slot_channel(&pad, None)),
+        Probe::Stock(_) | Probe::Absent(_) => Err(none(&pad, None)),
     }
 }
 
@@ -2377,6 +2388,159 @@ fn join(gpios: &[u8]) -> String {
         .map(u8::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+// ---- lights profiles (control channel v1.5) ----------------------------------
+
+fn no_lights_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with the lights profile commands, so \
+         gamepadii can't read or write a lights profile live; that needs the gamepadii \
+         build of GP2040-CE with control channel v1.5, on a pad with LEDs",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// The pad and its control channel, when it has READ_LIGHTS and
+/// WRITE_LIGHTS.
+fn lights_channel(env: &Env) -> Result<(Device, Channel)> {
+    live_channel(env, Hello::has_lights_profiles, no_lights_channel, |h| {
+        if h.minor >= proto::LIGHTS_PROFILES_MINOR {
+            "the pad's LEDs are not set up".into()
+        } else {
+            format!("this build's channel speaks v{}.{}", h.major, h.minor)
+        }
+    })
+}
+
+/// READ_LIGHTS `n`, as a lights file.
+fn read_lights_file(ch: &Channel, n: u8, board: Option<String>) -> Result<LightsFile> {
+    let d = ch.read_lights(n)?;
+    LightsFile::from_data(&d, board).ok_or_else(|| {
+        Error::Protocol(format!(
+            "READ_LIGHTS {n} on {}: the profile is not protobuf",
+            ch.node()
+        ))
+    })
+}
+
+/// `gamepadii leds profile show [N]`: one lights profile with READ_LIGHTS,
+/// live; the one that runs when `which` is `None`.
+pub fn lights_show(env: &Env, which: Option<u8>) -> Result<LightsReport> {
+    let (_, ch) = lights_channel(env)?;
+    let n = match which {
+        Some(n) => n,
+        None => ch.lights_status()?.on().ok_or_else(|| {
+            Error::Usage("the lights are off: give a lights profile, 0 to 3".into())
+        })?,
+    };
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    let file = read_lights_file(&ch, n, board)?;
+    let active = ch.lights_status()?.on() == Some(n);
+    Ok(LightsReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        active,
+        file,
+    })
+}
+
+/// `gamepadii leds profile write FILE --profile N`: WRITE_LIGHTS of the
+/// fields in `file` to lights profile `write.profile` (0–3), live;
+/// selected with `write.select`, saved with `write.save`. It backs up the
+/// profile first (into `env.backups_dir`, when set), waits for the LEDs to
+/// apply it, and reads it back.
+pub fn lights_write(
+    env: &Env,
+    file: &LightsFile,
+    write: &LightsWrite,
+    progress: &mut dyn Progress,
+) -> Result<LightsWriteReport> {
+    let (_, ch) = lights_channel(env)?;
+    let status = ch.lights_status()?;
+    if status.preview() {
+        return Err(Error::NeedsUser(crate::leds::PREVIEW.to_string()));
+    }
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    let data = lights::plan(file, write, status.on(), firmware.board.as_deref())?;
+    let before = read_lights_file(&ch, write.profile, firmware.board.clone())?;
+    let backup = match &env.backups_dir {
+        Some(dir) => {
+            let name = format!(
+                "{}-{}-lights{}.json",
+                Utc::from_system(env.clock.wall()).compact(),
+                commands::board_slug(&firmware),
+                write.profile
+            );
+            let path = dir.join(name);
+            commands::write_json(&before, &path)?;
+            progress.step(Step::BackedUp(&path));
+            Some(path)
+        }
+        None => None,
+    };
+    ch.write_lights(&data)?;
+    // Core 1 applies it on its next frame: LIGHTS_STATUS shows PENDING
+    // until then.
+    let applied = wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(10),
+            timeout: Duration::from_secs(1),
+        },
+        || {
+            let l = ch.lights_status().ok().filter(|l| !l.pending())?;
+            let s = ch.status().ok()?;
+            (s.last_command == channel::Command::WriteLights as u8 && s.last_seq == ch.last_seq())
+                .then_some((l, s))
+        },
+        |_| {},
+    )
+    .is_some_and(|(_, s)| channel::Outcome::from_byte(s.last_result) == channel::Outcome::Ok);
+    let after = read_lights_file(&ch, write.profile, firmware.board.clone())?;
+    let sent = LightsFile::from_data(&data, None).unwrap_or_default();
+    let expect = lights::expected(&before, &sent, data.enabled());
+    let wrong = lights::changed(&expect, &after);
+    if !wrong.is_empty() {
+        return Err(Error::CheckFailed(format!(
+            "the pad accepted the write of lights profile {}, but READ_LIGHTS gives other \
+             values: {}",
+            write.profile,
+            wrong.join(", ")
+        )));
+    }
+    let mut notes = Vec::new();
+    if !applied {
+        notes.push("the pad took the write but the LEDs haven't applied it after 1 s".into());
+    }
+    if !write.save {
+        notes.push(
+            "not saved: after a restart the pad has its saved lights profiles again, unless \
+             something saves the settings first; --save keeps it"
+                .to_string(),
+        );
+    }
+    Ok(LightsWriteReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        profile: write.profile,
+        before_enabled: before.enabled == Some(true),
+        enabled: after.enabled == Some(true),
+        changed: lights::changed(&before, &after),
+        active: ch.lights_status()?.on() == Some(write.profile),
+        saved: write.save,
+        applied,
+        verified: true,
+        backup,
+        note: (!notes.is_empty()).then(|| notes.join("; ")),
+    })
 }
 
 // ---- leds -----------------------------------------------------------------------

@@ -33,8 +33,8 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Slot,
-    SlotPin, Status,
+    Caps, Command, Hello, LedStatus, LightsData, LightsStatus, Outcome, SetLed, SetLights, Setup,
+    Slot, SlotPin, Status,
 };
 
 /// How long a HELLO may take: short, since most pads have no channel.
@@ -538,6 +538,53 @@ impl Channel {
             Command::WriteSlot,
             &slot.encode(),
             &format!("the write of profile {}", slot.profile),
+        )
+    }
+
+    fn need_lights_profiles(&self, cmd: Command) -> Result<()> {
+        if self.hello.has_lights_profiles() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.5, and LEDs)",
+                cmd.name()
+            )))
+        }
+    }
+
+    /// READ_LIGHTS (v1.5): lights profile `n` (0–3), as the pad has it in
+    /// RAM.
+    pub fn read_lights(&self, n: u8) -> Result<LightsData> {
+        self.need_lights_profiles(Command::ReadLights)?;
+        if n > 3 {
+            return Err(Error::Usage(format!(
+                "lights profile {n}: the lights profiles are 0 to 3"
+            )));
+        }
+        let reply = self
+            .read_len(Command::ReadLights, n.into(), proto::READ_LIGHTS_LEN)
+            .map_err(|e| self.fail(e, Command::ReadLights))?;
+        LightsData::parse(&reply)
+            .filter(|d| d.profile == n)
+            .ok_or_else(|| {
+                Error::Protocol(format!(
+                    "READ_LIGHTS {n} on {}: a reply of {} bytes that is not lights profile {n}",
+                    self.node(),
+                    reply.len()
+                ))
+            })
+    }
+
+    /// WRITE_LIGHTS (v1.5): the fields in `data` replace those of the
+    /// lights profile in RAM; it is enabled, selected and saved as its
+    /// flags say. Core 1 applies it after the ACK: the caller waits until
+    /// LIGHTS_STATUS has no PENDING.
+    pub fn write_lights(&self, data: &LightsData) -> Result<()> {
+        self.need_lights_profiles(Command::WriteLights)?;
+        self.command(
+            Command::WriteLights,
+            &data.encode(),
+            &format!("the write of lights profile {}", data.profile),
         )
     }
 

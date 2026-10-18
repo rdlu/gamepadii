@@ -12,7 +12,9 @@ use gamepadii_core::channel::{
     self, Caps, Channel, ControlTransport, Outcome, Probe, Setup, UsbError, proto,
 };
 use gamepadii_core::error::exit;
+use gamepadii_core::lights::LightsFile;
 use gamepadii_core::mode::{BootMode, InputMode};
+use gamepadii_core::pb;
 use gamepadii_core::sim::SimPad;
 
 fn s16_dir() -> PathBuf {
@@ -1100,4 +1102,189 @@ fn a_saved_slot_write_survives_a_restart() {
     replug(&pad);
     let after = connect(&pad).read_slot(4).unwrap();
     assert_eq!((after.label.as_str(), after.pins[6].action), ("DKC 2", 8));
+}
+
+// ---- v1.5: the lights profiles (§3.11) ------------------------------------------
+
+/// The S16 on a v1.5 main-line build, in `mode`.
+fn s16_lights_profiles(mode: InputMode) -> Arc<SimPad> {
+    Arc::new(
+        SimPad::new(main_dir(), mode)
+            .with_lights()
+            .channel(|c| *c = c.clone().with_lights_profiles()),
+    )
+}
+
+fn lights_file(ch: &Channel, n: u8) -> LightsFile {
+    LightsFile::from_data(&ch.read_lights(n).unwrap(), None).unwrap()
+}
+
+#[test]
+fn a_1_5_build_reads_every_lights_profile() {
+    let ch = connect(&s16_lights_profiles(InputMode::Xinput));
+    assert!(ch.hello().has_lights_profiles());
+    let d = ch.read_lights(0).unwrap();
+    assert!(d.enabled() && d.active());
+    let f = LightsFile::from_data(&d, None).unwrap();
+    // The fixture's profile 0: rainbow synced, red when idle.
+    assert_eq!(f.values[&2], pb::Value::Varint(1));
+    assert_eq!(f.values[&5], pb::Value::Bytes(vec![2; 30]));
+    assert_eq!(f.values[&4], pb::Value::Varint(0), "web-config's 1 is 0");
+    assert!(!ch.read_lights(3).unwrap().active());
+    assert_eq!(ch.read_lights(4).unwrap_err().exit_code(), exit::USAGE);
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights_profiles();
+    let r = sim.control_in(Setup::read(proto::Command::ReadLights, 4), 512);
+    assert!(matches!(r, Err(UsbError::Stall)));
+}
+
+#[test]
+fn a_1_4_build_never_gets_a_lights_profile_command() {
+    let pad = Arc::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| *c = c.clone().with_slots()),
+    );
+    let ch = connect(&pad);
+    let e = ch.read_lights(0).unwrap_err();
+    assert!(e.to_string().contains("no READ_LIGHTS"), "{e}");
+    let e = ch.write_lights(&proto::LightsData::default()).unwrap_err();
+    assert!(e.to_string().contains("no WRITE_LIGHTS"), "{e}");
+    assert!(
+        pad.control_log()
+            .iter()
+            .all(|s| !matches!(s.setup.command_byte(), 0x07 | 0x16))
+    );
+    // A 1.5 build without LEDs: no bit 11.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    sim.lights_limits.running = false;
+    let ch = channel::hello(standalone(sim.with_lights_profiles()), 5)
+        .found()
+        .unwrap();
+    assert!(!ch.hello().has_lights_profiles());
+}
+
+#[test]
+fn write_lights_checks_everything_before_a_change() {
+    let pad = s16_lights_profiles(InputMode::Xinput);
+    let ch = connect(&pad);
+    let before: Vec<LightsFile> = (0..4).map(|n| lights_file(&ch, n)).collect();
+    let token = pad.firmware().token;
+    let t = open(&pad);
+    let send = |args: &[u8]| {
+        let r = t.control_out(
+            Setup::command(proto::Command::WriteLights),
+            &proto::payload(token, 21, args),
+            Duration::from_secs(1),
+        );
+        (
+            r.is_ok(),
+            Outcome::from_byte(ch.status().unwrap().last_result),
+        )
+    };
+    let pb = |fields: &[pb::Field]| pb::encode(fields);
+    let head = |n: u8, flags: u8| vec![n, flags, 0, 0];
+    let with = |mut h: Vec<u8>, body: Vec<u8>| {
+        h.extend(body);
+        h
+    };
+    let en = proto::Slot::ENABLED;
+    for (args, want) in [
+        (vec![1, en, 0], Outcome::BadLength),
+        (head(4, en), Outcome::BadArg),
+        (head(1, 0x09), Outcome::BadArg),
+        (vec![1, en, 1, 0], Outcome::BadArg),
+        (with(head(1, en), vec![0xff; 10]), Outcome::BadArg),
+        (
+            with(head(1, en), pb(&[(2, pb::Value::Varint(20))])),
+            Outcome::BadArg,
+        ),
+        (
+            with(head(1, en), pb(&[(4, pb::Value::Varint(10))])),
+            Outcome::BadArg,
+        ),
+        // No custom colours on the fixture: 14 is out of range.
+        (
+            with(head(1, en), pb(&[(5, pb::Value::Bytes(vec![14]))])),
+            Outcome::BadArg,
+        ),
+        (head(1, proto::Slot::ACTIVE), Outcome::ProfileDisabled),
+        (head(0, 0), Outcome::ProfileDisabled),
+    ] {
+        let (ok, o) = send(&args);
+        assert!(!ok, "{args:?}");
+        assert_eq!(o, want, "{args:?}");
+    }
+    let after: Vec<LightsFile> = (0..4).map(|n| lights_file(&ch, n)).collect();
+    assert_eq!(after, before, "nothing changed");
+    // A web-config preview runs: BUSY.
+    let pad = Arc::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles();
+                c.lights_limits.preview = true;
+            }),
+    );
+    let ch = connect(&pad);
+    let e = ch.write_lights(&proto::LightsData {
+        profile: 1,
+        flags: en,
+        protobuf: vec![],
+    });
+    assert!(e.is_err());
+    assert_eq!(
+        Outcome::from_byte(ch.status().unwrap().last_result),
+        Outcome::Busy
+    );
+}
+
+#[test]
+fn a_ram_lights_write_selects_and_goes_away_at_a_restart() {
+    let pad = s16_lights_profiles(InputMode::Xinput);
+    let ch = connect(&pad);
+    let before = lights_file(&ch, 2);
+    let sent = LightsFile::parse(r#"{"idle_effect": "rain", "press_hold_ms": 100}"#).unwrap();
+    ch.write_lights(&proto::LightsData {
+        profile: 2,
+        flags: proto::Slot::ENABLED | proto::Slot::ACTIVE,
+        protobuf: sent.protobuf(),
+    })
+    .unwrap();
+    let st = ch.status().unwrap();
+    assert_eq!(st.last_command, proto::Command::WriteLights as u8);
+    let l = ch.lights_status().unwrap();
+    assert_eq!((l.profile, l.idle_effect), (2, 19));
+    let after = lights_file(&ch, 2);
+    assert_eq!(
+        after,
+        gamepadii_core::lights::expected(&before, &sent, true)
+    );
+    assert_eq!(after.values[&6], before.values[&6], "the rest stays");
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    assert_eq!(ch.lights_status().unwrap().profile, 0);
+    assert_eq!(lights_file(&ch, 2), before);
+}
+
+#[test]
+fn a_saved_lights_write_survives_a_restart() {
+    let pad = s16_lights_profiles(InputMode::Xinput);
+    let ch = connect(&pad);
+    let sent = LightsFile::parse(r#"{"enabled": false, "case_effect": 3}"#).unwrap();
+    ch.write_lights(&proto::LightsData {
+        profile: 3,
+        flags: proto::Slot::SAVE,
+        protobuf: sent.protobuf(),
+    })
+    .unwrap();
+    assert_eq!(ch.lights_status().unwrap().enabled_profiles, 0b0111);
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    let after = lights_file(&ch, 3);
+    assert_eq!(
+        (after.enabled, after.values[&10].as_u32()),
+        (Some(false), Some(3))
+    );
 }

@@ -15,7 +15,7 @@ buttons. With our firmware fork, most changes do not need a button press.
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `display layout`,
-`leds` and `setup udev`. The TUI
+`leds`, `leds profile show`, `leds profile write` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -84,6 +84,13 @@ gamepadii profile show [N|LABEL]  the pin mappings of a profile, live
 gamepadii profile write FILE --slot N [--select] [--save] [--label TEXT]
                                   write a slot file to profile 2-6, live;
                                   RAM only unless --save; backs up first
+gamepadii leds profile show [N]   the effects and colours of a lights
+                                  profile, live (needs control channel
+                                  v1.5); --json gives a lights file
+gamepadii leds profile write FILE --profile N [--select] [--save]
+                                  write a lights file to lights profile
+                                  0-3, live; only its fields change; RAM
+                                  only unless --save; backs up first
 gamepadii display layout          the OLED's button drawing, and the
                                   choices for this board
 gamepadii display layout <MODEL>  pick the drawing for a Haute42 model:
@@ -169,6 +176,14 @@ press:
   file to a free profile with `--select`. Before a write, gamepadii backs
   up the profile in the same format, so a `profile write` of the backup
   undoes it. Like `profile switch`, a write is RAM only unless `--save`;
+- `leds profile show` reads the effects and colours of a lights profile,
+  and `leds profile write` changes them, with no reboot. This needs channel
+  v1.5 on main firmware. The JSON of `leds profile show` is a lights file.
+  A lights file can leave out fields, and the pad keeps those as they are,
+  so `{"idle_effect": "rain"}` changes only the idle effect. The cycle
+  times are 0 to 9, as the firmware keeps them (web-config shows 1 to 10).
+  gamepadii backs up the profile first, and a write is RAM only unless
+  `--save`;
 - `info`, `backup` and `display layout` reboot it into web-config, read
   (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes

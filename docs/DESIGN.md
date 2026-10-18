@@ -218,7 +218,7 @@ main, so Pico 2 builds need the main line (#21).
 
 | Branch | Base | What it has |
 |---|---|---|
-| `gamepadii/main` | upstream main | the fixes, control channel v1.2 (lights), v1.3 (board ID), v1.4 (profile slots), v1.5 (LED profiles) and v1.6 (config blob). On the S16 now (`v0.7.12-132-g61ab30f`). The tests of #21 step 5 are not complete. |
+| `gamepadii/main` | upstream main | the fixes, control channel v1.2 (lights), v1.3 (board ID), v1.4 (profile slots), v1.5 (LED profiles), v1.6 (config blob) and v1.7 (input snapshot). On the S16 now (`v0.7.12-133-g48a9521`). The tests of #21 step 5 are not complete. |
 | `gamepadii/control-channel-led` | v0.7.12 | retired: the fixes, control channel v1.1 (LEDs). The tags `archive/v0.7.12/*` keep its branch heads. |
 
 The main line is our one firmware line. gamepadii still supports pads on

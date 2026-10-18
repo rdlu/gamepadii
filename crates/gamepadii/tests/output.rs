@@ -853,6 +853,53 @@ mod flows {
     }
 
     #[test]
+    fn lights_profile_outputs() {
+        use gamepadii_core::lights::{LightsFile, LightsWrite};
+        let rig = Rig::new(
+            SimPad::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main"),
+                InputMode::Xinput,
+            )
+            .with_lights()
+            .channel(|c| *c = c.clone().with_lights_profiles()),
+        );
+        let show = rig.run(|env| flow::lights_show(env, None)).unwrap();
+        let file = LightsFile::parse(
+            r#"{"idle_effect": "rain", "pressed_colors": [2, 2, 3, 3, 3, 13], "case_in_pressed": true}"#,
+        )
+        .unwrap();
+        let write = |profile, select, save| {
+            rig.run(|env| {
+                let w = LightsWrite {
+                    profile,
+                    select,
+                    save,
+                };
+                flow::lights_write(env, &file, &w, &mut Silent)
+            })
+            .unwrap()
+        };
+        let ram = write(2, true, false);
+        let saved = write(3, false, true);
+        let shown = rig.run(|env| flow::lights_show(env, Some(2))).unwrap();
+        // The backup path has a temporary directory in it.
+        let plain = |r: &gamepadii_core::lights::LightsWriteReport| {
+            let mut r = r.clone();
+            r.backup = r.backup.map(|p| PathBuf::from(p.file_name().unwrap()));
+            r
+        };
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            output::lights_show(human(), &show),
+            output::lights_show(human(), &shown),
+            output::lights_write(human(), &plain(&ram)),
+            output::lights_write(human(), &plain(&saved)),
+            output::lights_show(json(), &show),
+            output::lights_write(json(), &plain(&ram)),
+        ));
+    }
+
+    #[test]
     fn lights_outputs() {
         use gamepadii_core::leds::{LedChange, Level, LightsPick};
         let dir =
