@@ -1,10 +1,17 @@
 # gamepadii — design
 
-A Linux CLI, then a ratatui TUI, then a Tauri GUI, for GP2040-CE gamepads.
-The first target is a Haute42 S16 leverless. The goal is to stop using the
-built-in web configurator: check status, switch input modes, and apply
-profiles (pin mappings, keyboard keymaps) with as few button presses and
-reboots as possible.
+A Linux CLI and TUI for gamepads that use the GP2040-CE firmware. A Tauri
+GUI will follow. The first pad that it supports is the Haute42 S16.
+
+gamepadii shows the status of the pad and changes its settings from the
+computer: the input mode, the profile, the OLED layout and the LEDs. You do
+not have to open the web configurator, and you push fewer buttons. With our
+firmware fork, most changes do not need a button press.
+
+This file gives the decisions, the facts about the firmware, the
+architecture and the test rules. The roadmap and the status are in the
+GitHub issues (#1). The words that we use are in
+[GLOSSARY.md](GLOSSARY.md).
 
 ## Decisions
 
@@ -37,6 +44,11 @@ reboots as possible.
 - **Boards** (decided 2026-10-18): our firmware is only for RP2040 and
   RP2350 (Pico 2) boards. Other chips need their own maintainers. See
   "Fork firmware", "Boards".
+- **Writing** (decided 2026-10-18): all text uses ASD-STE100 Simplified
+  Technical English: issues, PRs, commits, docs, code comments and CLI
+  messages. Technical words that are not in STE are in
+  [GLOSSARY.md](GLOSSARY.md). Each issue and PR starts with the intent. The
+  rules are in `CLAUDE.md`, "Writing".
 - **Depend on the fork where useful** (decided 2026-10-17): gamepadii uses
   what only fork builds can do (the control channel, `getConfig`) without
   waiting for upstream, behind a capability check, and stock keeps working
@@ -430,6 +442,11 @@ numbers change, so the control channel isn't polled.
   live captures of the S16, taken with a `capture` subcommand.
 - insta snapshots cover the human output, the JSON output, the TUI (rendered
   through `TestBackend`) and `--help`.
+- The simulated pad (`sim.rs`) keeps one simulated control channel for each
+  USB node in a process. The hidden `--mock-channel` flag uses it, so the TUI
+  sees the result of its last action, the same as on a real pad.
+- The README demos (`docs/demos/`, `mise run demos`) use the same simulated
+  S16, so that they are the same each time.
 - Live tests are `#[ignore]` and run through `mise run test-live`. On the
   real pad, agents may read and reboot it; any write needs the user's OK and a
   backup first.
