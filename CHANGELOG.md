@@ -193,6 +193,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back. A small protobuf codec (`pb`) reads and writes the profile.
   `--mock-channel lights-profiles` simulates it. The builds 48a9521
   (control channel 1.7) and a51474c (1.8) count as main.
+- Control channel 1.7, the input snapshot: `gamepadii input` reads the
+  inputs once (READ_INPUT), in any mode: the GPIOs pressed now, each with
+  its action in the active profile and its key, and the buttons, D-pad,
+  sticks and triggers. `input --watch` prints a line each time the input
+  changes, until Ctrl-C (with `--json`, one JSON object for each line).
+  `gamepadii input find-pin [--scan] [--timeout S]` waits for one button
+  press and gives its GPIO. gamepadii does the debounce: 3 reads, 15 ms
+  apart. A button that is held at the start does not count. With
+  `--scan`, PIN_SCAN lets the pad read the pins with no action too, and
+  gamepadii stops the scan on every path. After 15 s with no press, it
+  exits 5. `--mock-channel input` simulates it.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.

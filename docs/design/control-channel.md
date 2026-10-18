@@ -219,6 +219,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x05` | IN | LIGHTS_STATUS | 0 | reply: 16 bytes (§3.8); main line | v1.2 |
 | `0x06` | IN | READ_SLOT | profile (1–6) | reply: one slot, 20 + 10 × pin count bytes (§3.10); `wLength` 512 | v1.4 |
 | `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: 4-byte head + `AnimationProfile` protobuf (§3.11); `wLength` 512 | v1.5 |
+| `0x09` | IN | READ_INPUT | 0 | reply: 36 bytes, the pins and the gamepad state (§3.12) | v1.7 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
@@ -226,6 +227,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x14` | OUT | SET_LIGHTS | 0 | header + 4 bytes: mask, profile, brightness, persist (§3.8); main line | v1.2 |
 | `0x15` | OUT | WRITE_SLOT | 0 | header + one slot (§3.10) | v1.4 |
 | `0x16` | OUT | WRITE_LIGHTS | 0 | header + 4-byte head + the fields to change, as protobuf (§3.11) | v1.5 |
+| `0x19` | OUT | PIN_SCAN | 0 | header + `u8` (1 on, 0 off) (§3.12) | v1.7 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -290,8 +292,9 @@ Capability bits:
 | 9 | LIGHTS: LIGHTS_STATUS and SET_LIGHTS (v1.2, §3.8; the main line) |
 | 10 | SLOTS: READ_SLOT and WRITE_SLOT (v1.4, §3.10) |
 | 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5, §3.11; set only when the LEDs run) |
+| 13 | INPUT: READ_INPUT and PIN_SCAN (v1.7, §3.12) |
 
-Bits 12–31 are reserved.
+Bit 12 and bits 14–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -782,6 +785,81 @@ indexes against the custom colours: it doesn't know their number. It backs
 up the profile (`<time>-<board>-lights<N>.json`), waits until PENDING is
 clear and STATUS gives the result, and reads the profile back.
 `channel/sim.rs` models it with `SimChannel::with_lights_profiles`.
+
+### 3.12 v1.7: the input snapshot
+
+Additive. The protocol minor is **7**, and capability **bit 13, INPUT**,
+covers READ_INPUT and PIN_SCAN. The fork's commit is 48a9521b. A host
+sends the commands only when HELLO gives major 1, minor 7 or higher, and
+bit 13. They let a host read the buttons for an input tester, and find
+the GPIO of a button ("push the button to find its pin").
+
+**READ_INPUT** (`0x09`, IN, `wValue` 0, `wLength` 64). The reply is a
+snapshot at the time of the request, with no wait (36 bytes):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | pins pressed now, GPIO 0–31: a SIO input that is low |
+| 4 | u32 | the same, GPIO 32–63 |
+| 8 | u32 | pins that the snapshot can read (SIO inputs), GPIO 0–31 |
+| 12 | u32 | the same, GPIO 32–63 |
+| 16 | u8 | D-pad (`GamepadState`: 1 up, 2 down, 4 left, 8 right) |
+| 17 | u8 | flags: bit 0, the pin scan is on |
+| 18 | u16 | `aux` (bit 15 is Fn) |
+| 20 | u32 | buttons (`GAMEPAD_MASK_*`: B1 bit 0 to A4 bit 15, the DDI directions 16–19, E1–E12 20–31) |
+| 24 | u16 × 4 | `lx`, `ly`, `rx`, `ry` (the centre is 32767) |
+| 32 | u8 × 2 | `lt`, `rt` |
+| 34 | u16 | 0 |
+
+- **The pins are raw**, before the debounce. A pin that the snapshot can't
+  read shows as not pressed.
+- **The D-pad, buttons and axes** are the gamepad state after the active
+  profile, SOCD and the other processing.
+- **No ADC read:** a read from the USB callback changes the ADC input
+  under the analog add-on. The analog values come from the gamepad state.
+- **No wait:** web-config's `getHeldPins` waits up to 5 s in the request,
+  but a control transfer can't. The host reads again and again.
+
+**PIN_SCAN** (`0x19`, OUT). The header, then `u8`: 1 on, 0 off. No byte is
+BAD_LENGTH, and 2 or more is BAD_ARG.
+
+- **On:** each pin with action NONE in the active profile, and with no
+  GPIO function, becomes an input with a pull-up, as for `getHeldPins`.
+  Then READ_INPUT can read a button on a pin with no action. On the S16
+  the scan adds GPIO 15, 22 and 29. GPIO 25 is NONE, but it has a
+  function, so the scan does not change it.
+- **Off:** only the pins that the scan changed are released. A pin that a
+  profile change gave an action stays with the gamepad.
+- **Timeout:** each READ_INPUT while the scan is on keeps it on for 10 s
+  more. The first READ_INPUT after 10 s with no READ_INPUT stops the scan.
+- **No setting changes.** The scan is not saved, and a restart stops it.
+
+"Push the button to find its pin", on the host:
+
+1. Optional: PIN_SCAN 1, for a button on a pin with no action.
+2. Read READ_INPUT every 10 to 20 ms. Keep the last "pressed" mask.
+3. A pin that is pressed now, and was not in the last mask, is a new
+   press. Accept it when 2 or 3 reads one after the other show it (the
+   debounce).
+4. Wait until the pin is released.
+5. PIN_SCAN 0 at the end: always, also after an error or a timeout.
+
+Host side: `Channel::read_input` / `pin_scan`, the module `input` (the
+`GamepadState` names, the reports, and `Finder`, the debounce), and
+`flow::input` / `find_pin` (`gamepadii input [--watch]`, `input find-pin
+[--scan] [--timeout S]`). The report names each pressed GPIO by its action
+in the active profile and by the key printed on the case. The names come
+from READ_SLOT of the active profile and of profile 1 when the pad has
+v1.4, else from the device cache, else there are only the GPIO numbers.
+`find-pin` reads every 15 ms, accepts a press after 3 reads, and waits up
+to 5 s for 3 reads with the pin released. A pin that is held at the start
+is not a new press. After 15 s with no press it stops with exit 5. With
+`--scan` it sends PIN_SCAN 1 first and PIN_SCAN 0 on every path. After a
+Ctrl-C, the next READ_INPUT after 10 s stops the scan. `input --watch`
+reads every 20 ms and prints a line when the input changes; with `--json`
+each line is one JSON object. `channel/sim.rs` models it with
+`SimChannel::with_input`: the pins that a person holds come from a script,
+one entry for each read.
 
 ## 4. Firmware implementation
 

@@ -10,15 +10,17 @@ use std::io::IsTerminal;
 
 use gamepadii_core::Error;
 use gamepadii_core::api::{Evidence, Line, LineEvidence, RebootAck};
+use gamepadii_core::buttons::Button;
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
 use gamepadii_core::discovery::Device;
 use gamepadii_core::display::{BoardLayout, Current, LayoutReport, LayoutStatus};
 use gamepadii_core::flow::{
-    ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via, WebconfigReport,
-    WebconfigVia,
+    self, ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via,
+    WebconfigReport, WebconfigVia,
 };
+use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
 use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
@@ -1160,6 +1162,179 @@ pub fn lights_write(style: Style, r: &LightsWriteReport) -> String {
     ));
     if let Some(b) = &r.backup {
         rw.push(("backup", b.display().to_string()));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// `B1 (A)` for a gamepad button, `ddi-up` for the rest.
+fn button_label(name: &str) -> String {
+    Button::from_name(name).map_or_else(|| name.to_string(), Button::both)
+}
+
+/// `2-21, 26, 27`: GPIOs, with runs of three or more as ranges.
+fn gpio_ranges(gpios: &[u8]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < gpios.len() {
+        let mut j = i;
+        while j + 1 < gpios.len() && gpios[j + 1] == gpios[j] + 1 {
+            j += 1;
+        }
+        if j >= i + 2 {
+            parts.push(format!("{}-{}", gpios[i], gpios[j]));
+        } else {
+            parts.extend(gpios[i..=j].iter().map(u8::to_string));
+        }
+        i = j + 1;
+    }
+    parts.join(", ")
+}
+
+/// The action of a pin, for people: its name, its number, or `-`.
+fn pin_action(p: &PinInfo) -> String {
+    match (&p.action_name, p.action) {
+        (Some(n), _) => n.clone(),
+        (None, Some(a)) => a.to_string(),
+        (None, None) => "-".into(),
+    }
+}
+
+/// Where the names come from, for the `profile` row.
+fn names_from(profile: Option<u8>, from: NamesFrom) -> String {
+    let p = profile.map_or_else(|| "-".to_string(), |n| n.to_string());
+    match from {
+        NamesFrom::Slot => p,
+        NamesFrom::Cache => format!("{p} (names from the device cache)"),
+        NamesFrom::None => format!("{p} (no pin names: gamepadii has no pin mappings)"),
+    }
+}
+
+fn sticks(s: &Sticks) -> String {
+    if s.at_rest() {
+        return "at rest".into();
+    }
+    format!(
+        "lx {} ly {} rx {} ry {}, lt {} rt {}",
+        s.lx, s.ly, s.rx, s.ry, s.lt, s.rt
+    )
+}
+
+fn names_or_dash(names: &[&str], label: fn(&str) -> String) -> String {
+    if names.is_empty() {
+        "-".into()
+    } else {
+        names
+            .iter()
+            .map(|n| label(n))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+pub fn input(style: Style, r: &InputReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let headline = match r.pressed.len() {
+        0 => "Nothing pressed".to_string(),
+        1 => "1 pin pressed".to_string(),
+        n => format!("{n} pins pressed"),
+    };
+    let mut out = format!("{}\n", style.bold(&headline));
+    let mut rw = Vec::new();
+    if !r.pressed.is_empty() {
+        let pins = std::iter::once(format!("{:<6}{:<24}{}", "GPIO", "action", "key"))
+            .chain(r.pressed.iter().map(|p| {
+                let key = p.key.map_or_else(|| "-".into(), |b| b.both());
+                format!("{:>4}  {:<24}{key}", p.gpio, pin_action(p))
+            }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        rw.push(("pressed", pins));
+    }
+    rw.push(("dpad", names_or_dash(&r.dpad, str::to_string)));
+    rw.push(("buttons", names_or_dash(&r.buttons, button_label)));
+    rw.push(("sticks", sticks(&r.sticks)));
+    rw.push(("profile", names_from(r.profile, r.names_from)));
+    rw.push((
+        "readable",
+        format!("{} GPIOs: {}", r.readable.len(), gpio_ranges(&r.readable)),
+    ));
+    if r.scan_on {
+        rw.push(("pin scan", "on".into()));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// One line of `input --watch`: JSON with no line breaks, or text.
+pub fn input_line(style: Style, r: &InputReport) -> String {
+    if style.format != Format::Human {
+        return serde_json::to_string(&Envelope {
+            schema: SCHEMA,
+            data: r,
+        })
+        .expect("serialising plain data cannot fail");
+    }
+    let pins = if r.pressed.is_empty() {
+        "-".to_string()
+    } else {
+        r.pressed
+            .iter()
+            .map(|p| {
+                let action = pin_action(p);
+                match p.key.map(Button::both) {
+                    Some(k) if k != action && Some(k.as_str()) != p.action_name.as_deref() => {
+                        format!("GPIO {} {action} on key {k}", p.gpio)
+                    }
+                    _ => format!("GPIO {} {action}", p.gpio),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut line = format!(
+        "pressed: {pins}; dpad: {}; buttons: {}",
+        names_or_dash(&r.dpad, str::to_string),
+        names_or_dash(&r.buttons, button_label)
+    );
+    if !r.sticks.at_rest() {
+        line.push_str(&format!("; sticks: {}", sticks(&r.sticks)));
+    }
+    line
+}
+
+pub fn find_pin(style: Style, r: &FoundPin) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let action = pin_action(&r.pin);
+    let headline = match r.no_action {
+        Some(true) => format!("GPIO {}: no action", r.pin.gpio),
+        _ if r.pin.action.is_none() => format!("GPIO {}", r.pin.gpio),
+        _ => format!("GPIO {}: {action}", r.pin.gpio),
+    };
+    let mut out = format!("{}\n", style.bold(&headline));
+    let mut rw = vec![
+        ("action", action),
+        ("key", r.pin.key.map_or_else(|| "-".into(), |b| b.both())),
+        ("profile", names_from(r.profile, r.names_from)),
+        ("pin scan", if r.scan { "on" } else { "off" }.into()),
+    ];
+    if !r.released {
+        rw.push((
+            "released",
+            format!(
+                "no: the button was still held after {} s",
+                flow::FindPin::RELEASE.as_secs()
+            ),
+        ));
     }
     rw.push(("via", format!("the control channel ({})", r.host)));
     if let Some(n) = &r.note {

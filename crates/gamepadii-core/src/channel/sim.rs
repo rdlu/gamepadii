@@ -19,24 +19,27 @@
 //! `getProfileOptions`. [`SimChannel::with_lights_profiles`] makes it a
 //! v1.5 build with READ_LIGHTS and WRITE_LIGHTS: each lights profile's
 //! `AnimationProfile` fields, in RAM and saved, from the mock's
-//! `getAnimationProtoOptions`.
+//! `getAnimationProtoOptions`. [`SimChannel::with_input`] makes it a v1.7
+//! build with READ_INPUT and PIN_SCAN: the pins a person holds come from a
+//! script ([`SimInput::frames`]), one entry for each read.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
 //! [`Standalone`] wraps it for the CLI's hidden `--mock-channel`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, Hello, LedStatus, LightsData, LightsStatus, Outcome, SetLed, SetLights,
-    Setup, Slot, SlotPin, Status,
+    self, Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, Outcome,
+    SetLed, SetLights, Setup, Slot, SlotPin, Status,
 };
 use super::{ControlTransport, UsbError};
 use crate::api::{PinMappings, ProfileOptions};
+use crate::input;
 use crate::lights::LightsFile;
 use crate::mode::{BootMode, InputMode};
 use crate::pb;
@@ -194,6 +197,39 @@ impl Default for SimLightsLimits {
 /// The lights profiles in flash: the fields and the limits' profiles.
 pub type SavedLightsProfiles = ([BTreeMap<u32, pb::Value>; 4], [SimLightsProfile; 4]);
 
+/// How long the pin scan stays on with no READ_INPUT (`SCAN_TIMEOUT_MS`).
+pub const SCAN_TIMEOUT_MS: u32 = 10_000;
+
+/// v1.7: what READ_INPUT reads, and the pin scan.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimInput {
+    /// The pins that a person holds down, as a mask: one entry for each
+    /// READ_INPUT. Each read takes the next entry; the last one stays.
+    /// Empty: no pin is held.
+    pub frames: VecDeque<u64>,
+    /// The pins with a GPIO function (the LED data pin, a UART): the scan
+    /// never changes them.
+    pub functions: u64,
+    /// The pins that PIN_SCAN made inputs.
+    pub scan_pins: u64,
+    pub scan_on: bool,
+    /// The `uptime_ms` after which the next READ_INPUT stops the scan.
+    pub scan_deadline_ms: u32,
+    /// How many READ_INPUTs the pad answered.
+    pub reads: usize,
+}
+
+impl SimInput {
+    /// A script: `0` for `before` reads, then `pins` for `held` reads, then
+    /// `0`.
+    pub fn press(pins: u64, before: usize, held: usize) -> VecDeque<u64> {
+        std::iter::repeat_n(0, before)
+            .chain(std::iter::repeat_n(pins, held))
+            .chain([0])
+            .collect()
+    }
+}
+
 /// The pins of an RP2040 (`NUM_BANK0_GPIOS`).
 pub const RP2040_PINS: u8 = 30;
 
@@ -299,6 +335,8 @@ pub struct SimChannel {
     pub saved_lights_profiles: Option<SavedLightsProfiles>,
     /// `customColors`: the colour indexes go to 14 plus this.
     pub custom_colors: u8,
+    /// v1.7: the inputs and the pin scan.
+    pub input: SimInput,
     pub log: Vec<Seen>,
 }
 
@@ -343,6 +381,7 @@ impl SimChannel {
             lights_fields: Default::default(),
             saved_lights_profiles: None,
             custom_colors: 0,
+            input: SimInput::default(),
             log: Vec::new(),
         }
     }
@@ -514,6 +553,91 @@ impl SimChannel {
             self.caps = Caps(self.caps.0 | Caps::LIGHTS_PROFILES);
         }
         self
+    }
+
+    /// A v1.7 build: protocol minor 7, with READ_INPUT and PIN_SCAN.
+    pub fn with_input(mut self) -> Self {
+        self.minor = self.minor.max(proto::INPUT_MINOR);
+        self.caps = Caps(self.caps.0 | Caps::INPUT);
+        self
+    }
+
+    /// The action of each GPIO as the pad runs the active profile: the
+    /// pin of profile 1 where the slot has 0 or -5, or where profile 1
+    /// reserves the pin or gives it to an add-on.
+    pub fn functional_actions(&self) -> Vec<i16> {
+        let base = self.slot(1).pins;
+        let active = self.slot(self.active).pins;
+        base.iter()
+            .zip(active.iter().chain(std::iter::repeat(&SlotPin::default())))
+            .map(|(b, a)| {
+                if self.active == 1
+                    || crate::slots::follows_profile_1(a.action)
+                    || crate::slots::follows_profile_1(b.action)
+                {
+                    b.action
+                } else {
+                    a.action
+                }
+            })
+            .collect()
+    }
+
+    /// Stops the pin scan: the pins it made inputs are released.
+    fn stop_scan(&mut self) {
+        self.input.scan_pins = 0;
+        self.input.scan_on = false;
+    }
+
+    /// READ_INPUT as `buildInput` answers it: the scan stops when 10 s
+    /// passed with no read, else it stays on for 10 s more.
+    pub fn read_input(&mut self) -> InputSnapshot {
+        if self.input.scan_on {
+            if self.uptime_ms >= self.input.scan_deadline_ms {
+                self.stop_scan();
+            } else {
+                self.input.scan_deadline_ms = self.uptime_ms + SCAN_TIMEOUT_MS;
+            }
+        }
+        self.input.reads += 1;
+        let held = if self.input.frames.len() > 1 {
+            self.input.frames.pop_front().unwrap_or(0)
+        } else {
+            self.input.frames.front().copied().unwrap_or(0)
+        };
+        let actions = self.functional_actions();
+        let gamepad = actions
+            .iter()
+            .zip(0u8..)
+            .filter(|(a, _)| **a > 0)
+            .fold(0u64, |m, (_, gpio)| m | 1 << gpio);
+        let readable = gamepad | self.input.scan_pins;
+        let pressed = held & readable;
+        let mut snap = InputSnapshot {
+            pressed,
+            readable,
+            flags: if self.input.scan_on {
+                InputSnapshot::SCAN_ON
+            } else {
+                0
+            },
+            ..InputSnapshot::default()
+        };
+        for (action, gpio) in actions.iter().zip(0u8..) {
+            if pressed & (1 << gpio) != 0 {
+                let (dpad, buttons, aux) = input::state_bits(*action);
+                snap.dpad |= dpad;
+                snap.buttons |= buttons;
+                snap.aux |= aux;
+            }
+        }
+        snap
+    }
+
+    /// The pad runs with no READ_INPUT for `d`.
+    pub fn idle(&mut self, d: Duration) {
+        let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX);
+        self.uptime_ms = self.uptime_ms.saturating_add(ms);
     }
 
     /// The `AnimationProfile` of lights profile `n` as READ_LIGHTS gives
@@ -818,6 +942,7 @@ impl SimChannel {
         }
         self.pending = false;
         self.reboot_pending = false;
+        self.stop_scan();
         self.last = (0, 0, 0);
         self.uptime_ms = 1000;
     }
@@ -845,6 +970,10 @@ impl SimChannel {
             Some(Command::ReadLights | Command::WriteLights)
                 if !self.main || self.minor < proto::LIGHTS_PROFILES_MINOR =>
             {
+                Some(None)
+            }
+            // Before 1.7 there are no input commands.
+            Some(Command::ReadInput | Command::PinScan) if !self.caps.has(Caps::INPUT) => {
                 Some(None)
             }
             known => Some(known),
@@ -935,6 +1064,7 @@ impl SimChannel {
                 }
                 _ => return Err(UsbError::Stall),
             },
+            Command::ReadInput => self.read_input().encode().to_vec(),
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -1084,6 +1214,27 @@ impl SimChannel {
                     self.save_all();
                     // The save writes the profile too.
                     self.saved_profile = self.active;
+                }
+                Ok(None)
+            }
+            // doPinScan: on again keeps the scan on for 10 s more.
+            Command::PinScan => {
+                match args[0] {
+                    0 => self.stop_scan(),
+                    1 => {
+                        if !self.input.scan_on {
+                            let functions = self.input.functions;
+                            self.input.scan_pins = self
+                                .functional_actions()
+                                .iter()
+                                .zip(0u8..)
+                                .filter(|(a, gpio)| **a == -10 && functions & (1 << gpio) == 0)
+                                .fold(0, |m, (_, gpio)| m | 1 << gpio);
+                            self.input.scan_on = true;
+                        }
+                        self.input.scan_deadline_ms = self.uptime_ms + SCAN_TIMEOUT_MS;
+                    }
+                    _ => return Err(Outcome::BadArg),
                 }
                 Ok(None)
             }

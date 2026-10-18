@@ -62,7 +62,18 @@ pub fn waiting_for(a: Awaiting) -> String {
         Awaiting::Reboot(BootMode::Gamepad) => "waiting for the pad to come back".into(),
         Awaiting::Reboot(m) => format!("waiting for the pad to come back in {}", m.label()),
         Awaiting::Server => "waiting for the web configurator to answer".into(),
+        Awaiting::Press => "waiting for a button press".into(),
+        Awaiting::Release => "waiting for the release of the button".into(),
     }
+}
+
+/// What `input find-pin` tells the user before it waits.
+pub fn push_button(scan: bool) -> Vec<String> {
+    let mut lines = vec!["Push one button on the pad, then release it.".to_string()];
+    if scan {
+        lines.push("The pin scan is on: gamepadii also reads the pins with no action.".into());
+    }
+    lines
 }
 
 fn secs(d: Duration) -> u64 {
@@ -110,6 +121,12 @@ impl<W: Write> Progress for Reporter<W> {
             Step::RestoreFailed { profile, error } => self.line(&format!(
                 "warning: profile {profile} not restored after the restart: {error}"
             )),
+            Step::PushButton { scan } => {
+                for l in push_button(scan) {
+                    self.line(&l);
+                }
+                self.announced = None;
+            }
         }
     }
 }

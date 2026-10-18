@@ -1,0 +1,38 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"input\"])"
+---
+Read the buttons live (needs control channel v1.7 of the gamepadii firmware): the GPIOs pressed now, with their action and key, and the gamepad state
+
+Usage: gamepadii input [OPTIONS]
+       gamepadii input <COMMAND>
+
+Commands:
+  find-pin  Wait for one button press, and show the GPIO of that button, with its action and key. A button that is held at the start does not count
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` and `leds` only
+          
+          [default: human]
+
+      --watch
+          Print a line each time the input changes, until Ctrl-C. With --json, each line is one JSON object
+
+      --json
+          Same as `--format json`
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
+  -h, --help
+          Print help (see a summary with '-h')

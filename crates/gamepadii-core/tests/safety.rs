@@ -174,6 +174,12 @@ fn every_command(fake: &Fake, dir: &Path) {
             ..Default::default()
         };
         let _ = flow::lights_write(env, &file, &write, &mut Silent);
+        let _ = flow::input(env);
+        let find = flow::FindPin {
+            scan: true,
+            timeout: Duration::ZERO,
+        };
+        let _ = flow::find_pin(env, &find, &mut Silent);
     });
 }
 

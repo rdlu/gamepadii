@@ -9,9 +9,11 @@ use std::time::Duration;
 use gamepadii_core::api::{PinMappings, ProfileOptions, RebootAck};
 use gamepadii_core::buttons::{self, Button, Combo, Profiles};
 use gamepadii_core::cache::{self, DeviceCache};
+use gamepadii_core::channel::sim::SimInput;
 use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
+use gamepadii_core::input::{FoundPin, NamesFrom};
 use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, LightsPick, Pick};
 use gamepadii_core::lights::{LightsFile, LightsWrite, LightsWriteReport};
 use gamepadii_core::mode::{BootMode, InputMode};
@@ -76,6 +78,7 @@ impl Progress for Log {
             Step::RestoreFailed { profile, error } => self
                 .other
                 .push(format!("profile {profile} not restored: {error}")),
+            Step::PushButton { .. } => self.other.push("push a button".into()),
         }
     }
 }
@@ -3102,4 +3105,176 @@ fn two_pads_with_the_same_board_id_go_by_their_port() {
         .map(|d| d.pad.as_ref().unwrap().port.as_deref())
         .collect();
     assert_eq!(ports, [Some("3-1"), Some("3-2"), None]);
+}
+
+// ---- the input snapshot (control channel v1.7) --------------------------------
+
+/// The S16 (profile 2 active) on a v1.7 build with the slots, with the
+/// inputs from `f`. GPIO 25 has a function, as on the S16.
+fn input_rig(f: impl FnOnce(&mut gamepadii_core::channel::sim::SimChannel)) -> Rig {
+    Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                *c = c.clone().with_slots().with_input();
+                c.input.functions = 1 << 25;
+                f(c);
+            }),
+    )
+}
+
+fn find(rig: &Rig, scan: bool, log: &mut Log) -> gamepadii_core::Result<FoundPin> {
+    let find = flow::FindPin {
+        scan,
+        ..flow::FindPin::default()
+    };
+    rig.run(|env| flow::find_pin(env, &find, log))
+}
+
+#[test]
+fn input_names_each_pressed_pin_by_its_action_and_key() {
+    let rig = input_rig(|c| c.input.frames = [1 << 6 | 1 << 14 | 1 << 27].into());
+    let r = rig.run(flow::input).unwrap();
+    assert_eq!((r.profile, r.names_from), (Some(2), NamesFrom::Slot));
+    let pins: Vec<_> = r
+        .pressed
+        .iter()
+        .map(|p| (p.gpio, p.action_name.clone(), p.key))
+        .collect();
+    assert_eq!(
+        pins,
+        [
+            // SilkSong has L2 on the key that Default calls B1.
+            (6, Some("L2".into()), Some(Button::B1)),
+            (14, Some("menu-navigation-toggle".into()), None),
+            (27, Some("Up".into()), Some(Button::Up)),
+        ]
+    );
+    assert_eq!((r.dpad, r.buttons), (vec!["Up"], vec!["L2"]));
+    assert!(r.sticks.at_rest() && !r.scan_on);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty());
+}
+
+#[test]
+fn input_without_slots_uses_the_cache_or_only_numbers() {
+    let pad = || {
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                *c = c.clone().with_input();
+                c.input.frames = [1 << 6].into();
+            })
+    };
+    let rig = Rig::new(pad()).with_cache();
+    let r = rig.run(flow::input).unwrap();
+    assert_eq!((r.profile, r.names_from), (Some(2), NamesFrom::Cache));
+    assert_eq!(r.pressed[0].action_name.as_deref(), Some("L2"));
+    assert_eq!(r.pressed[0].key, Some(Button::B1));
+    let rig = Rig::new(pad());
+    let r = rig.run(flow::input).unwrap();
+    assert_eq!(r.names_from, NamesFrom::None);
+    assert_eq!((r.pressed[0].gpio, r.pressed[0].action), (6, None));
+}
+
+#[test]
+fn find_pin_accepts_a_press_after_the_debounce() {
+    let rig = input_rig(|c| c.input.frames = SimInput::press(1 << 27, 5, 6));
+    let mut log = Log::default();
+    let r = find(&rig, false, &mut log).unwrap();
+    assert_eq!((r.pin.gpio, r.pin.key), (27, Some(Button::Up)));
+    assert_eq!(r.pin.action_name.as_deref(), Some("Up"));
+    assert_eq!(
+        (r.no_action, r.scan, r.released),
+        (Some(false), false, true)
+    );
+    assert_eq!(log.other, ["push a button"]);
+    assert_eq!(log.waits.first().map(|w| w.0), Some(Awaiting::Press));
+    assert!(log.waits.iter().any(|w| w.0 == Awaiting::Release));
+    // Without --scan, no PIN_SCAN at all.
+    assert!(rig.channel_commands().is_empty());
+    // A read every 15 ms: the press, three reads, then the release.
+    assert_eq!(rig.pad.firmware().input.reads, 5 + 3 + 3 + 3);
+}
+
+#[test]
+fn find_pin_ignores_a_bounce_and_a_held_button() {
+    let (b3, b15, b27) = (1u64 << 3, 1u64 << 15, 1u64 << 27);
+    let rig = input_rig(|c| {
+        // GPIO 27 is held at the start; GPIO 3 bounces for one read.
+        c.input.frames = [b27, b27, b27 | b3, b27, b27, b27, b27 | b15, b15]
+            .into_iter()
+            .chain([b3; 4])
+            .chain([0])
+            .collect();
+    });
+    let mut log = Log::default();
+    let r = find(&rig, false, &mut log).unwrap();
+    // GPIO 15 has no action: without the scan, the pad can't read it.
+    assert_eq!(r.pin.gpio, 3);
+    assert_eq!(r.pin.action_name.as_deref(), Some("Down"));
+}
+
+#[test]
+fn find_pin_waits_for_the_release() {
+    let rig = input_rig(|c| c.input.frames = SimInput::press(1 << 5, 2, 100));
+    let r = find(&rig, false, &mut Log::default()).unwrap();
+    assert_eq!((r.pin.gpio, r.released), (5, true));
+    assert!(rig.clock.elapsed() >= Duration::from_millis(15 * 100));
+    // Never released: found, but not released after 5 s.
+    let rig = input_rig(|c| c.input.frames = [0, 1 << 5].into());
+    let r = find(&rig, false, &mut Log::default()).unwrap();
+    assert_eq!((r.pin.gpio, r.released), (5, false));
+    assert!(r.note.is_none());
+}
+
+#[test]
+fn find_pin_with_the_scan_finds_a_pin_with_no_action() {
+    let rig = input_rig(|c| c.input.frames = SimInput::press(1 << 22, 3, 4));
+    let mut log = Log::default();
+    let r = find(&rig, true, &mut log).unwrap();
+    assert_eq!(r.pin.gpio, 22);
+    assert_eq!((r.no_action, r.scan), (Some(true), true));
+    assert_eq!(r.pin.action_name.as_deref(), Some("none"));
+    assert_eq!(rig.channel_commands(), [0x19, 0x19], "on, then off");
+    let last = rig.pad.control_log().pop().unwrap();
+    assert_eq!(last.data[8..], [0]);
+    assert!(!rig.pad.firmware().input.scan_on);
+}
+
+#[test]
+fn find_pin_times_out_with_exit_5_and_stops_the_scan() {
+    let rig = input_rig(|_| {});
+    let mut log = Log::default();
+    let e = find(&rig, true, &mut log).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("no button press in 15 s"), "{e}");
+    assert_eq!(rig.clock.elapsed(), Duration::from_secs(15));
+    assert_eq!(rig.channel_commands(), [0x19, 0x19]);
+    assert!(!rig.pad.firmware().input.scan_on);
+    // The spinner moves every 200 ms, not at each read.
+    assert_eq!(log.waits.len(), 75);
+    // Without the scan: no PIN_SCAN on a timeout either.
+    let rig = input_rig(|_| {});
+    let e = find(&rig, false, &mut Log::default()).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(rig.channel_commands().is_empty());
+}
+
+#[test]
+fn input_needs_control_channel_1_7() {
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| *c = c.clone().with_slots()),
+    );
+    let e = rig.run(flow::input).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("control channel v1.7"), "{e}");
+    assert!(e.to_string().contains("speaks v1.4"), "{e}");
+    let mut log = Log::default();
+    let e = find(&rig, true, &mut log).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(rig.channel_commands().is_empty());
+    assert!(log.other.is_empty(), "no prompt");
 }
