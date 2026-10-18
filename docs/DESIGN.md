@@ -23,15 +23,20 @@ reboots as possible.
   omitted). Exit codes are stable: 0 ok, 1 check failed, 2 device not found,
   3 usage, 4 transport, 5 needs user action (a button press).
 - **No async runtime:** std threads and channels, as in plugii.
-- **Git:** commits go straight to `main` until TUI work starts. From the
-  first TUI change on: feature branches, PRs, Conventional Commits, and a
-  protected `main` (decided 2026-10-17).
+- **Git:** each change goes through a PR, with Conventional Commits. `main`
+  is protected: CI must pass, and force-push is not possible.
 - **Order after the MVP** (decided 2026-10-17): the firmware fork and its
   control channel first, then the TUI, then the rest. Linux first; Windows
   and macOS wait until the GUI. The core stays portable and Linux-only code
   stays behind cfg gates.
-- **Firmware fork:** fine to carry, upstream first: freeze reports, then a
-  design discussion for the control channel (decided 2026-10-17).
+- **Our own firmware, not upstream first** (decided 2026-10-18): we publish
+  our own fork builds and do not wait for upstream to accept our changes.
+  The upstream maintainers closed our first reports (too long, too
+  technical). We do not send reports now. If we send one again, the owner
+  writes it, it is short, and we send one at a time.
+- **Boards** (decided 2026-10-18): our firmware is only for RP2040 and
+  RP2350 (Pico 2) boards. Other chips need their own maintainers. See
+  "Fork firmware", "Boards".
 - **Depend on the fork where useful** (decided 2026-10-17): gamepadii uses
   what only fork builds can do (the control channel, `getConfig`) without
   waiting for upstream, behind a capability check, and stock keeps working
@@ -169,21 +174,53 @@ reboots as possible.
 
 ## Fork firmware
 
-Our fork (`rdlu/GP2040-CE`, branch `gamepadii/control-channel`, on the pad
-as v0.7.12-6-gf507f0b) carries, on top of v0.7.12: I2C access serialised
-between the cores with bounded scan probes (a1b069d), web-config replies
-built in one exactly sized buffer (7822dc7), lwIP's `fs_file` matching
-lib/httpd's (2435d1d), reply buffers kept until lwIP has sent them
-(5d6f73a), a 503 instead of running out of heap (85ca0f6), then the control
-channel (f507f0b). `getConfig` and `getI2CPeripheralMap` were stress-tested
-10/10 to 20/20 rounds ok on every build with the fixes.
+Our fork is [`rdlu/GP2040-CE`](https://github.com/rdlu/GP2040-CE). The
+status of the fork, its branches and the to-do list are in
+[#2](https://github.com/rdlu/gamepadii/issues/2).
+
+### Boards
+
+There are three support levels:
+
+| Level | Boards |
+|---|---|
+| **Tested** | Haute42 S16 (`Haute42COSMOX`) |
+| **Built, not tested** | First the other Haute42 models: `Haute42COSMOXMLite`, `Haute42COSMOXMUltra`, `Haute42COSMOXXAnalog`; on the main line also `Haute42COSMOXCAS` and `Haute42COSMOXCAT`. Later the Raspberry Pi Pico (`Pico`) and Pico 2 (`Pico2`). |
+| **Needs a maintainer** | All other boards and chips |
+
+A board moves to "Tested" when a person with that board tests it. All the
+Haute42 configs use the RP2040. Most RP2350 boards are only on upstream
+main, so Pico 2 builds need the main line (#21).
+
+### Firmware lines
+
+| Branch | Base | What it has |
+|---|---|---|
+| `gamepadii/control-channel-led` | v0.7.12 | the fixes, control channel v1.1 (LEDs). On the S16 now (`v0.7.12-7-g0a23ea3`). |
+| `gamepadii/main` | upstream main | the fixes, control channel v1.2 (lights). Not tested yet (#21). |
+
+The main line becomes our main firmware line when its S16 test passes.
+The v0.7.12 line then gets only fixes. Older branches
+(`gamepadii/freeze-investigation`, `gamepadii/control-channel`) are kept
+for reference.
+
+### The fixes
+
+On top of v0.7.12: I2C access serialised between the cores with bounded
+scan probes (a1b069d), web-config replies built in one exactly sized buffer
+(7822dc7), lwIP's `fs_file` matching lib/httpd's (2435d1d), reply buffers
+kept until lwIP has sent them (5d6f73a), and a 503 instead of running out
+of heap (85ca0f6). `getConfig` and `getI2CPeripheralMap` were stress-tested
+10/10 to 20/20 rounds ok on every build with the fixes. The main line has
+the same fixes, ported.
 
 **The capability check** (`api::fork::ForkFixes::check`, through
 `Client::fork_fixes`). A pad has the fixes when:
 
 1. its commit, the `-g<hash>` of the version string (`git describe`) or
    `boardBuild`, is one of `FIXED_BUILDS`: our builds that were
-   stress-tested (85ca0f6, 8419a38, f19c11b, f507f0b, 5eea8a6, 1008647);
+   stress-tested (85ca0f6, 8419a38, f19c11b, f507f0b, 5eea8a6, 1008647,
+   0a23ea3);
    or
 2. the control channel answered HELLO (only the fork has it, and its branch
    sits on the fixes) and the version isn't a bare release tag.
