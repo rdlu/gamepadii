@@ -11,6 +11,7 @@ use std::io::IsTerminal;
 use gamepadii_core::Error;
 use gamepadii_core::api::{Evidence, Line, LineEvidence, RebootAck};
 use gamepadii_core::buttons::Button;
+use gamepadii_core::channel::{LogEvent, proto};
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
@@ -23,6 +24,7 @@ use gamepadii_core::flow::{
 use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
 use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
+use gamepadii_core::log::{self, LogEntry, LogReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use gamepadii_core::slots::{PinView, SlotReport, SlotWriteReport};
 use gamepadii_core::udev;
@@ -214,6 +216,23 @@ pub fn status_rows(d: &StatusDevice) -> Vec<(&'static str, String)> {
     }
     if let Some(n) = &d.channel_note {
         rows.push(("channel", n.clone()));
+    }
+    if let Some(p) = d
+        .control_channel
+        .as_ref()
+        .and_then(|c| c.last_panic.as_ref())
+    {
+        rows.push((
+            "warning",
+            format!(
+                "the firmware panicked in boot {} at {}.{:03} s: '{}'. `gamepadii log` shows \
+                 the log",
+                p.boot,
+                p.ms / 1000,
+                p.ms % 1000,
+                p.text
+            ),
+        ));
     }
     rows
 }
@@ -1691,5 +1710,124 @@ pub fn waybar_leds(r: &LedReport) -> Waybar {
         tooltip,
         alt: class.clone(),
         class,
+    }
+}
+
+/// `log`: a headline, then one line for each record.
+pub fn log(style: Style, r: &LogReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let board = r.board.as_deref().unwrap_or("The pad's");
+    let mut out = format!(
+        "{}\n",
+        style.bold(&format!(
+            "{board} log, boot {} (next record {})",
+            r.boot, r.next
+        ))
+    );
+    let mut rw = vec![("via", via_text(r.via, &r.host))];
+    if r.records.is_empty() {
+        rw.push(("records", "none".into()));
+    }
+    rows(style, &mut out, &rw);
+    out.push_str(&log_lines(style, r));
+    out
+}
+
+/// `log --follow`: the first read as [`log`], then only the new records.
+/// JSON is one line for each read; a later read with no new records gives
+/// nothing.
+pub fn log_follow(style: Style, r: &LogReport, first: bool) -> String {
+    if !first && r.records.is_empty() && r.lost == 0 {
+        return String::new();
+    }
+    match style.format {
+        Format::Human if first => log(style, r),
+        Format::Human => log_lines(style, r),
+        _ => format!(
+            "{}\n",
+            serde_json::to_string(&Envelope {
+                schema: SCHEMA,
+                data: r,
+            })
+            .expect("serialising plain data cannot fail")
+        ),
+    }
+}
+
+/// The record lines, after a note on lost records.
+fn log_lines(style: Style, r: &LogReport) -> String {
+    let mut out = String::new();
+    if r.lost > 0 {
+        let first = r.records.first().map_or(r.next, |e| e.seq);
+        out.push_str(&style.dim(&format!(
+            "{} records before record {first} are gone (the pad keeps the last 64)\n",
+            r.lost
+        )));
+    }
+    for e in &r.records {
+        let name = e
+            .code_name
+            .map_or_else(|| format!("code {}", e.code), str::to_string);
+        out.push_str(&format!(
+            "{:>5}  {} {:>4}.{:03} s  {}{}\n",
+            e.seq,
+            style.dim(&format!("boot {:<3}", e.boot)),
+            e.ms / 1000,
+            e.ms % 1000,
+            style.bold(&format!("{name:<9}")),
+            log_fields(e)
+        ));
+    }
+    out
+}
+
+/// The decoded fields of a record, for people.
+fn log_fields(e: &LogEntry) -> String {
+    let mode = |m: u8| format!("mode {}", proto::log_boot_mode(m));
+    match &e.event {
+        LogEvent::Boot {
+            kept,
+            watchdog,
+            mode: m,
+            version,
+        } => {
+            let flags = u8::from(*kept) | (u8::from(*watchdog) << 1);
+            let mut why = vec![if *kept { "kept" } else { "new" }];
+            if *watchdog {
+                why.push("watchdog");
+            }
+            let mut s = format!("flags {flags} ({}) {}", why.join(", "), mode(*m));
+            if !version.is_empty() {
+                s.push_str(&format!(" version {version}"));
+            }
+            s
+        }
+        LogEvent::Panic { text } | LogEvent::Error { text } => format!("'{text}'"),
+        LogEvent::Command { cmd, result, seq } => {
+            let cmd = log::command_name(*cmd).map_or_else(|| format!("cmd {cmd:#04x}"), Into::into);
+            let result = result
+                .name()
+                .map_or_else(|| format!("result {}", result.byte()), Into::into);
+            format!("{cmd} {result} seq {seq}")
+        }
+        LogEvent::Profile { old, new } => format!("profile {old} to {new}"),
+        LogEvent::Save { force, restart } => {
+            let yes = |b: bool| if b { "yes" } else { "no" };
+            format!("force {}, restart {}", yes(*force), yes(*restart))
+        }
+        LogEvent::Restart { mode: m } => mode(*m),
+        LogEvent::UsbHost {
+            mounted,
+            address,
+            vid,
+            pid,
+        } => format!(
+            "{} {vid:04x}:{pid:04x} at address {address}",
+            if *mounted { "mount" } else { "unmount" }
+        ),
+        LogEvent::Unknown { .. } if e.raw.is_empty() => "no data".into(),
+        LogEvent::Unknown { .. } => format!("data {}", e.raw),
     }
 }

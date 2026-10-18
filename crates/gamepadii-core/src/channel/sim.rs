@@ -22,6 +22,10 @@
 //! `getAnimationProtoOptions`. [`SimChannel::with_input`] makes it a v1.7
 //! build with READ_INPUT and PIN_SCAN: the pins a person holds come from a
 //! script ([`SimInput::frames`]), one entry for each read.
+//! [`SimChannel::with_log`] makes it a v1.8
+//! build with READ_LOG: a ring of the last 64 events that the simulator
+//! writes (BOOT, COMMAND, PROFILE, SAVE, RESTART), and a PANIC or a
+//! power-on when a test asks for one.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -34,8 +38,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, Outcome,
-    SetLed, SetLights, Setup, Slot, SlotPin, Status,
+    self, Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogPage,
+    LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status, log_code,
 };
 use super::{ControlTransport, UsbError};
 use crate::api::{PinMappings, ProfileOptions};
@@ -261,6 +265,69 @@ impl SimSlot {
     }
 }
 
+/// The firmware's buffer for a reply: a READ_LOG gets at most 9 records.
+pub const BUFFER_LEN: usize = 328;
+
+/// The log of a v1.8 build (§3.13): the last 64 records, in RAM that a
+/// soft reboot keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimLog {
+    /// The sequence number of the next record.
+    pub next: u32,
+    /// The boot number: 1 more at each restart that keeps the log.
+    pub boot: u16,
+    /// The records that are left, oldest first: at most 64.
+    pub records: VecDeque<LogRecord>,
+    /// The boot mode of the next boot (from the last RESTART), as the
+    /// watchdog scratch register keeps it.
+    pub restart_mode: u8,
+}
+
+impl SimLog {
+    fn add(&mut self, ms: u32, code: u8, data: &[u8]) {
+        let n = data.len().min(proto::LOG_DATA_LEN);
+        self.records.push_back(LogRecord {
+            seq: self.next,
+            ms,
+            boot: self.boot,
+            code,
+            data: data[..n].to_vec(),
+        });
+        while self.records.len() > proto::LOG_RECORDS as usize {
+            self.records.pop_front();
+        }
+        self.next = self.next.wrapping_add(1);
+    }
+
+    /// READ_LOG as `buildLog` answers it: `from` is the low 16 bits of a
+    /// number in the last 65536.
+    pub fn page(&self, from: u16, len: u16) -> LogPage {
+        let next = self.next;
+        let oldest = next.saturating_sub(proto::LOG_RECORDS);
+        let mut first = (next & !0xffff) | u32::from(from);
+        if first > next {
+            first = first.saturating_sub(0x1_0000);
+        }
+        let first = first.max(oldest);
+        let room = (usize::from(len).min(BUFFER_LEN) - proto::LOG_HEAD_LEN) / proto::LOG_RECORD_LEN;
+        let count = usize::try_from(next - first)
+            .unwrap_or(usize::MAX)
+            .min(room);
+        LogPage {
+            first,
+            next,
+            boot: self.boot,
+            records: self
+                .records
+                .iter()
+                .filter(|r| r.seq >= first)
+                .take(count)
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 /// The firmware's names for the effects (STRING `0x20 + n`).
 const EFFECT_NAMES: [&str; 5] = [
     "EFFECT_STATIC_COLOR",
@@ -337,6 +404,8 @@ pub struct SimChannel {
     pub custom_colors: u8,
     /// v1.7: the inputs and the pin scan.
     pub input: SimInput,
+    /// v1.8: the pad's log; `None` before 1.8.
+    pub events: Option<SimLog>,
     pub log: Vec<Seen>,
 }
 
@@ -382,6 +451,7 @@ impl SimChannel {
             saved_lights_profiles: None,
             custom_colors: 0,
             input: SimInput::default(),
+            events: None,
             log: Vec::new(),
         }
     }
@@ -640,6 +710,78 @@ impl SimChannel {
         self.uptime_ms = self.uptime_ms.saturating_add(ms);
     }
 
+    /// A v1.8 build: protocol minor 8, with READ_LOG. The log starts at
+    /// this boot (a power-on).
+    pub fn with_log(mut self) -> Self {
+        self.minor = self.minor.max(proto::LOG_MINOR);
+        self.caps = Caps(self.caps.0 | Caps::LOG);
+        self.power_on();
+        self
+    }
+
+    /// Writes a log record now, when the build has the log.
+    pub fn add_log(&mut self, code: u8, data: &[u8]) {
+        let ms = self.uptime_ms;
+        if let Some(l) = &mut self.events {
+            l.add(ms, code, data);
+        }
+    }
+
+    /// The BOOT record of a boot.
+    fn log_boot(&mut self, flags: u8, mode: u8) {
+        let version = self
+            .strings
+            .get(&proto::string::VERSION)
+            .map(|v| v.as_bytes().to_vec())
+            .unwrap_or_default();
+        let mut data = vec![flags, mode];
+        data.extend(version.iter().take(proto::LOG_DATA_LEN - 2));
+        if let Some(l) = &mut self.events {
+            l.add(3, log_code::BOOT, &data);
+        }
+    }
+
+    /// A power-on: a new log, from boot 0 and sequence number 0. Only a
+    /// v1.8 build has one.
+    pub fn power_on(&mut self) {
+        if !self.caps.has(Caps::LOG) {
+            return;
+        }
+        self.events = Some(SimLog::default());
+        self.log_boot(0, 0);
+    }
+
+    /// The firmware panics with `text`: a PANIC record, and a restart that
+    /// keeps the log (a watchdog reset, into the default boot mode).
+    pub fn panic(&mut self, text: &str) {
+        self.add_log(log_code::PANIC, text.as_bytes());
+        if let Some(l) = &mut self.events {
+            l.restart_mode = 0;
+        }
+        let running = match self.running {
+            Some(_) => InputMode::from_proto(self.saved_mode.into()),
+            None => None,
+        };
+        let token = self.token.rotate_left(8) ^ 0x0101_0101;
+        self.boot(running, token);
+    }
+
+    /// The firmware's record of an OUT command: the result in STATUS, and
+    /// a COMMAND record.
+    fn set_last(&mut self, seq: u16, cmd: u8, result: Outcome) {
+        self.last = (seq, cmd, result.byte());
+        let [lo, hi] = seq.to_le_bytes();
+        self.add_log(log_code::COMMAND, &[cmd, result.byte(), lo, hi]);
+    }
+
+    /// The active profile changes: a PROFILE record when it is new.
+    fn select_profile(&mut self, n: u8) {
+        if self.active != n {
+            self.add_log(log_code::PROFILE, &[self.active, n]);
+            self.active = n;
+        }
+    }
+
     /// The `AnimationProfile` of lights profile `n` as READ_LIGHTS gives
     /// it: the fields, with `bEnabled`, the effects and the cycle times
     /// from `lights_limits`.
@@ -727,7 +869,7 @@ impl SimChannel {
         }
         self.lights_pending = self.lights_limits.pending_reads;
         if flags & Slot::SAVE != 0 {
-            self.save_all();
+            self.save_all(false);
             self.saved_profile = self.active;
         }
         Ok(())
@@ -826,8 +968,9 @@ impl SimChannel {
     }
 
     /// Any save writes the whole config: the LEDs', lights' and slots' RAM
-    /// state too.
-    fn save_all(&mut self) {
+    /// state too. `force` goes into the SAVE record.
+    fn save_all(&mut self, force: bool) {
+        self.add_log(log_code::SAVE, &[u8::from(force), 0]);
         self.saved_leds = self.leds;
         self.saved_lights = self.lights;
         self.saved_slots = self.slots.clone();
@@ -945,6 +1088,17 @@ impl SimChannel {
         self.stop_scan();
         self.last = (0, 0, 0);
         self.uptime_ms = 1000;
+        // The boot ROM writes no record; the firmware does at its next boot.
+        let mode = match self.running {
+            Some(255) => 2,
+            Some(254) | None => return,
+            Some(_) => self.events.as_ref().map_or(0, |l| l.restart_mode),
+        };
+        if let Some(l) = &mut self.events {
+            l.boot = l.boot.wrapping_add(1);
+            l.restart_mode = 0;
+        }
+        self.log_boot(3, mode);
     }
 
     /// `None`: not ours, the stock path. `Some(None)`: ours, but a
@@ -976,6 +1130,8 @@ impl SimChannel {
             Some(Command::ReadInput | Command::PinScan) if !self.caps.has(Caps::INPUT) => {
                 Some(None)
             }
+            // Before 1.8 there is no READ_LOG.
+            Some(Command::ReadLog) if !self.caps.has(Caps::LOG) => Some(None),
             known => Some(known),
         }
     }
@@ -1065,6 +1221,13 @@ impl SimChannel {
                 _ => return Err(UsbError::Stall),
             },
             Command::ReadInput => self.read_input().encode().to_vec(),
+            // A wLength shorter than the head STALLs.
+            Command::ReadLog => match &self.events {
+                Some(l) if usize::from(len) >= proto::LOG_HEAD_LEN => {
+                    l.page(setup.value, len).encode()
+                }
+                _ => return Err(UsbError::Stall),
+            },
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -1105,11 +1268,11 @@ impl SimChannel {
         // Rejected in SETUP (§3.6 item 7): the payload is never read.
         let byte = setup.command_byte();
         let Some(cmd) = cmd else {
-            self.last = (0, byte, Outcome::Unsupported.byte());
+            self.set_last(0, byte, Outcome::Unsupported);
             return Err(UsbError::Stall);
         };
         if data.len() < proto::HEADER_LEN || data.len() > usize::from(cmd.max_len()) {
-            self.last = (0, byte, Outcome::BadLength.byte());
+            self.set_last(0, byte, Outcome::BadLength);
             return Err(UsbError::Stall);
         }
         let (token, seq) = proto::header(data).expect("checked the length");
@@ -1120,14 +1283,23 @@ impl SimChannel {
         } else {
             self.apply(cmd, &data[proto::HEADER_LEN..])
         };
-        if matches!(result, Ok(Some(Effect::Reboot(_)))) {
+        if let Ok(Some(Effect::Reboot(mode))) = result {
             self.reboot_pending = true;
+            let mode = match mode {
+                BootMode::Gamepad => 1,
+                BootMode::Webconfig => 2,
+                BootMode::Bootsel => 3,
+            };
+            self.add_log(log_code::RESTART, &[mode]);
+            if let Some(l) = &mut self.events {
+                l.restart_mode = mode;
+            }
         }
         let code = match &result {
             Ok(_) => Outcome::Ok,
             Err(o) => *o,
         };
-        self.last = (seq, cmd as u8, code.byte());
+        self.set_last(seq, cmd as u8, code);
         result.map_err(|_| UsbError::Stall)
     }
 
@@ -1153,12 +1325,12 @@ impl SimChannel {
                     return Err(Outcome::ProfileDisabled);
                 }
                 if self.active != n {
-                    self.active = n;
+                    self.select_profile(n);
                     self.pending = !in_webconfig;
                 }
                 if persist == 1 {
                     self.saved_profile = n;
-                    self.save_all();
+                    self.save_all(true);
                 }
                 Ok(None)
             }
@@ -1183,7 +1355,7 @@ impl SimChannel {
                     return Err(Outcome::Unsupported);
                 }
                 self.saved_mode = m;
-                self.save_all();
+                self.save_all(true);
                 Ok(Some(Effect::Reboot(BootMode::Gamepad)))
             }
             Command::SetLed => {
@@ -1211,7 +1383,7 @@ impl SimChannel {
                     }
                 }
                 if set.persist {
-                    self.save_all();
+                    self.save_all(true);
                     // The save writes the profile too.
                     self.saved_profile = self.active;
                 }
@@ -1265,7 +1437,7 @@ impl SimChannel {
                 }
                 self.lights_pending = k.pending_reads;
                 if set.persist {
-                    self.save_all();
+                    self.save_all(false);
                     self.saved_profile = self.active;
                 }
                 Ok(None)
@@ -1339,11 +1511,11 @@ impl SimChannel {
         self.sync_slots([profile]);
         // The reinit runs on the next pass of the main loop.
         if select || self.active == profile {
-            self.active = profile;
+            self.select_profile(profile);
             self.pending = self.running != Some(255);
         }
         if flags & Slot::SAVE != 0 {
-            self.save_all();
+            self.save_all(true);
             self.saved_profile = self.active;
         }
         Ok(())

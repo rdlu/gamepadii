@@ -3,8 +3,8 @@
 //!
 //! Layering (each layer only depends on the ones before it):
 //! `discovery` → `transport` / `channel` → `client` → `commands` / `display`
-//! / `leds` / `slots` / `input` / `flow`. `commands` returns plain serde
-//! data and nothing here prints; front ends own rendering.
+//! / `leds` / `slots` / `input` / `log` / `flow`. `commands` returns plain
+//! serde data and nothing here prints; front ends own rendering.
 
 pub mod api;
 pub mod buttons;
@@ -19,6 +19,7 @@ pub mod flow;
 pub mod input;
 pub mod leds;
 pub mod lights;
+pub mod log;
 pub mod mode;
 pub mod pb;
 pub mod sim;

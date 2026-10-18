@@ -180,6 +180,8 @@ fn every_command(fake: &Fake, dir: &Path) {
             timeout: Duration::ZERO,
         };
         let _ = flow::find_pin(env, &find, &mut Silent);
+        let _ = flow::log(env, None);
+        let _ = flow::log_follow(env, Some(5), &mut |_| false);
     });
 }
 

@@ -5,7 +5,7 @@
 //!
 //! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
 //!   commands, v1.3's board ID, v1.4's profile slots, v1.5's lights
-//!   profiles, v1.7's input snapshot.
+//!   profiles, v1.7's input snapshot, v1.8's log.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -34,9 +34,26 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, Outcome, SetLed,
-    SetLights, Setup, Slot, SlotPin, Status,
+    Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogEvent, LogPage,
+    LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status,
 };
+
+/// The most READ_LOG replies that [`Channel::read_log_all`] asks for: the
+/// 64 records take 8, and a pad can write more while the host reads.
+pub const LOG_PAGES: usize = 16;
+
+/// The log from a sequence number, from [`Channel::read_log_all`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRead {
+    /// The boot number now.
+    pub boot: u16,
+    /// The sequence number to read from next time.
+    pub next: u32,
+    /// How many records after the asked number were gone (the pad keeps
+    /// 64).
+    pub lost: u32,
+    pub records: Vec<LogRecord>,
+}
 
 /// How long a HELLO may take: short, since most pads have no channel.
 pub const HELLO_TIMEOUT: Duration = Duration::from_millis(200);
@@ -628,6 +645,77 @@ impl Channel {
             "the stop of the pin scan"
         };
         self.command(Command::PinScan, &[u8::from(on)], what)
+    }
+
+    /// READ_LOG needs protocol 1.8 and [`Caps::LOG`]: a 1.7 pad never gets
+    /// it.
+    fn need_log(&self) -> Result<()> {
+        if self.hello.has_log() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.8)",
+                Command::ReadLog.name()
+            )))
+        }
+    }
+
+    /// READ_LOG (v1.8): at most 9 records, from sequence number `from`. The
+    /// pad gets the low 16 bits and finds the full number. A number older
+    /// than the oldest record starts at the oldest record.
+    pub fn read_log(&self, from: u32) -> Result<LogPage> {
+        self.need_log()?;
+        let reply = self
+            .read_len(Command::ReadLog, from as u16, proto::READ_LOG_LEN)
+            .map_err(|e| self.fail(e, Command::ReadLog))?;
+        LogPage::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "READ_LOG on {}: a reply of {} bytes that is not a log page",
+                self.node(),
+                reply.len()
+            ))
+        })
+    }
+
+    /// Every record from sequence number `from` up to the newest, in as many
+    /// READ_LOG requests as necessary (at most [`LOG_PAGES`]).
+    pub fn read_log_all(&self, from: u32) -> Result<LogRead> {
+        let mut read = LogRead {
+            boot: 0,
+            next: from,
+            lost: 0,
+            records: Vec::new(),
+        };
+        let mut at = from;
+        let mut page = self.read_log(at)?;
+        // The pad finds the full number from the low 16 bits: a number from
+        // before the last 65536 records can come back as a newer one.
+        let oldest = page.next.saturating_sub(proto::LOG_RECORDS);
+        if at < oldest && page.first != oldest {
+            read.lost = oldest - at;
+            at = oldest;
+            page = self.read_log(at)?;
+        }
+        for i in 0..LOG_PAGES {
+            if i > 0 {
+                page = self.read_log(at)?;
+            }
+            // A later page can start after `at` too: the pad wrote over
+            // records while the host read.
+            if page.first > at && page.first <= page.next {
+                read.lost += page.first - at;
+            }
+            read.boot = page.boot;
+            let end = page.end();
+            let done = page.records.is_empty() || end >= page.next;
+            read.records.append(&mut page.records);
+            read.next = end;
+            if done {
+                break;
+            }
+            at = end;
+        }
+        Ok(read)
     }
 
     /// The sequence number of the last OUT command, as STATUS echoes it.

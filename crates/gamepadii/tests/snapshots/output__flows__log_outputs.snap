@@ -1,0 +1,301 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::log(human(), &all),\noutput::log_follow(human(), &tail, false),\noutput::log_follow(human(), &lost, false).lines().next().unwrap(),\noutput::status(human(), &s), output::status(Style::plain(Format::Waybar), &s),\noutput::log_follow(json(), &tail, false), output::log(json(), &all),\noutput::status(json(), &s),)"
+---
+Haute42COSMOX log, boot 1 (next record 11)
+via           the control channel (/dev/bus/usb/003/007)
+    0  boot 0      0.003 s  BOOT     flags 0 (new) mode default version v0.7.12-119-g8013b41
+    1  boot 0      1.000 s  PANIC    'test 1 22 333 4444 abcde'
+    2  boot 1      0.003 s  BOOT     flags 3 (kept, watchdog) mode default version v0.7.12-119-g8013b41
+    3  boot 1      1.013 s  PROFILE  profile 254 to 2
+    4  boot 1      1.013 s  COMMAND  SET_PROFILE PROFILE_DISABLED seq 46477
+    5  boot 1      1.013 s  COMMAND  cmd 0x17 result 9 seq 0
+    6  boot 1      1.013 s  SAVE     force yes, restart no
+    7  boot 1      1.013 s  RESTART  mode webconfig
+    8  boot 1      1.013 s  ERROR    'no flash'
+    9  boot 1      1.013 s  USB_HOST mount 045e:028e at address 1
+   10  boot 1      1.013 s  code 9   data 010203
+
+   79  boot 1      1.017 s  SAVE     force no, restart no
+   80  boot 1      1.017 s  SAVE     force no, restart no
+
+6 records before record 17 are gone (the pad keeps the last 64)
+XInput (confirmed)
+usb id        045e:028e
+product       -
+manufacturer  -
+serial        -
+port          bus 3, port 3-1, device 7
+firmware      v0.7.12-119-g8013b41 (Haute42 COSMOX, Release)
+board         Haute42COSMOX
+input mode    XInput
+profile       2 SilkSong
+channel       control channel v1.8 on /dev/bus/usb/003/007
+warning       the firmware panicked in boot 0 at 1.000 s: 'test 1 22 333 4444 abcde'. `gamepadii log` shows the log
+
+{"text":"󰊗 XInput","tooltip":"XInput (confirmed)\nusb id: 045e:028e\nproduct: -\nmanufacturer: -\nserial: -\nport: bus 3, port 3-1, device 7\nfirmware: v0.7.12-119-g8013b41 (Haute42 COSMOX, Release)\nboard: Haute42COSMOX\ninput mode: XInput\nprofile: 2 SilkSong\nchannel: control channel v1.8 on /dev/bus/usb/003/007\nwarning: the firmware panicked in boot 0 at 1.000 s: 'test 1 22 333 4444 abcde'. `gamepadii log` shows the log","class":"xinput","alt":"xinput"}
+{"schema":1,"via":"control","host":"/dev/bus/usb/003/007","board":"Haute42COSMOX","boot":1,"next":81,"lost":0,"records":[{"seq":79,"boot":1,"ms":1017,"code":5,"code_name":"SAVE","data":{"force":false,"restart":false},"raw":"0000"},{"seq":80,"boot":1,"ms":1017,"code":5,"code_name":"SAVE","data":{"force":false,"restart":false},"raw":"0000"}]}
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "board": "Haute42COSMOX",
+  "boot": 1,
+  "next": 11,
+  "lost": 0,
+  "records": [
+    {
+      "seq": 0,
+      "boot": 0,
+      "ms": 3,
+      "code": 1,
+      "code_name": "BOOT",
+      "data": {
+        "kept": false,
+        "watchdog": false,
+        "mode": "default",
+        "version": "v0.7.12-119-g8013b41"
+      },
+      "raw": "000076302e372e31322d3131392d6738303133623431"
+    },
+    {
+      "seq": 1,
+      "boot": 0,
+      "ms": 1000,
+      "code": 2,
+      "code_name": "PANIC",
+      "data": {
+        "text": "test 1 22 333 4444 abcde"
+      },
+      "raw": "746573742031203232203333332034343434206162636465"
+    },
+    {
+      "seq": 2,
+      "boot": 1,
+      "ms": 3,
+      "code": 1,
+      "code_name": "BOOT",
+      "data": {
+        "kept": true,
+        "watchdog": true,
+        "mode": "default",
+        "version": "v0.7.12-119-g8013b41"
+      },
+      "raw": "030076302e372e31322d3131392d6738303133623431"
+    },
+    {
+      "seq": 3,
+      "boot": 1,
+      "ms": 1013,
+      "code": 4,
+      "code_name": "PROFILE",
+      "data": {
+        "old": 254,
+        "new": 2
+      },
+      "raw": "fe02"
+    },
+    {
+      "seq": 4,
+      "boot": 1,
+      "ms": 1013,
+      "code": 3,
+      "code_name": "COMMAND",
+      "data": {
+        "command": "SET_PROFILE",
+        "command_byte": 16,
+        "result": "PROFILE_DISABLED",
+        "result_byte": 6,
+        "seq": 46477
+      },
+      "raw": "10068db5"
+    },
+    {
+      "seq": 5,
+      "boot": 1,
+      "ms": 1013,
+      "code": 3,
+      "code_name": "COMMAND",
+      "data": {
+        "command": null,
+        "command_byte": 23,
+        "result": null,
+        "result_byte": 9,
+        "seq": 0
+      },
+      "raw": "17090000"
+    },
+    {
+      "seq": 6,
+      "boot": 1,
+      "ms": 1013,
+      "code": 5,
+      "code_name": "SAVE",
+      "data": {
+        "force": true,
+        "restart": false
+      },
+      "raw": "0100"
+    },
+    {
+      "seq": 7,
+      "boot": 1,
+      "ms": 1013,
+      "code": 6,
+      "code_name": "RESTART",
+      "data": {
+        "mode": "webconfig"
+      },
+      "raw": "02"
+    },
+    {
+      "seq": 8,
+      "boot": 1,
+      "ms": 1013,
+      "code": 7,
+      "code_name": "ERROR",
+      "data": {
+        "text": "no flash"
+      },
+      "raw": "6e6f20666c617368"
+    },
+    {
+      "seq": 9,
+      "boot": 1,
+      "ms": 1013,
+      "code": 8,
+      "code_name": "USB_HOST",
+      "data": {
+        "mounted": true,
+        "address": 1,
+        "vid": "045e",
+        "pid": "028e"
+      },
+      "raw": "01015e048e02"
+    },
+    {
+      "seq": 10,
+      "boot": 1,
+      "ms": 1013,
+      "code": 9,
+      "code_name": null,
+      "data": {},
+      "raw": "010203"
+    }
+  ]
+}
+{
+  "schema": 1,
+  "devices": [
+    {
+      "mode": "xinput",
+      "candidates": [
+        "xinput"
+      ],
+      "confidence": "confirmed",
+      "note": null,
+      "vid": "045e",
+      "pid": "028e",
+      "manufacturer": null,
+      "product": null,
+      "serial": null,
+      "bus": 3,
+      "devnum": 7,
+      "port": "3-1",
+      "sysfs_path": null,
+      "netdev": null,
+      "control_channel": {
+        "node": "/dev/bus/usb/003/007",
+        "protocol": "1.8",
+        "capabilities": [
+          "status",
+          "string",
+          "set_profile",
+          "reboot",
+          "set_input_mode",
+          "lights",
+          "lights_profiles",
+          "log"
+        ],
+        "input_modes": [
+          "xinput",
+          "switch",
+          "ps3",
+          "keyboard",
+          "ps4",
+          "xbone",
+          "mdmini",
+          "neogeo",
+          "pcemini",
+          "egret",
+          "astro",
+          "psclassic",
+          "xboxoriginal",
+          "ps5",
+          "generic",
+          "switch_pro",
+          "p5general",
+          "sinput",
+          "switch2_pro"
+        ],
+        "firmware": {
+          "version": "v0.7.12-119-g8013b41",
+          "board": "Haute42COSMOX",
+          "board_label": "Haute42 COSMOX",
+          "architecture": null,
+          "build": null,
+          "build_type": "Release",
+          "file_name": null
+        },
+        "board_id": null,
+        "input_mode": {
+          "value": 0,
+          "mode": "xinput"
+        },
+        "active_profile": {
+          "number": 2,
+          "label": "SilkSong"
+        },
+        "enabled_profiles": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "profiles": [
+          {
+            "number": 1,
+            "label": "Default"
+          },
+          {
+            "number": 2,
+            "label": "SilkSong"
+          },
+          {
+            "number": 3,
+            "label": "Celeste"
+          },
+          {
+            "number": 4,
+            "label": "DKC"
+          },
+          {
+            "number": 5,
+            "label": "TGX"
+          }
+        ],
+        "profile_pending": false,
+        "forced_setup": 0,
+        "uptime_ms": 1002,
+        "last_panic": {
+          "boot": 0,
+          "ms": 1000,
+          "text": "test 1 22 333 4444 abcde"
+        }
+      },
+      "channel_note": null
+    }
+  ]
+}

@@ -204,6 +204,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--scan`, PIN_SCAN lets the pad read the pins with no action too, and
   gamepadii stops the scan on every path. After 15 s with no press, it
   exits 5. `--mock-channel input` simulates it.
+- Control channel 1.8, the log: `gamepadii log [--from N]` reads the
+  pad's log of its last 64 events live (READ_LOG), in any mode: each
+  boot, firmware panic, OUT command, profile change, save and restart. One
+  line for each record; the JSON has the decoded fields of each record
+  and its data in hex. `--follow` reads the log again every 500 ms and
+  shows only the new records, until Ctrl-C or until the pad goes away
+  (JSON: one line for each read). gamepadii tells you when records were
+  lost (`lost`). When the boot before this one ended with a firmware
+  panic, `status` shows a warning with the message (`last_panic` in the
+  JSON, `null` when there is none; additive). `--mock-channel log`
+  simulates it, with a panic in the last boot.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.

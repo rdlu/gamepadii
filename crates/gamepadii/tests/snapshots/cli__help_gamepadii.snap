@@ -16,6 +16,7 @@ Commands:
   profile    Pin-mapping profiles on the pad
   leds       The per-button RGB LEDs: animation, brightness, colours and the custom theme, or the lights profile on main firmware. Over the control channel when the firmware has the LED commands (no reboot); else from web-config, where stock firmware doesn't show the animation or brightness (in a gamepad mode the control channel takes the pad there and back)
   input      Read the buttons live (needs control channel v1.7 of the gamepadii firmware): the GPIOs pressed now, with their action and key, and the gamepad state
+  log        The pad's log of its last 64 events, live (needs control channel v1.8 of the gamepadii firmware)
   tui        The terminal UI: the pad, its input modes and profiles, web-config and backups. `gamepadii` with no command opens it on a terminal
   display    The pad's OLED display
   setup      One-time setup of this machine

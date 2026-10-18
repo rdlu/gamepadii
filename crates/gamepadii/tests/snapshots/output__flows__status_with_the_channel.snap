@@ -111,7 +111,8 @@ channel       control channel v1.0 on /dev/bus/usb/003/007
         ],
         "profile_pending": false,
         "forced_setup": 0,
-        "uptime_ms": 1002
+        "uptime_ms": 1002,
+        "last_panic": null
       },
       "channel_note": null
     }

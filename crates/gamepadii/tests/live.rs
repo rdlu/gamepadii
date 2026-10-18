@@ -285,6 +285,21 @@ mod channel {
         assert_eq!(after.readable, before.readable);
     }
 
+    /// READ_LOG (v1.8): read-only.
+    #[test]
+    #[ignore = "needs the gamepadii firmware, the udev rule and GAMEPADII_LIVE_CHANNEL=1"]
+    fn log_reads_the_log() {
+        if !on() {
+            return;
+        }
+        let r = live(|env| flow::log(env, None)).expect("the log");
+        print!("{}", output::log(Style::plain(Format::Human), &r));
+        assert!(!r.records.is_empty() && r.records.len() <= 64);
+        assert_eq!(r.records.last().map(|e| e.seq + 1), Some(r.next));
+        let again = live(|env| flow::log(env, Some(r.next))).expect("the log");
+        assert!(again.records.iter().all(|e| e.seq >= r.next));
+    }
+
     /// REBOOT into web-config over the channel, then back over HTTP.
     #[test]
     #[ignore = "reboots the pad; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_REBOOT=1"]
