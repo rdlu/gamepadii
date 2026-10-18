@@ -250,6 +250,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `leds profile write` and the simulator accept the colours 14 to 29 (the
+  16 custom colour slots) also when the pad has no custom colours. The
+  firmware always has all 16 slots, black when not set. Before, the
+  simulator refused them. The build 587a9f3 (control channel 1.9) counts
+  as main.
 - `input find-pin --scan` stops the pin scan at Ctrl-C. Before, the scan
   stayed on until the firmware's 10 s timeout. The result says "pin scan
   used, now off" in place of "on", which looked like the scan still ran.

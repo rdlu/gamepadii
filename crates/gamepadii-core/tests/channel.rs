@@ -1202,9 +1202,9 @@ fn write_lights_checks_everything_before_a_change() {
             with(head(1, en), pb(&[(4, pb::Value::Varint(10))])),
             Outcome::BadArg,
         ),
-        // No custom colours on the fixture: 14 is out of range.
+        // 14 to 29 are the 16 custom slots: 30 is out of range.
         (
-            with(head(1, en), pb(&[(5, pb::Value::Bytes(vec![14]))])),
+            with(head(1, en), pb(&[(5, pb::Value::Bytes(vec![30]))])),
             Outcome::BadArg,
         ),
         (head(1, proto::Slot::ACTIVE), Outcome::ProfileDisabled),

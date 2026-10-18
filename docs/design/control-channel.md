@@ -767,7 +767,9 @@ set for the lights profile that runs now.
   earlier WRITE_LIGHTS waits; PROFILE_DISABLED for a profile without
   "enabled" that has "active" or runs now; then BAD_ARG for data that is not
   protobuf, an effect out of its enum, a cycle time that is not 0–9, or a
-  colour index that is not below 14 plus the number of custom colours.
+  colour index of 30 or more. The firmware always has all 16 custom colour
+  slots (black when not set), so 0–13 are the built-in colours and 14–29
+  the custom ones.
 - **Not checked:** the stored fields. Stored profiles can have colour
   indexes out of range.
 - **Apply:** core 1 applies the change on its next frame. LIGHTS_STATUS
@@ -786,8 +788,7 @@ keeps (the cycle times are 0–9; web-config shows 1–10), and `null` for a
 field that is not set. A lights file can leave out fields: gamepadii sends
 only the others. Fields that gamepadii doesn't know go in `other_fields`,
 encoded in hex, so that a backup keeps them. Before a write, gamepadii does
-the checks of the firmware that it can do. It can't check the colour
-indexes against the custom colours: it doesn't know their number. It backs
+the same checks as the firmware. It backs
 up the profile (`<time>-<board>-lights<N>.json`), waits until PENDING is
 clear and STATUS gives the result, and reads the profile back.
 `channel/sim.rs` models it with `SimChannel::with_lights_profiles`.
