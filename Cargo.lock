@@ -564,6 +564,7 @@ dependencies = [
  "crossterm",
  "gamepadii-core",
  "insta",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

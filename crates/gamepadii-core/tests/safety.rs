@@ -178,6 +178,7 @@ fn every_command(fake: &Fake, dir: &Path) {
         let find = flow::FindPin {
             scan: true,
             timeout: Duration::ZERO,
+            stop: None,
         };
         let _ = flow::find_pin(env, &find, &mut Silent);
         let _ = flow::log(env, None);

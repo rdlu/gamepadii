@@ -1344,7 +1344,16 @@ pub fn find_pin(style: Style, r: &FoundPin) -> String {
         ("action", action),
         ("key", r.pin.key.map_or_else(|| "-".into(), |b| b.both())),
         ("profile", names_from(r.profile, r.names_from)),
-        ("pin scan", if r.scan { "on" } else { "off" }.into()),
+        (
+            "pin scan",
+            match (r.scan, r.note.is_some()) {
+                (false, _) => "not used",
+                (true, false) => "used, now off",
+                // The note says why: PIN_SCAN 0 failed.
+                (true, true) => "used, still on",
+            }
+            .into(),
+        ),
     ];
     if !r.released {
         rw.push((

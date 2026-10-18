@@ -3262,6 +3262,25 @@ fn find_pin_times_out_with_exit_5_and_stops_the_scan() {
 }
 
 #[test]
+fn ctrl_c_stops_find_pin_and_the_scan() {
+    static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    let rig = input_rig(|_| {});
+    let find = flow::FindPin {
+        scan: true,
+        stop: Some(&STOP),
+        ..flow::FindPin::default()
+    };
+    let e = rig
+        .run(|env| flow::find_pin(env, &find, &mut Log::default()))
+        .unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(e.to_string().contains("stopped (Ctrl-C)"), "{e}");
+    assert!(rig.clock.elapsed() < Duration::from_secs(1), "no wait");
+    assert_eq!(rig.channel_commands(), [0x19, 0x19], "on, then off");
+    assert!(!rig.pad.firmware().input.scan_on);
+}
+
+#[test]
 fn input_needs_control_channel_1_7() {
     let rig = Rig::new(
         SimPad::new(s16_dir(), InputMode::Xinput)

@@ -34,14 +34,14 @@ GPIO 22: no action
 action        none
 key           -
 profile       2
-pin scan      on
+pin scan      used, now off
 via           the control channel (/dev/bus/usb/003/007)
 
 GPIO 27: Up
 action        Up
 key           Up
 profile       2
-pin scan      off
+pin scan      not used
 via           the control channel (/dev/bus/usb/003/007)
 
 {"schema":1,"via":"control","host":"/dev/bus/usb/003/007","profile":2,"names_from":"slot","pressed":[{"gpio":6,"action":11,"action_name":"L2","key":"B1"},{"gpio":14,"action":78,"action_name":"menu-navigation-toggle","key":null},{"gpio":27,"action":1,"action_name":"Up","key":"Up"}],"readable":[2,3,4,5,6,7,8,9,10,11,12,13,14,16,17,18,19,20,21,26,27],"scan_on":false,"dpad":["Up"],"buttons":["L2"],"buttons_mask":64,"aux":0,"sticks":{"lx":32767,"ly":32767,"rx":32767,"ry":32767,"lt":0,"rt":0}}

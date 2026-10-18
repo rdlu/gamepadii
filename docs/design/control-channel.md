@@ -856,8 +856,10 @@ v1.4, else from the device cache, else there are only the GPIO numbers.
 `find-pin` reads every 15 ms, accepts a press after 3 reads, and waits up
 to 5 s for 3 reads with the pin released. A pin that is held at the start
 is not a new press. After 15 s with no press it stops with exit 5. With
-`--scan` it sends PIN_SCAN 1 first and PIN_SCAN 0 on every path. After a
-Ctrl-C, the next READ_INPUT after 10 s stops the scan. `input --watch`
+`--scan` it sends PIN_SCAN 1 first and PIN_SCAN 0 on every path. The
+first Ctrl-C stops the search, and gamepadii then sends PIN_SCAN 0; a
+second Ctrl-C ends the program at once. If gamepadii stops with no PIN_SCAN
+0, the next READ_INPUT after 10 s stops the scan. `input --watch`
 reads every 20 ms and prints a line when the input changes; with `--json`
 each line is one JSON object. `channel/sim.rs` models it with
 `SimChannel::with_input`: the pins that a person holds come from a script,

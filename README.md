@@ -204,7 +204,7 @@ press:
   `input find-pin` waits until you push one button, and tells you its
   GPIO. With `--scan`, the pad also reads the pins with no action, so you
   can find a button that no profile uses. The scan changes no setting, and
-  gamepadii stops it at the end;
+  gamepadii stops it at the end, also after Ctrl-C;
 - `log` reads the pad's log, with no reboot. This needs channel v1.8. The
   pad keeps its last 64 events: each boot, firmware panic, OUT command,
   profile change, save and restart. A soft reboot keeps the log; a

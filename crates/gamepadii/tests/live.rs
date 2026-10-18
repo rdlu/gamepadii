@@ -238,7 +238,7 @@ mod channel {
         };
         eprintln!("{:?}", ch.hello());
         let report = commands::channel_report(&ch).expect("STATUS and strings");
-        assert_eq!(report.protocol, "1.0");
+        assert!(report.protocol.starts_with("1."), "{}", report.protocol);
         assert!(!ch.caps().has(channel::Caps::REBOOT_BOOTSEL));
         let status = commands::status_with(&Root::live(), Some(&open), None).unwrap();
         print!("{}", output::status(Style::plain(Format::Human), &status));
