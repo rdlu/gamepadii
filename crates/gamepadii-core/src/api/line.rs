@@ -143,8 +143,8 @@ pub const KNOWN_BUILDS: &[(&str, FirmwareLine)] = &[
     // (on the S16 since 2026-10-18, `v0.7.12-128-ga42b806-dirty`), and
     // v1.3 with the board ID, v1.4 with the profile slots, v1.5 with the
     // LED profiles, v1.6 with the config blob, v1.7 with the input
-    // snapshot and v1.8 with the log (on the S16 since 2026-10-18,
-    // `v0.7.12-135-ga51474c`).
+    // snapshot, v1.8 with the log and v1.9 with the custom colours (on the
+    // S16 since 2026-10-18, `v0.7.12-136-g587a9f3`).
     ("a42b806", FirmwareLine::Main),
     ("6160a03", FirmwareLine::Main),
     ("cb01f70", FirmwareLine::Main),
@@ -152,6 +152,7 @@ pub const KNOWN_BUILDS: &[(&str, FirmwareLine)] = &[
     ("61ab30f", FirmwareLine::Main),
     ("48a9521", FirmwareLine::Main),
     ("a51474c", FirmwareLine::Main),
+    ("587a9f3", FirmwareLine::Main),
 ];
 
 /// Upstream main builds with none of our fixes: `getConfig` still hangs

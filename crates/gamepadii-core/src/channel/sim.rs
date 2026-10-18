@@ -489,8 +489,6 @@ pub struct SimChannel {
     /// The lights profiles in flash, when a RAM-only WRITE_LIGHTS made them
     /// differ; `None`: flash has what RAM has.
     pub saved_lights_profiles: Option<SavedLightsProfiles>,
-    /// `customColors`: the colour indexes go to 14 plus this.
-    pub custom_colors: u8,
     /// v1.7: the inputs and the pin scan.
     pub input: SimInput,
     /// v1.8: the pad's log; `None` before 1.8.
@@ -540,7 +538,6 @@ impl SimChannel {
             saved_slots: default_slots(),
             lights_fields: Default::default(),
             saved_lights_profiles: None,
-            custom_colors: 0,
             input: SimInput::default(),
             events: None,
             config: None,
@@ -1049,8 +1046,7 @@ impl SimChannel {
             protobuf: args[proto::LIGHTS_HEAD_LEN..].to_vec(),
         };
         let file = LightsFile::from_data(&sent, None).ok_or(Outcome::BadArg)?;
-        file.check(Some(usize::from(self.custom_colors)))
-            .map_err(|_| Outcome::BadArg)?;
+        file.check().map_err(|_| Outcome::BadArg)?;
         if self.saved_lights_profiles.is_none() {
             self.saved_lights_profiles =
                 Some((self.lights_fields.clone(), self.lights_limits.profiles));
@@ -1103,9 +1099,6 @@ impl SimChannel {
             }
             if let Some(v) = int(&a, "idletimeout").and_then(|v| u16::try_from(v).ok()) {
                 k.idle_timeout_s = v;
-            }
-            if let Some(c) = a.get("customColors").and_then(Value::as_array) {
-                self.custom_colors = u8::try_from(c.len()).unwrap_or(u8::MAX);
             }
             let profiles = a.get("profiles").and_then(Value::as_array);
             for (fields, json) in self

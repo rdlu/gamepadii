@@ -239,10 +239,11 @@ impl LightsFile {
         b
     }
 
-    /// What the firmware checks in the fields it gets (§3.11).
-    /// `custom_colors`: how many the pad has; `None` allows them all.
-    pub fn check(&self, custom_colors: Option<usize>) -> std::result::Result<(), String> {
-        let colors = BASE_COLORS + custom_colors.unwrap_or(MAX_CUSTOM_COLORS);
+    /// What the firmware checks in the fields it gets (§3.11). The pad
+    /// always has all 16 custom colour slots (black when not set), so the
+    /// colours are 0 to 29.
+    pub fn check(&self) -> std::result::Result<(), String> {
+        let colors = BASE_COLORS + MAX_CUSTOM_COLORS;
         for (number, value) in &self.values {
             let Some(def) = field(*number) else { continue };
             let n = value.as_i32();
@@ -512,7 +513,7 @@ pub fn plan(
             write.profile
         )));
     }
-    file.check(None).map_err(Error::Usage)?;
+    file.check().map_err(Error::Usage)?;
     let flag = |on: bool, bit: u8| if on { bit } else { 0 };
     Ok(LightsData {
         profile: write.profile,
@@ -667,7 +668,7 @@ mod tests {
 
     #[test]
     fn the_host_checks_as_the_firmware_does() {
-        let check = |text: &str| LightsFile::parse(text).unwrap().check(Some(0));
+        let check = |text: &str| LightsFile::parse(text).unwrap().check();
         assert_eq!(
             check(r#"{"idle_effect": 19, "pressed_cycle_time": 9}"#),
             Ok(())
@@ -676,7 +677,7 @@ mod tests {
             (r#"{"idle_effect": 20}"#, "0 to 19"),
             (r#"{"pressed_effect": -1}"#, "0 to 5"),
             (r#"{"idle_cycle_time": 10}"#, "0 to 9"),
-            (r#"{"case_colors": [14]}"#, "0 to 13"),
+            (r#"{"case_colors": [30]}"#, "0 to 29"),
         ] {
             let e = check(text).unwrap_err();
             assert!(e.contains(says), "{text}: {e}");
