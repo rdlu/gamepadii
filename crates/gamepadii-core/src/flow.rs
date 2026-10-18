@@ -2507,8 +2507,14 @@ pub fn lights_write(
         board: ch.string(proto::string::BOARD).ok().flatten(),
         ..Firmware::default()
     };
-    let data = lights::plan(file, write, status.on(), firmware.board.as_deref())?;
     let before = read_lights_file(&ch, write.profile, firmware.board.clone())?;
+    // Only the fields that change go, as for a theme: the firmware checks
+    // each field that it gets, and a stored profile can have colours out of
+    // range. Thus a backup of the profile applies again.
+    let mut file = file.clone();
+    file.values
+        .retain(|number, v| before.values.get(number) != Some(v));
+    let data = lights::plan(&file, write, status.on(), firmware.board.as_deref())?;
     let backup = match &env.backups_dir {
         Some(dir) => {
             let name = format!(

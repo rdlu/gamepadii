@@ -2878,6 +2878,36 @@ fn lights_write_selects_in_ram_and_waits_for_core_1() {
 }
 
 #[test]
+fn lights_write_of_a_backup_with_a_stored_colour_out_of_range() {
+    // The S16's profile 0 has a stored case colour of 32.
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles();
+                let mut case = vec![0u8; 32];
+                case[31] = 32;
+                c.lights_fields[0].insert(11, gamepadii_core::pb::Value::Bytes(case));
+            }),
+    );
+    let shown = rig.run(|env| flow::lights_show(env, Some(0))).unwrap();
+    let mut file = shown.file.clone();
+    file.values.insert(2, gamepadii_core::pb::Value::Varint(19));
+    let write = LightsWrite::default();
+    let r = rig
+        .run(|env| flow::lights_write(env, &file, &write, &mut Log::default()))
+        .unwrap();
+    assert_eq!(r.changed, ["idle_effect"], "only the changed field went");
+    // The backup, with the colour 32, undoes it.
+    let text = std::fs::read_to_string(r.backup.unwrap()).unwrap();
+    let back = LightsFile::parse(&text).unwrap();
+    let r = rig
+        .run(|env| flow::lights_write(env, &back, &write, &mut Log::default()))
+        .unwrap();
+    assert_eq!(r.changed, ["idle_effect"]);
+}
+
+#[test]
 fn lights_write_save_survives_a_restart() {
     let rig = lights_profiles_rig(0);
     let write = LightsWrite {

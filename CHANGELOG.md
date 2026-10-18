@@ -260,6 +260,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `leds profile write` sends only the fields that differ from the profile
+  on the pad. Before, a backup of a profile with a stored colour out of
+  range (the S16's profile 0 has 32) was refused.
 - `leds profile write` and the simulator accept the colours 14 to 29 (the
   16 custom colour slots) also when the pad has no custom colours. The
   firmware always has all 16 slots, black when not set. Before, the
