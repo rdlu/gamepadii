@@ -7,7 +7,9 @@
 //! (and the boot ROM) STALLs. With the channel, our requests get the v1
 //! protocol (HELLO, STATUS, STRING, SET_PROFILE, REBOOT, SET_INPUT_MODE,
 //! forced-setup locks, the token, STATUS results), and anything else still
-//! takes the stock path.
+//! takes the stock path. [`SimChannel::with_leds`] makes it a v1.1 build
+//! with the LED commands (LED_STATUS, SET_LED: RAM and saved LED state,
+//! range checks); without that, they are unknown commands, as on v1.0.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -19,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::proto::{self, Caps, Command, Hello, Outcome, Setup, Status};
+use super::proto::{self, Caps, Command, Hello, LedStatus, Outcome, SetLed, Setup, Status};
 use super::{ControlTransport, UsbError};
 use crate::mode::{BootMode, InputMode};
 use crate::transport::mock::Mock;
@@ -46,10 +48,64 @@ pub const V1_CAPS: u32 =
 /// `InputMode` 0–15: what v0.7.12 can boot.
 pub const V0712_MODES: u32 = 0xffff;
 
+/// The LED settings SET_LED changes (`AnimationOptions`), in RAM or saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimLeds {
+    pub animation: u8,
+    pub brightness: u8,
+    pub static_color: u8,
+    pub button_color: u8,
+    pub theme: u8,
+}
+
+impl Default for SimLeds {
+    /// The S16 as read live (issue #19): custom theme, brightness 1 of 5.
+    fn default() -> Self {
+        Self {
+            animation: 4,
+            brightness: 1,
+            static_color: 2,
+            button_color: 1,
+            theme: 0,
+        }
+    }
+}
+
+/// What the LED values are checked against, and the fixed flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimLedLimits {
+    /// AnimationStation runs.
+    pub running: bool,
+    pub custom_theme: bool,
+    pub animations: u8,
+    pub brightness_steps: u8,
+    pub brightness_maximum: u8,
+    pub colors: u8,
+    pub themes: u8,
+}
+
+impl Default for SimLedLimits {
+    /// v0.7.12 on the S16: 5 effects, 5 steps up to 100, 16 colours, 20
+    /// static themes.
+    fn default() -> Self {
+        Self {
+            running: true,
+            custom_theme: true,
+            animations: 5,
+            brightness_steps: 5,
+            brightness_maximum: 100,
+            colors: 16,
+            themes: 20,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SimChannel {
     /// The channel is built into this firmware.
     pub enabled: bool,
+    /// The protocol minor in HELLO: 0, or 1 with the LED commands.
+    pub minor: u8,
     pub caps: Caps,
     pub modes: u32,
     /// STRING id → value.
@@ -76,6 +132,11 @@ pub struct SimChannel {
     pub uptime_ms: u32,
     /// What an Xbox One IN gets, repeated to `wLength`.
     pub garbage: Vec<u8>,
+    /// The LEDs as they run (RAM).
+    pub leds: SimLeds,
+    /// The LEDs in flash: what a restart goes back to.
+    pub saved_leds: SimLeds,
+    pub led_limits: SimLedLimits,
     pub log: Vec<Seen>,
 }
 
@@ -90,6 +151,7 @@ impl SimChannel {
         strings.insert(proto::string::profile_label(1), "Default".into());
         Self {
             enabled: false,
+            minor: 0,
             caps: Caps(V1_CAPS),
             modes: V0712_MODES,
             strings,
@@ -105,8 +167,18 @@ impl SimChannel {
             reboot_pending: false,
             uptime_ms: 1000,
             garbage: (0..=255u8).map(|i| i.wrapping_mul(37) ^ 0xa5).collect(),
+            leds: SimLeds::default(),
+            saved_leds: SimLeds::default(),
+            led_limits: SimLedLimits::default(),
             log: Vec::new(),
         }
+    }
+
+    /// A v1.1 build: protocol minor 1, with the LED commands.
+    pub fn with_leds(mut self) -> Self {
+        self.minor = 1;
+        self.caps = Caps(self.caps.0 | Caps::LEDS);
+        self
     }
 
     /// Our firmware with the channel, a single Default profile.
@@ -165,7 +237,73 @@ impl SimChannel {
             }
         }
         s.active = s.saved_profile;
+        s.leds_from(mock);
         s
+    }
+
+    /// The LED state from the mock: `animationOptions` from its `getConfig`
+    /// (the fork fixture has one), the brightness limits from
+    /// `getLedOptions`, the custom theme from `getCustomTheme`.
+    fn leds_from(&mut self, mock: &Mock) {
+        let byte = |o: &Value, k: &str| {
+            o.get(k)
+                .and_then(Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+        };
+        if let Some(a) = mock
+            .current("getConfig")
+            .and_then(|c| c.get("animationOptions").cloned())
+        {
+            let l = &mut self.saved_leds;
+            for (field, key) in [
+                (&mut l.animation, "baseAnimationIndex"),
+                (&mut l.brightness, "brightness"),
+                (&mut l.static_color, "staticColorIndex"),
+                (&mut l.button_color, "buttonColorIndex"),
+                (&mut l.theme, "themeIndex"),
+            ] {
+                if let Some(v) = byte(&a, key) {
+                    *field = v;
+                }
+            }
+            self.leds = self.saved_leds;
+        }
+        if let Some(o) = mock.current("getLedOptions") {
+            if let Some(v) = byte(&o, "brightnessSteps") {
+                self.led_limits.brightness_steps = v;
+            }
+            if let Some(v) = byte(&o, "brightnessMaximum") {
+                self.led_limits.brightness_maximum = v;
+            }
+            if let Some(pin) = o.get("dataPin").and_then(Value::as_i64) {
+                self.led_limits.running = pin >= 0;
+            }
+        }
+        if let Some(t) = mock.current("getCustomTheme") {
+            self.led_limits.custom_theme = t.get("enabled").and_then(Value::as_u64) == Some(1)
+                || t.get("enabled").and_then(Value::as_bool) == Some(true);
+        }
+    }
+
+    /// LED_STATUS as the firmware would answer it now.
+    pub fn led_status(&self) -> LedStatus {
+        let (l, k) = (&self.leds, &self.led_limits);
+        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+        LedStatus {
+            flags: flag(k.running, LedStatus::RUNNING)
+                | flag(k.custom_theme, LedStatus::CUSTOM_THEME)
+                | flag(self.leds != self.saved_leds, LedStatus::UNSAVED),
+            animation: l.animation,
+            animations: k.animations,
+            brightness: l.brightness,
+            brightness_steps: k.brightness_steps,
+            brightness_maximum: k.brightness_maximum,
+            static_color: l.static_color,
+            button_color: l.button_color,
+            theme: l.theme,
+            colors: k.colors,
+            themes: k.themes,
+        }
     }
 
     /// Takes the saved input mode and profile from the mock's
@@ -192,6 +330,7 @@ impl SimChannel {
         self.running = running.map(proto_byte);
         self.token = token;
         self.active = self.saved_profile;
+        self.leds = self.saved_leds;
         self.pending = false;
         self.reboot_pending = false;
         self.last = (0, 0, 0);
@@ -207,6 +346,8 @@ impl SimChannel {
         // A known command must agree with the direction.
         match Command::from_byte(setup.command_byte()) {
             Some(c) if c.is_in() != setup.is_in() => None,
+            // A v1.0 build (or one without LEDs) doesn't know them.
+            Some(Command::LedStatus | Command::SetLed) if !self.caps.has(Caps::LEDS) => Some(None),
             known => Some(known),
         }
     }
@@ -248,7 +389,7 @@ impl SimChannel {
         let reply = match cmd {
             Command::Hello => Hello {
                 major: proto::MAJOR,
-                minor: 0,
+                minor: self.minor,
                 caps: self.caps,
                 token: self.token,
                 modes: self.modes,
@@ -264,8 +405,12 @@ impl SimChannel {
             Command::String => match self.strings.get(&setup.value) {
                 Some(v) => v.as_bytes().iter().copied().take(63).collect(),
                 None if (0x11..=0x16).contains(&setup.value) => Vec::new(),
+                None if self.caps.has(Caps::LEDS) && (0x20..0x40).contains(&setup.value) => {
+                    Vec::new()
+                }
                 None => return Err(UsbError::Stall),
             },
+            Command::LedStatus => self.led_status().encode().to_vec(),
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -353,6 +498,8 @@ impl SimChannel {
                 }
                 if persist == 1 {
                     self.saved_profile = n;
+                    // Any save writes the whole config, the LEDs' RAM state too.
+                    self.saved_leds = self.leds;
                 }
                 Ok(None)
             }
@@ -377,7 +524,39 @@ impl SimChannel {
                     return Err(Outcome::Unsupported);
                 }
                 self.saved_mode = m;
+                self.saved_leds = self.leds;
                 Ok(Some(Effect::Reboot(BootMode::Gamepad)))
+            }
+            Command::SetLed => {
+                let set = SetLed::parse(args).ok_or(Outcome::BadArg)?;
+                let k = self.led_limits;
+                let fits = |v: Option<u8>, below: u16| v.is_none_or(|v| u16::from(v) < below);
+                let ok = fits(set.animation, k.animations.into())
+                    && fits(set.brightness, u16::from(k.brightness_steps) + 1)
+                    && fits(set.static_color, k.colors.into())
+                    && fits(set.button_color, k.colors.into())
+                    && fits(set.theme, k.themes.into());
+                if !ok {
+                    return Err(Outcome::BadArg);
+                }
+                let l = &mut self.leds;
+                for (field, v) in [
+                    (&mut l.animation, set.animation),
+                    (&mut l.brightness, set.brightness),
+                    (&mut l.static_color, set.static_color),
+                    (&mut l.button_color, set.button_color),
+                    (&mut l.theme, set.theme),
+                ] {
+                    if let Some(v) = v {
+                        *field = v;
+                    }
+                }
+                if set.persist {
+                    self.saved_leds = self.leds;
+                    // The save writes the profile too.
+                    self.saved_profile = self.active;
+                }
+                Ok(None)
             }
             _ => Err(Outcome::BadArg),
         }

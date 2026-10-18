@@ -12,7 +12,9 @@
 //! answers vendor requests with 0 bytes, Xbox One with garbage, the rest
 //! STALL), or with [`SimPad::with_channel`] the gamepadii control channel,
 //! whose REBOOT and SET_INPUT_MODE re-enumerate the pad like `/api/reboot`
-//! and save into the same mock state the web-config API reads.
+//! and save into the same mock state the web-config API reads (a saved LED
+//! change too, into `getConfig`'s `animationOptions` when the fixture has
+//! one). [`SimPad::with_leds`] adds the v1.1 LED commands.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -144,6 +146,11 @@ impl SimPad {
         let ch = SimChannel::from_mock(&self.mock, running);
         self.lock().channel = ch;
         self
+    }
+
+    /// The gamepadii firmware with control channel v1.1: the LED commands.
+    pub fn with_leds(self) -> Self {
+        self.with_channel().channel(|c| *c = c.clone().with_leds())
     }
 
     /// Changes the simulated firmware (locks, capabilities, garbage).
@@ -403,6 +410,29 @@ impl SimControl {
             o.insert("inputMode".into(), ch.saved_mode.into());
             o.insert("profileNumber".into(), ch.saved_profile.into());
             mock.store("getGamepadOptions", serde_json::Value::Object(o));
+        }
+        let Some(mut config) = mock.current("getConfig") else {
+            return;
+        };
+        let Some(serde_json::Value::Object(a)) = config.get_mut("animationOptions") else {
+            return;
+        };
+        let l = ch.saved_leds;
+        let mut changed = false;
+        for (key, v) in [
+            ("baseAnimationIndex", l.animation),
+            ("brightness", l.brightness),
+            ("staticColorIndex", l.static_color),
+            ("buttonColorIndex", l.button_color),
+            ("themeIndex", l.theme),
+        ] {
+            if a.get(key).and_then(|x| x.as_u64()) != Some(v.into()) {
+                a.insert(key.into(), v.into());
+                changed = true;
+            }
+        }
+        if changed {
+            mock.store("getConfig", config);
         }
     }
 }

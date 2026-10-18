@@ -1,5 +1,5 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
-//! §3): vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
+//! §3, and the v1.1 LED commands of §3.7): vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
 
@@ -21,8 +21,12 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
+/// The newest protocol minor this host knows (v1.1: the LED commands). A
+/// pad's minor is informational: what it can do is in its capabilities.
+pub const MINOR: u8 = 1;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
+pub const LED_STATUS_LEN: usize = 12;
 /// The token and sequence header every OUT payload starts with.
 pub const HEADER_LEN: usize = 8;
 
@@ -76,26 +80,32 @@ impl Setup {
     }
 }
 
-/// The v1 commands.
+/// The v1 commands, and the v1.1 LED ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
     Hello = 0x01,
     Status = 0x02,
     String = 0x03,
+    /// v1.1, behind [`Caps::LEDS`].
+    LedStatus = 0x04,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
+    /// v1.1, behind [`Caps::LEDS`].
+    SetLed = 0x13,
 }
 
 impl Command {
-    pub const ALL: [Command; 6] = [
+    pub const ALL: [Command; 8] = [
         Command::Hello,
         Command::Status,
         Command::String,
+        Command::LedStatus,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
+        Command::SetLed,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -104,7 +114,10 @@ impl Command {
 
     /// Reads are IN; commands are OUT.
     pub fn is_in(self) -> bool {
-        matches!(self, Command::Hello | Command::Status | Command::String)
+        matches!(
+            self,
+            Command::Hello | Command::Status | Command::String | Command::LedStatus
+        )
     }
 
     pub fn name(self) -> &'static str {
@@ -115,6 +128,8 @@ impl Command {
             Command::SetProfile => "SET_PROFILE",
             Command::Reboot => "REBOOT",
             Command::SetInputMode => "SET_INPUT_MODE",
+            Command::LedStatus => "LED_STATUS",
+            Command::SetLed => "SET_LED",
         }
     }
 
@@ -123,7 +138,8 @@ impl Command {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
             Command::Reboot => Some(1),
-            Command::Hello | Command::Status | Command::String => None,
+            Command::SetLed => Some(SET_LED_LEN),
+            Command::Hello | Command::Status | Command::String | Command::LedStatus => None,
         }
     }
 }
@@ -143,6 +159,12 @@ pub mod string {
     pub fn profile_label(n: u8) -> u16 {
         0x10 + u16::from(n)
     }
+
+    /// v1.1: the firmware's name for animation effect `n`, `0x20 + n`
+    /// (optional; empty when it has none).
+    pub fn effect_name(n: u8) -> u16 {
+        0x20 + u16::from(n)
+    }
 }
 
 /// The HELLO capability bitmap.
@@ -161,8 +183,11 @@ impl Caps {
     pub const SET_INPUT_MODE: u32 = 1 << 5;
     pub const CFG_READ: u32 = 1 << 6;
     pub const CFG_WRITE: u32 = 1 << 7;
+    /// v1.1: LED_STATUS and SET_LED. Set only when the LEDs run
+    /// (AnimationStation is enabled on the build and board).
+    pub const LEDS: u32 = 1 << 8;
 
-    const NAMES: [(u32, &'static str); 8] = [
+    const NAMES: [(u32, &'static str); 9] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -171,6 +196,7 @@ impl Caps {
         (Self::SET_INPUT_MODE, "set_input_mode"),
         (Self::CFG_READ, "cfg_read"),
         (Self::CFG_WRITE, "cfg_write"),
+        (Self::LEDS, "leds"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -342,6 +368,162 @@ impl Status {
 
     pub fn reboot_pending(&self) -> bool {
         self.flags & Self::REBOOT_PENDING != 0
+    }
+}
+
+/// A LED_STATUS reply (v1.1): AnimationStation's state, as the LED
+/// hotkeys see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LedStatus {
+    /// [`LedStatus::RUNNING`], [`LedStatus::CUSTOM_THEME`],
+    /// [`LedStatus::UNSAVED`].
+    pub flags: u8,
+    /// `baseAnimationIndex` (the `AnimationEffects` enum).
+    pub animation: u8,
+    /// How many effects this build cycles through: valid animations are
+    /// below it.
+    pub animations: u8,
+    /// `AnimationOptions.brightness`, 0 to `brightness_steps`.
+    pub brightness: u8,
+    /// `ledOptions.brightnessSteps`.
+    pub brightness_steps: u8,
+    /// `ledOptions.brightnessMaximum`, 0-255.
+    pub brightness_maximum: u8,
+    pub static_color: u8,
+    pub button_color: u8,
+    pub theme: u8,
+    /// How many colours (`AnimationColor`) the colour indexes have.
+    pub colors: u8,
+    /// How many static themes `theme` indexes.
+    pub themes: u8,
+}
+
+impl LedStatus {
+    /// The LEDs run (AnimationStation is active).
+    pub const RUNNING: u8 = 1 << 0;
+    /// `hasCustomTheme`.
+    pub const CUSTOM_THEME: u8 = 1 << 1;
+    /// RAM differs from the saved config: an LED change isn't saved.
+    pub const UNSAVED: u8 = 1 << 2;
+
+    pub fn parse(reply: &[u8]) -> Option<LedStatus> {
+        (reply.len() >= LED_STATUS_LEN).then(|| LedStatus {
+            flags: reply[0],
+            animation: reply[1],
+            animations: reply[2],
+            brightness: reply[3],
+            brightness_steps: reply[4],
+            brightness_maximum: reply[5],
+            static_color: reply[6],
+            button_color: reply[7],
+            theme: reply[8],
+            colors: reply[9],
+            themes: reply[10],
+        })
+    }
+
+    pub fn encode(&self) -> [u8; LED_STATUS_LEN] {
+        [
+            self.flags,
+            self.animation,
+            self.animations,
+            self.brightness,
+            self.brightness_steps,
+            self.brightness_maximum,
+            self.static_color,
+            self.button_color,
+            self.theme,
+            self.colors,
+            self.themes,
+            0,
+        ]
+    }
+
+    pub fn running(&self) -> bool {
+        self.flags & Self::RUNNING != 0
+    }
+
+    pub fn custom_theme(&self) -> bool {
+        self.flags & Self::CUSTOM_THEME != 0
+    }
+
+    pub fn unsaved(&self) -> bool {
+        self.flags & Self::UNSAVED != 0
+    }
+}
+
+/// SET_LED's arguments, after the header.
+pub const SET_LED_LEN: usize = 8;
+
+/// A SET_LED (v1.1): the fields that are `Some` change, the rest stay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SetLed {
+    pub animation: Option<u8>,
+    pub brightness: Option<u8>,
+    pub static_color: Option<u8>,
+    pub button_color: Option<u8>,
+    pub theme: Option<u8>,
+    /// Save to flash (the LED hotkeys' save path); else RAM only.
+    pub persist: bool,
+}
+
+impl SetLed {
+    pub const ANIMATION: u8 = 1 << 0;
+    pub const BRIGHTNESS: u8 = 1 << 1;
+    pub const STATIC_COLOR: u8 = 1 << 2;
+    pub const BUTTON_COLOR: u8 = 1 << 3;
+    pub const THEME: u8 = 1 << 4;
+    /// The mask bits v1.1 defines; any other is BAD_ARG.
+    pub const MASK: u8 = 0x1f;
+
+    pub fn mask(&self) -> u8 {
+        [
+            (self.animation, Self::ANIMATION),
+            (self.brightness, Self::BRIGHTNESS),
+            (self.static_color, Self::STATIC_COLOR),
+            (self.button_color, Self::BUTTON_COLOR),
+            (self.theme, Self::THEME),
+        ]
+        .into_iter()
+        .filter(|(v, _)| v.is_some())
+        .fold(0, |m, (_, bit)| m | bit)
+    }
+
+    pub fn encode(&self) -> [u8; SET_LED_LEN] {
+        [
+            self.mask(),
+            self.animation.unwrap_or(0),
+            self.brightness.unwrap_or(0),
+            self.static_color.unwrap_or(0),
+            self.button_color.unwrap_or(0),
+            self.theme.unwrap_or(0),
+            u8::from(self.persist),
+            0,
+        ]
+    }
+
+    /// The firmware's reading of `args` (at least [`SET_LED_LEN`] bytes):
+    /// `None` for unknown mask bits or a persist byte other than 0/1
+    /// (BAD_ARG).
+    pub fn parse(args: &[u8]) -> Option<SetLed> {
+        let (mask, persist) = (args[0], args[6]);
+        if mask & !Self::MASK != 0 || persist > 1 {
+            return None;
+        }
+        let field = |bit: u8, at: usize| (mask & bit != 0).then_some(args[at]);
+        Some(SetLed {
+            animation: field(Self::ANIMATION, 1),
+            brightness: field(Self::BRIGHTNESS, 2),
+            static_color: field(Self::STATIC_COLOR, 3),
+            button_color: field(Self::BUTTON_COLOR, 4),
+            theme: field(Self::THEME, 5),
+            persist: persist == 1,
+        })
+    }
+
+    /// Whether it changes nothing (a bare save, with `persist`).
+    pub fn is_empty(&self) -> bool {
+        self.mask() == 0
     }
 }
 
@@ -523,5 +705,66 @@ mod tests {
         assert_eq!(header(&p[..7]), None);
         assert_eq!(string::profile_label(1), 0x11);
         assert_eq!(string::profile_label(6), 0x16);
+        assert_eq!(string::effect_name(0), 0x20);
+        assert_eq!(string::effect_name(4), 0x24);
+    }
+
+    #[test]
+    fn v1_1_led_commands() {
+        let s = Setup::read(Command::LedStatus, 0);
+        assert_eq!((s.request_type, s.index), (0xc0, 0x5004));
+        assert!(Command::LedStatus.is_in() && !Command::SetLed.is_in());
+        assert_eq!(Setup::command(Command::SetLed).index, 0x5013);
+        assert_eq!(Command::from_byte(0x13), Some(Command::SetLed));
+        assert_eq!(Command::SetLed.payload_len(), Some(8));
+        assert_eq!(Caps(0x12f).names().last(), Some(&"leds"));
+        assert!(Caps(0x12f).has(Caps::LEDS) && !Caps(0x2f).has(Caps::LEDS));
+    }
+
+    #[test]
+    fn led_status_round_trips() {
+        let s = LedStatus {
+            flags: LedStatus::RUNNING | LedStatus::UNSAVED,
+            animation: 4,
+            animations: 5,
+            brightness: 3,
+            brightness_steps: 5,
+            brightness_maximum: 100,
+            static_color: 2,
+            button_color: 1,
+            theme: 0,
+            colors: 16,
+            themes: 20,
+        };
+        let b = s.encode();
+        assert_eq!(b, [5, 4, 5, 3, 5, 100, 2, 1, 0, 16, 20, 0]);
+        assert_eq!(LedStatus::parse(&b), Some(s));
+        assert_eq!(LedStatus::parse(&b[..11]), None);
+        assert!(s.running() && s.unsaved() && !s.custom_theme());
+    }
+
+    #[test]
+    fn set_led_masks_what_it_sets() {
+        let set = SetLed {
+            brightness: Some(2),
+            theme: Some(7),
+            persist: true,
+            ..SetLed::default()
+        };
+        assert_eq!(set.encode(), [0b1_0010, 0, 2, 0, 0, 7, 1, 0]);
+        assert_eq!(SetLed::parse(&set.encode()), Some(set));
+        let all = SetLed {
+            animation: Some(1),
+            brightness: Some(2),
+            static_color: Some(3),
+            button_color: Some(4),
+            theme: Some(5),
+            persist: false,
+        };
+        assert_eq!(all.encode(), [0x1f, 1, 2, 3, 4, 5, 0, 0]);
+        assert!(SetLed::default().is_empty());
+        // Unknown mask bits, or a persist byte of 2: BAD_ARG.
+        assert_eq!(SetLed::parse(&[0x20, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(SetLed::parse(&[0x01, 0, 0, 0, 0, 0, 2, 0]), None);
     }
 }
