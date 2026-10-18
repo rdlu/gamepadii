@@ -15,8 +15,8 @@ buttons. With our firmware fork, most changes do not need a button press.
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `restore`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `display layout`,
-`leds`, `leds profile show`, `leds profile write`, `input`,
-`input find-pin`, `log` and `setup udev`. The TUI
+`leds`, `leds profile show`, `leds profile write`, `leds colors`,
+`leds theme`, `input`, `input find-pin`, `log` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -99,6 +99,20 @@ gamepadii leds profile write FILE --profile N [--select] [--save]
                                   write a lights file to lights profile
                                   0-3, live; only its fields change; RAM
                                   only unless --save; backs up first
+gamepadii leds colors [show]      the 16 custom colours, live (needs
+                                  control channel v1.9); --json gives a
+                                  colours file
+gamepadii leds colors write FILE [--save]
+                                  write a colours file, live; the colours
+                                  after it become black; RAM only unless
+                                  --save; backs up first
+gamepadii leds theme show [--profile N]
+                                  the custom colours and a lights profile;
+                                  --json gives a theme file
+gamepadii leds theme apply FILE [--profile N] [--save]
+                                  write the colours, then the lights
+                                  profile, and select it; RAM only unless
+                                  --save; backs up first
 gamepadii input [--watch]         the buttons pressed now, live, with the
                                   GPIO, action and key of each (needs
                                   control channel v1.7); --watch prints
@@ -204,6 +218,27 @@ press:
   times are 0 to 9, as the firmware keeps them (web-config shows 1 to 10).
   gamepadii backs up the profile first, and a write is RAM only unless
   `--save`;
+- `leds colors` reads the 16 custom colours, and `leds colors write`
+  changes them, with no reboot. This needs channel v1.9. A lights profile
+  uses custom colour N as colour number 14 + N, and a colour list in a
+  lights file can give `custom 2` or `red` in place of a number. The
+  custom colours are global: all 4 lights profiles share them. A write of
+  N colours makes custom colours N to 15 black;
+- `leds theme apply` applies a theme file: custom colours and the fields
+  of a lights profile together. It writes the colours first, waits until
+  the LEDs apply them, then writes the profile and selects it (default:
+  the lights profile that runs). For example:
+
+  ```json
+  {"colors": ["#ff2200", "#00ccff"],
+   "lights": {"idle_effect": "static-color",
+              "idle_colors": ["custom 0", "custom 1", "custom 0", "custom 1"]}}
+  ```
+
+  A theme is RAM only unless `--save`, so a launcher can apply one each
+  time a game starts with no flash write. `leds theme show --json` makes
+  a theme file from the pad. gamepadii backs up the colours and the
+  profile first, as a theme file;
 - `input` reads the buttons with no reboot: the GPIOs pressed now, with
   the action of each in the active profile and the key printed on the
   case, and the buttons, D-pad, sticks and triggers that the pad sends.

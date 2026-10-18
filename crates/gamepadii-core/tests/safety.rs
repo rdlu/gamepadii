@@ -174,6 +174,18 @@ fn every_command(fake: &Fake, dir: &Path) {
             ..Default::default()
         };
         let _ = flow::lights_write(env, &file, &write, &mut Silent);
+        let _ = flow::colors_show(env);
+        let file = gamepadii_core::colors::ColorsFile::default();
+        let write = gamepadii_core::colors::ColorsWrite { save: true };
+        let _ = flow::colors_write(env, &file, &write, &mut Silent);
+        let _ = flow::theme_show(env, None);
+        let theme =
+            gamepadii_core::colors::ThemeFile::parse(r##"{"colors": ["#ff0000"]}"##).unwrap();
+        let apply = gamepadii_core::colors::ThemeApply {
+            profile: Some(1),
+            save: true,
+        };
+        let _ = flow::theme_apply(env, &theme, &apply, &mut Silent);
         let _ = flow::input(env);
         let find = flow::FindPin {
             scan: true,

@@ -9,7 +9,9 @@ use std::time::Duration;
 use gamepadii_core::api::{PinMappings, ProfileOptions, RebootAck};
 use gamepadii_core::buttons::{self, Button, Combo, Profiles};
 use gamepadii_core::cache::{self, DeviceCache};
-use gamepadii_core::channel::sim::{SimChannel, SimInput};
+use gamepadii_core::channel::Rgb;
+use gamepadii_core::channel::sim::{SimChannel, SimCustomColors, SimInput};
+use gamepadii_core::colors::{ColorsFile, ColorsWrite, ThemeApply, ThemeFile};
 use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
@@ -2940,6 +2942,373 @@ fn lights_write_refuses_before_it_sends() {
         let e = rig.run(|env| flow::lights_show(env, Some(0))).unwrap_err();
         assert_eq!(e.exit_code(), exit::NEEDS_USER);
     }
+}
+
+// ---- custom colours and themes (control channel v1.9) ------------------------
+
+/// A v1.9 pad with custom colours 0 and 1 set, and LEDs that apply a
+/// change after `pending_reads` reads of LIGHTS_STATUS.
+fn colors_rig(pending_reads: u8, f: impl FnOnce(&mut SimChannel)) -> Rig {
+    Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_custom_colors();
+                c.custom_colors = SimCustomColors::new(&[rgb(0xff8800), rgb(0x0044ff)]);
+                c.saved_custom_colors = c.custom_colors;
+                c.lights_limits.pending_reads = pending_reads;
+                f(c);
+            }),
+    )
+}
+
+fn rgb(c: u32) -> Rgb {
+    Rgb::from_u32(c)
+}
+
+/// The OUT commands and the LIGHTS_STATUS reads, in order: `0x05` for a
+/// read.
+fn writes_and_waits(rig: &Rig) -> Vec<u8> {
+    rig.pad
+        .control_log()
+        .into_iter()
+        .filter(|s| !s.setup.is_in() || s.setup.command_byte() == 0x05)
+        .map(|s| s.setup.command_byte())
+        .collect()
+}
+
+#[test]
+fn colors_show_reads_the_custom_colours_live() {
+    let rig = colors_rig(0, |_| {});
+    let r = rig.run(flow::colors_show).unwrap();
+    assert_eq!(
+        (r.colors.count, r.board.as_deref()),
+        (2, Some("Haute42COSMOX"))
+    );
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["colors"], serde_json::json!(["#ff8800", "#0044ff"]));
+    assert_eq!(json["all"][15]["number"], 29);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+}
+
+#[test]
+fn colors_write_backs_up_waits_and_reads_back() {
+    // Lights profile 0 runs and uses colour 17 (custom 3).
+    let rig = colors_rig(3, |c| {
+        c.lights_fields[0].insert(5, gamepadii_core::pb::Value::Bytes(vec![14, 15, 16, 17, 2]));
+    });
+    let file = ColorsFile {
+        board: None,
+        colors: vec![rgb(0xff8800), rgb(0x00ff00), rgb(0x0000ff)],
+    };
+    let r = rig
+        .run(|env| flow::colors_write(env, &file, &ColorsWrite::default(), &mut Log::default()))
+        .unwrap();
+    assert!(r.applied && r.verified && !r.saved);
+    assert_eq!(
+        (r.before_count, r.count, r.changed.clone()),
+        (2, 3, vec![1, 2])
+    );
+    let note = r.note.unwrap();
+    assert!(note.contains("the custom colours are global"), "{note}");
+    assert!(
+        note.contains("lights profile 0 uses colour number 17"),
+        "{note}"
+    );
+    assert!(note.contains("not saved"), "{note}");
+    assert_eq!(rig.channel_commands(), [0x1a]);
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.custom_colors, SimCustomColors::new(&file.colors));
+    assert_eq!(fw.colors_pending, 0, "it waited for core 1");
+    assert_ne!(fw.saved_custom_colors, fw.custom_colors, "flash untouched");
+    // The backup has the colours as they were: a write of it undoes the
+    // change.
+    let backup = r.backup.unwrap();
+    assert!(
+        backup
+            .to_str()
+            .unwrap()
+            .ends_with("-Haute42COSMOX-colors.json")
+    );
+    let old = ColorsFile::parse(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+    assert_eq!(old.colors, [rgb(0xff8800), rgb(0x0044ff)]);
+    let r = rig
+        .run(|env| flow::colors_write(env, &old, &ColorsWrite::default(), &mut Log::default()))
+        .unwrap();
+    assert_eq!(r.changed, [1, 2]);
+    assert_eq!(
+        rig.pad.firmware().custom_colors,
+        SimCustomColors::new(&old.colors)
+    );
+}
+
+#[test]
+fn colors_write_save_survives_a_restart() {
+    let rig = colors_rig(0, |_| {});
+    let file = ColorsFile {
+        board: Some("Haute42COSMOX".into()),
+        colors: vec![rgb(0x123456)],
+    };
+    let r = rig
+        .run(|env| flow::colors_write(env, &file, &ColorsWrite { save: true }, &mut Log::default()))
+        .unwrap();
+    assert!(r.saved);
+    assert!(!r.note.unwrap().contains("not saved"));
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.saved_custom_colors, SimCustomColors::new(&file.colors));
+}
+
+#[test]
+fn colors_write_refuses_before_it_sends() {
+    let rig = colors_rig(0, |_| {});
+    let write = |rig: &Rig, file: &ColorsFile| {
+        rig.run(|env| flow::colors_write(env, file, &ColorsWrite::default(), &mut Log::default()))
+    };
+    for (file, says) in [
+        (
+            ColorsFile {
+                board: Some("Pico".into()),
+                colors: vec![],
+            },
+            "for board Pico",
+        ),
+        (
+            ColorsFile {
+                board: None,
+                colors: vec![rgb(1); 17],
+            },
+            "at most 16",
+        ),
+    ] {
+        let e = write(&rig, &file).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup either");
+    // A web-config preview: exit 5, nothing sent.
+    let rig = colors_rig(0, |c| c.lights_limits.preview = true);
+    let e = write(&rig, &ColorsFile::default()).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    assert!(rig.channel_commands().is_empty());
+    // No v1.9 channel: exit 5, nothing sent.
+    for (rig, says) in [
+        (lights_profiles_rig(0), "speaks v1.5"),
+        (Rig::s16(InputMode::Xinput), "control channel v1.9"),
+    ] {
+        let e = write(&rig, &ColorsFile::default()).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(rig.channel_commands().is_empty());
+        let e = rig.run(flow::colors_show).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER);
+    }
+    // A 1.9 pad without LEDs.
+    let rig = Rig::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                c.lights_limits.running = false;
+                *c = c.clone().with_custom_colors();
+            }),
+    );
+    let e = rig.run(flow::colors_show).unwrap_err();
+    assert!(e.to_string().contains("LEDs are not set up"), "{e}");
+}
+
+fn apply(
+    rig: &Rig,
+    theme: &str,
+    apply: &ThemeApply,
+) -> gamepadii_core::Result<gamepadii_core::colors::ThemeApplyReport> {
+    let theme = ThemeFile::parse(theme)?;
+    rig.run(|env| flow::theme_apply(env, &theme, apply, &mut Log::default()))
+}
+
+const THEME: &str = r##"{"colors": ["#ff0000", "#00ff00", "#0000ff"],
+    "lights": {"idle_effect": "static-color", "idle_colors": ["custom 0", "custom 1", "custom 2", "custom 3"]}}"##;
+
+#[test]
+fn theme_apply_writes_the_colours_then_the_profile() {
+    let rig = colors_rig(3, |_| {});
+    let to = ThemeApply {
+        profile: Some(2),
+        save: false,
+    };
+    let r = apply(&rig, THEME, &to).unwrap();
+    assert!(r.active && r.applied && r.verified && !r.saved);
+    assert_eq!((r.profile, r.colors), (2, Some(3)));
+    assert_eq!(r.colors_changed, [0, 1, 2]);
+    assert_eq!(r.lights_changed, ["idle_effect", "idle_colors"]);
+    // The colours, the wait until PENDING is clear, then the profile.
+    let log = writes_and_waits(&rig);
+    let colors = log.iter().position(|c| *c == 0x1a).unwrap();
+    let lights = log.iter().position(|c| *c == 0x16).unwrap();
+    assert!(colors < lights, "{log:x?}");
+    let waits = log[colors..lights].iter().filter(|c| **c == 0x05).count();
+    assert!(waits >= 3, "{log:x?}");
+    assert_eq!(rig.channel_commands(), [0x1a, 0x16]);
+    let note = r.note.unwrap();
+    assert!(note.contains("the custom colours are global"), "{note}");
+    assert!(
+        note.contains("lights profile 2 uses colour number 17"),
+        "{note}"
+    );
+    assert!(note.contains("not saved"), "{note}");
+    // RAM only: flash keeps the colours and the profile.
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.lights.profile, 2, "selected");
+    assert_ne!(fw.saved_custom_colors, fw.custom_colors);
+    assert!(fw.saved_lights_profiles.is_some());
+    // The backup is a theme file: an apply of it undoes the change.
+    let backup = r.backup.unwrap();
+    assert!(
+        backup
+            .to_str()
+            .unwrap()
+            .ends_with("-Haute42COSMOX-theme2.json")
+    );
+    let text = std::fs::read_to_string(&backup).unwrap();
+    let r = apply(&rig, &text, &to).unwrap();
+    assert_eq!(r.colors_changed, [0, 1, 2]);
+    assert_eq!(r.lights_changed, ["idle_effect", "idle_colors"]);
+    assert_eq!(
+        rig.pad.firmware().custom_colors,
+        SimCustomColors::new(&[rgb(0xff8800), rgb(0x0044ff)])
+    );
+}
+
+#[test]
+fn theme_apply_goes_to_the_running_profile_and_saves_on_request() {
+    let rig = colors_rig(0, |_| {});
+    let to = ThemeApply {
+        profile: None,
+        save: true,
+    };
+    let r = apply(&rig, r##"{"colors": ["#abcdef"]}"##, &to).unwrap();
+    assert_eq!((r.profile, r.active, r.saved), (0, true, true));
+    assert!(r.lights_changed.is_empty());
+    let fw = rig.pad.firmware();
+    assert_eq!(
+        fw.saved_custom_colors,
+        SimCustomColors::new(&[rgb(0xabcdef)])
+    );
+    assert!(fw.saved_lights_profiles.is_none(), "flash has it");
+    // A theme with only a profile: no colour write.
+    let rig = colors_rig(0, |_| {});
+    let r = apply(
+        &rig,
+        r#"{"lights": {"case_effect": 3}}"#,
+        &ThemeApply::default(),
+    )
+    .unwrap();
+    assert_eq!(r.colors, None);
+    assert_eq!(rig.channel_commands(), [0x16]);
+    // A v1.5 pad takes it too.
+    let rig = lights_profiles_rig(0);
+    let r = apply(
+        &rig,
+        r#"{"lights": {"case_effect": 3}}"#,
+        &ThemeApply::default(),
+    )
+    .unwrap();
+    assert_eq!(r.lights_changed, ["case_effect"]);
+}
+
+#[test]
+fn theme_apply_refuses_before_any_write() {
+    let rig = colors_rig(0, |_| {});
+    let to = |profile| ThemeApply {
+        profile,
+        save: false,
+    };
+    for (theme, apply_to, says) in [
+        ("{}", to(None), "nothing to apply"),
+        (
+            r#"{"board": "Pico", "colors": []}"#,
+            to(None),
+            "for board Pico",
+        ),
+        (
+            r#"{"lights": {"board": "Pico"}}"#,
+            to(None),
+            "for board Pico",
+        ),
+        (
+            r#"{"lights": {"enabled": false}}"#,
+            to(Some(1)),
+            "the one to select",
+        ),
+        (r#"{"lights": {"idle_effect": 20}}"#, to(None), "0 to 19"),
+    ] {
+        let e = apply(&rig, theme, &apply_to).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup either");
+    // The lights are off and no --profile.
+    let rig = colors_rig(0, |c| c.lights.profile = -1);
+    let e = apply(&rig, THEME, &to(None)).unwrap_err();
+    assert!(e.to_string().contains("the lights are off"), "{e}");
+    assert!(rig.channel_commands().is_empty());
+    // Colours on a v1.5 pad, or a preview: exit 5.
+    for rig in [
+        lights_profiles_rig(0),
+        colors_rig(0, |c| c.lights_limits.preview = true),
+    ] {
+        let e = apply(&rig, THEME, &to(Some(1))).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(rig.channel_commands().is_empty());
+    }
+}
+
+#[test]
+fn theme_apply_sends_only_the_fields_that_change() {
+    // As the S16's profile 0: a stored case colour out of range (32).
+    let rig = colors_rig(0, |c| {
+        c.lights_fields[1].insert(11, gamepadii_core::pb::Value::Bytes(vec![0, 4, 32]));
+    });
+    let shown = rig.run(|env| flow::theme_show(env, Some(1))).unwrap();
+    let text = serde_json::to_string(&shown).unwrap();
+    let to = ThemeApply {
+        profile: Some(1),
+        save: false,
+    };
+    let r = apply(&rig, &text, &to).unwrap();
+    assert!(r.lights_changed.is_empty() && r.active);
+    // The WRITE_LIGHTS has no field: only the head.
+    let sent = rig
+        .pad
+        .control_log()
+        .into_iter()
+        .rfind(|s| s.setup.command_byte() == 0x16)
+        .unwrap();
+    assert_eq!(sent.data.len(), 8 + 4);
+    // A change to that field is checked.
+    let e = apply(&rig, r#"{"lights": {"case_colors": [0, 4, 30]}}"#, &to).unwrap_err();
+    assert!(e.to_string().contains("colour 30"), "{e}");
+}
+
+#[test]
+fn theme_show_is_a_theme_file() {
+    let rig = colors_rig(0, |_| {});
+    let r = rig.run(|env| flow::theme_show(env, None)).unwrap();
+    assert!(r.active);
+    assert_eq!(r.theme.colors, Some(vec![rgb(0xff8800), rgb(0x0044ff)]));
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["lights"]["profile"], 0);
+    let back = ThemeFile::parse(&json.to_string()).unwrap();
+    assert_eq!(back, r.theme);
+    let r = rig.run(|env| flow::theme_show(env, Some(3))).unwrap();
+    assert!(!r.active);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    // Before 1.9: the profile only.
+    let r = lights_profiles_rig(0)
+        .run(|env| flow::theme_show(env, None))
+        .unwrap();
+    assert_eq!(r.theme.colors, None);
 }
 
 // ---- the board ID (control channel v1.3) -------------------------------------

@@ -241,6 +241,16 @@ fn help_leds_set() {
 }
 
 #[test]
+fn help_leds_colors_write() {
+    insta::assert_snapshot!(help(&["leds", "colors", "write"]));
+}
+
+#[test]
+fn help_leds_theme_apply() {
+    insta::assert_snapshot!(help(&["leds", "theme", "apply"]));
+}
+
+#[test]
 fn help_log() {
     insta::assert_snapshot!(help(&["log"]));
 }

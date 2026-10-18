@@ -106,6 +106,10 @@ pub enum MockChannel {
     /// The S16's build a51474c: control channel v1.8, with the config blob
     /// of v1.6 too.
     Config,
+    /// The fork's main line, control channel v1.9: v1.5 and the custom
+    /// colours (two are set), with the LEDs that apply a change after 2
+    /// reads.
+    CustomColors,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -413,6 +417,73 @@ pub enum LedsCommand {
         #[command(subcommand)]
         command: LightsProfileCommand,
     },
+    /// Main firmware: read or write the 16 custom colours, live (needs
+    /// control channel v1.9). A lights profile uses custom colour N as
+    /// colour number 14 + N. The custom colours are global: all the lights
+    /// profiles share them.
+    Colors {
+        #[command(subcommand)]
+        command: Option<ColorsCommand>,
+    },
+    /// Main firmware: a theme file holds custom colours and the effects and
+    /// colours of a lights profile together (needs control channel v1.9 for
+    /// the colours, v1.5 for the profile).
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ColorsCommand {
+    /// Show the custom colours, live (the default). The JSON is a colours
+    /// file for `leds colors write`.
+    Show,
+    /// Write a colours file (the JSON of `leds colors`) to the pad, live,
+    /// with no reboot. Its colours become custom colours 0, 1, ...; the
+    /// others become black. RAM only unless --save. gamepadii backs up the
+    /// colours first. Every lights profile that uses colours 14 to 29
+    /// changes too.
+    Write {
+        /// The colours file, or - for standard input.
+        file: PathBuf,
+        /// Also save them to flash.
+        #[arg(long)]
+        save: bool,
+        /// Don't back up the custom colours first.
+        #[arg(long)]
+        no_backup: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ThemeCommand {
+    /// Show the custom colours and a lights profile, live. The JSON is a
+    /// theme file for `leds theme apply`.
+    Show {
+        /// The lights profile, 0 to 3. Default: the one that runs.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=3))]
+        profile: Option<u8>,
+    },
+    /// Apply a theme file, live, with no reboot: first its custom colours,
+    /// then its lights profile fields. The lights profile becomes the one
+    /// that runs. RAM only unless --save. gamepadii backs up the colours
+    /// and the profile first. The custom colours are global: the other
+    /// lights profiles that use colours 14 to 29 change too.
+    Apply {
+        /// The theme file, or - for standard input.
+        file: PathBuf,
+        /// The lights profile to write, 0 to 3. Default: the one that runs.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=3))]
+        profile: Option<u8>,
+        /// Also save it to flash. Don't use this each time a game starts:
+        /// each save writes the flash.
+        #[arg(long)]
+        save: bool,
+        /// Don't back up the colours and the lights profile first.
+        #[arg(long)]
+        no_backup: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -446,7 +517,8 @@ pub enum LightsProfileCommand {
 }
 
 impl LedsCommand {
-    /// What to change; `None` for `profile`, which is not a [`LedChange`].
+    /// What to change; `None` for `profile`, `colors` and `theme`, which
+    /// are not a [`LedChange`].
     pub fn change(&self) -> Option<LedChange> {
         Some(match self.clone() {
             LedsCommand::Set {
@@ -471,7 +543,11 @@ impl LedsCommand {
                 save,
                 ..LedChange::default()
             },
-            LedsCommand::Profile { .. } => return None,
+            LedsCommand::Profile { .. }
+            | LedsCommand::Colors { .. }
+            | LedsCommand::Theme { .. } => {
+                return None;
+            }
         })
     }
 }

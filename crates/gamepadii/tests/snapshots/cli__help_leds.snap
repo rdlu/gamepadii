@@ -10,6 +10,8 @@ Commands:
   set         Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware, or v1.2 on main). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
   brightness  One brightness step up or down, or a level, live (as `set --brightness`)
   profile     Main firmware: read or write the effects and colours of a lights profile, live (needs control channel v1.5)
+  colors      Main firmware: read or write the 16 custom colours, live (needs control channel v1.9). A lights profile uses custom colour N as colour number 14 + N. The custom colours are global: all the lights profiles share them
+  theme       Main firmware: a theme file holds custom colours and the effects and colours of a lights profile together (needs control channel v1.9 for the colours, v1.5 for the profile)
   help        Print this message or the help of the given subcommand(s)
 
 Options:
@@ -29,6 +31,9 @@ Options:
       --host <HOST>
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
       --stay
           Leave the pad in web-config afterwards instead of rebooting it back into its gamepad mode
 
@@ -36,9 +41,6 @@ Options:
           How long to wait for the pad on USB after each reboot
           
           [default: 10]
-
-      --no-channel
-          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
 
   -h, --help
           Print help (see a summary with '-h')

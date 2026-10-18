@@ -28,7 +28,9 @@
 //! power-on when a test asks for one. [`SimChannel::with_config`] makes it
 //! a v1.6 build with READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG: the saved
 //! config as one protobuf blob, the free space for an upload, and the
-//! restart after COMMIT_CONFIG.
+//! restart after COMMIT_CONFIG. [`SimChannel::with_custom_colors`] makes it
+//! a v1.9 build with READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS: the 16
+//! custom colours in RAM and saved, from the mock's `customColors`.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -41,8 +43,9 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, ConfigHead, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus,
-    LogPage, LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status, log_code,
+    self, Caps, Command, ConfigHead, CustomColors, Hello, InputSnapshot, LedStatus, LightsData,
+    LightsStatus, LogPage, LogRecord, Outcome, Rgb, SetLed, SetLights, Setup, Slot, SlotPin,
+    Status, log_code,
 };
 use super::{ControlTransport, UsbError};
 use crate::api::{PinMappings, ProfileOptions};
@@ -198,6 +201,28 @@ impl Default for SimLightsLimits {
             preview: false,
             pending_reads: 0,
         }
+    }
+}
+
+/// v1.9: the custom colours (`AnimationOptions.customColors`), in RAM or
+/// saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SimCustomColors {
+    /// `customColors_count`.
+    pub count: u8,
+    /// All 16: the ones after `count` are black after a write.
+    pub colors: [Rgb; proto::CUSTOM_COLORS_MAX],
+}
+
+impl SimCustomColors {
+    /// The first colours of `colors` (at most 16), the others black.
+    pub fn new(colors: &[Rgb]) -> Self {
+        let mut c = Self::default();
+        for (to, from) in c.colors.iter_mut().zip(colors) {
+            *to = *from;
+        }
+        c.count = colors.len().min(proto::CUSTOM_COLORS_MAX) as u8;
+        c
     }
 }
 
@@ -474,6 +499,13 @@ pub struct SimChannel {
     pub lights_limits: SimLightsLimits,
     /// LIGHTS_STATUS reads left that show PENDING.
     pub lights_pending: u8,
+    /// v1.9: the custom colours as they run (RAM).
+    pub custom_colors: SimCustomColors,
+    /// The custom colours in flash.
+    pub saved_custom_colors: SimCustomColors,
+    /// LIGHTS_STATUS reads left that show PENDING for a colour change: a
+    /// WRITE_CUSTOM_COLORS is BUSY until then.
+    pub colors_pending: u8,
     /// `NUM_BANK0_GPIOS`.
     pub pin_count: u8,
     /// The profiles the config has, by number (1 is `getPinMappings`), in
@@ -533,6 +565,9 @@ impl SimChannel {
             saved_lights: SimLights::default(),
             lights_limits: SimLightsLimits::default(),
             lights_pending: 0,
+            custom_colors: SimCustomColors::default(),
+            saved_custom_colors: SimCustomColors::default(),
+            colors_pending: 0,
             pin_count: RP2040_PINS,
             slots: default_slots(),
             saved_slots: default_slots(),
@@ -712,6 +747,67 @@ impl SimChannel {
             self.caps = Caps(self.caps.0 | Caps::LIGHTS_PROFILES);
         }
         self
+    }
+
+    /// A v1.9 build: protocol minor 9, with READ_CUSTOM_COLORS and
+    /// WRITE_CUSTOM_COLORS (advertised only when the LEDs run). A v1.5
+    /// build too.
+    pub fn with_custom_colors(mut self) -> Self {
+        self = self.with_lights_profiles();
+        self.minor = self.minor.max(proto::CUSTOM_COLORS_MINOR);
+        if self.lights_limits.running {
+            self.caps = Caps(self.caps.0 | Caps::CUSTOM_COLORS);
+        }
+        self
+    }
+
+    /// READ_CUSTOM_COLORS as `buildCustomColors` answers it: all 16.
+    pub fn read_custom_colors(&self) -> CustomColors {
+        CustomColors {
+            count: self.custom_colors.count,
+            max: proto::CUSTOM_COLORS_MAX as u8,
+            colors: self.custom_colors.colors.to_vec(),
+        }
+    }
+
+    /// WRITE_CUSTOM_COLORS, with the firmware's checks in its order
+    /// (§3.15).
+    fn write_custom_colors(&mut self, args: &[u8]) -> Result<(), Outcome> {
+        let head = proto::CUSTOM_COLORS_HEAD_LEN;
+        if args.len() < head {
+            return Err(Outcome::BadLength);
+        }
+        if !self.caps.has(Caps::CUSTOM_COLORS) {
+            return Err(Outcome::Unsupported);
+        }
+        let (count, flags) = (usize::from(args[0]), args[1]);
+        if count > proto::CUSTOM_COLORS_MAX
+            || flags & !proto::CUSTOM_COLORS_SAVE != 0
+            || args[2..4] != [0, 0]
+        {
+            return Err(Outcome::BadArg);
+        }
+        if args.len() < head + 3 * count {
+            return Err(Outcome::BadLength);
+        }
+        if self.lights_limits.preview || self.colors_pending > 0 {
+            return Err(Outcome::Busy);
+        }
+        let colors: Vec<Rgb> = args[head..head + 3 * count]
+            .chunks(3)
+            .map(|c| Rgb {
+                r: c[0],
+                g: c[1],
+                b: c[2],
+            })
+            .collect();
+        self.custom_colors = SimCustomColors::new(&colors);
+        self.colors_pending = self.lights_limits.pending_reads;
+        if flags & proto::CUSTOM_COLORS_SAVE != 0 {
+            self.save_all(false);
+            self.saved_profile = self.active;
+        }
+        Ok(())
     }
 
     /// A v1.7 build: protocol minor 7, with READ_INPUT and PIN_SCAN.
@@ -1123,6 +1219,15 @@ impl SimChannel {
                 };
             }
             self.lights = self.saved_lights;
+            if let Some(list) = a.get("customColors").and_then(Value::as_array) {
+                let colors: Vec<Rgb> = list
+                    .iter()
+                    .filter_map(Value::as_u64)
+                    .map(|c| Rgb::from_u32(c as u32))
+                    .collect();
+                self.saved_custom_colors = SimCustomColors::new(&colors);
+                self.custom_colors = self.saved_custom_colors;
+            }
             if let Some(o) = mock.current("getLedOptions") {
                 if let Some(pin) = int(&o, "dataPin") {
                     self.lights_limits.running = pin >= 0;
@@ -1148,7 +1253,10 @@ impl SimChannel {
             flags: LightsStatus::RUNNING
                 | flag(self.lights != self.saved_lights, LightsStatus::UNSAVED)
                 | flag(k.preview, LightsStatus::PREVIEW)
-                | flag(self.lights_pending > 0, LightsStatus::PENDING),
+                | flag(
+                    self.lights_pending > 0 || self.colors_pending > 0,
+                    LightsStatus::PENDING,
+                ),
             profile: self.lights.profile,
             enabled_profiles: k
                 .profiles
@@ -1181,6 +1289,7 @@ impl SimChannel {
         self.saved_lights = self.lights;
         self.saved_slots = self.slots.clone();
         self.saved_lights_profiles = None;
+        self.saved_custom_colors = self.custom_colors;
     }
 
     /// The LED state from the mock: `animationOptions` from its `getConfig`
@@ -1289,6 +1398,8 @@ impl SimChannel {
             self.lights_fields = fields;
             self.lights_limits.profiles = profiles;
         }
+        self.custom_colors = self.saved_custom_colors;
+        self.colors_pending = 0;
         self.pending = false;
         self.reboot_pending = false;
         self.stop_scan();
@@ -1338,6 +1449,14 @@ impl SimChannel {
             }
             // Before 1.7 there are no input commands.
             Some(Command::ReadInput | Command::PinScan) if !self.caps.has(Caps::INPUT) => {
+                Some(None)
+            }
+            // Before 1.9 there are no custom colour commands. Without the
+            // LEDs, READ_CUSTOM_COLORS STALLs and WRITE_CUSTOM_COLORS is
+            // UNSUPPORTED.
+            Some(Command::ReadCustomColors | Command::WriteCustomColors)
+                if !self.main || self.minor < proto::CUSTOM_COLORS_MINOR =>
+            {
                 Some(None)
             }
             // Before 1.8 there is no READ_LOG.
@@ -1418,7 +1537,10 @@ impl SimChannel {
             Command::LedStatus => self.led_status().encode().to_vec(),
             Command::LightsStatus => {
                 let l = self.lights_status();
+                // Core 1 applies the colours and then the profile in one
+                // frame.
                 self.lights_pending = self.lights_pending.saturating_sub(1);
+                self.colors_pending = self.colors_pending.saturating_sub(1);
                 l.encode().to_vec()
             }
             Command::ReadSlot => match u8::try_from(setup.value) {
@@ -1437,6 +1559,10 @@ impl SimChannel {
                 _ => return Err(UsbError::Stall),
             },
             Command::ReadInput => self.read_input().encode().to_vec(),
+            // Without the LEDs, buildCustomColors fails: a STALL.
+            Command::ReadCustomColors if self.caps.has(Caps::CUSTOM_COLORS) => {
+                self.read_custom_colors().encode()
+            }
             // A wLength shorter than the head STALLs.
             Command::ReadLog => match &self.events {
                 Some(l) if usize::from(len) >= proto::LOG_HEAD_LEN => {
@@ -1553,6 +1679,9 @@ impl SimChannel {
         }
         if cmd == Command::WriteLights {
             return self.write_lights(args).map(|()| None);
+        }
+        if cmd == Command::WriteCustomColors {
+            return self.write_custom_colors(args).map(|()| None);
         }
         if cmd == Command::WriteConfig {
             return self.write_config(args).map(|()| None);

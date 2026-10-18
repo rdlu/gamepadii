@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamepadii_core::api::RebootAck;
-use gamepadii_core::channel::sim::{SimChannel, Standalone};
+use gamepadii_core::channel::sim::{SimChannel, SimCustomColors, Standalone};
 use gamepadii_core::channel::{
-    self, Caps, Channel, ControlTransport, Outcome, Probe, Setup, UsbError, proto,
+    self, Caps, Channel, ControlTransport, Outcome, Probe, Rgb, Setup, UsbError, proto,
 };
 use gamepadii_core::error::exit;
 use gamepadii_core::lights::LightsFile;
@@ -1287,6 +1287,200 @@ fn a_saved_lights_write_survives_a_restart() {
         (after.enabled, after.values[&10].as_u32()),
         (Some(false), Some(3))
     );
+}
+
+// ---- v1.9: the custom colours (§3.15) --------------------------------------------
+
+/// The S16 on a v1.9 main-line build, in `mode`, with custom colours 0 and
+/// 1 set.
+fn s16_colors(mode: InputMode, f: impl FnOnce(&mut SimChannel)) -> Arc<SimPad> {
+    Arc::new(SimPad::new(main_dir(), mode).with_lights().channel(|c| {
+        *c = c.clone().with_custom_colors();
+        c.custom_colors = SimCustomColors::new(&[rgb(0xff8800), rgb(0x0044ff)]);
+        c.saved_custom_colors = c.custom_colors;
+        f(c);
+    }))
+}
+
+fn rgb(c: u32) -> Rgb {
+    Rgb::from_u32(c)
+}
+
+#[test]
+fn a_1_9_build_reads_the_custom_colours() {
+    let pad = s16_colors(InputMode::Xinput, |_| {});
+    let ch = connect(&pad);
+    assert!(ch.hello().has_custom_colors() && ch.hello().has_lights_profiles());
+    assert_eq!(ch.caps().names().last(), Some(&"custom_colors"));
+    let c = ch.read_custom_colors().unwrap();
+    assert_eq!((c.count, c.max, c.colors.len()), (2, 16, 16));
+    assert_eq!(c.set(), [rgb(0xff8800), rgb(0x0044ff)]);
+    assert!(c.colors[2..].iter().all(|c| *c == Rgb::BLACK));
+    // The reply is 52 bytes, from a wLength of 64.
+    let mut sim = pad.firmware();
+    let r = sim.control_in(Setup::read(proto::Command::ReadCustomColors, 0), 64);
+    assert_eq!(r.unwrap().len(), proto::CUSTOM_COLORS_LEN);
+    assert!(
+        pad.control_log().iter().all(|s| s.setup.is_in()),
+        "reads only"
+    );
+}
+
+#[test]
+fn a_1_8_build_never_gets_a_custom_colour_command() {
+    let pad = s16_log(InputMode::Xinput);
+    let ch = connect(&pad);
+    let e = ch.read_custom_colors().unwrap_err();
+    assert!(e.to_string().contains("no READ_CUSTOM_COLORS"), "{e}");
+    let e = ch.write_custom_colors(&[], false).unwrap_err();
+    assert!(e.to_string().contains("no WRITE_CUSTOM_COLORS"), "{e}");
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(
+        pad.control_log()
+            .iter()
+            .all(|s| !matches!(s.setup.command_byte(), 0x0b | 0x1a))
+    );
+    // A 1.8 build doesn't know the commands: a STALL, and UNSUPPORTED.
+    let mut sim = pad.firmware();
+    let r = sim.control_in(Setup::read(proto::Command::ReadCustomColors, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    // A 1.9 build without LEDs: no bit 15. READ STALLs; WRITE is
+    // UNSUPPORTED after the length check.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput));
+    sim.lights_limits.running = false;
+    let mut sim = sim.with_custom_colors();
+    assert!(!sim.caps.has(Caps::CUSTOM_COLORS) && sim.minor == 9);
+    let r = sim.control_in(Setup::read(proto::Command::ReadCustomColors, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = sim.token;
+    for (args, want) in [
+        (vec![0, 0, 0], Outcome::BadLength),
+        (vec![0, 0, 0, 0], Outcome::Unsupported),
+    ] {
+        let r = sim.control_out(
+            Setup::command(proto::Command::WriteCustomColors),
+            &proto::payload(token, 3, &args),
+        );
+        assert!(r.is_err());
+        assert_eq!(
+            Outcome::from_byte(sim.status().last_result),
+            want,
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn write_custom_colors_checks_in_the_firmware_order() {
+    let pad = s16_colors(InputMode::Xinput, |_| {});
+    let ch = connect(&pad);
+    let before = ch.read_custom_colors().unwrap();
+    let token = pad.firmware().token;
+    let t = open(&pad);
+    let send = |args: &[u8]| {
+        let r = t.control_out(
+            Setup::command(proto::Command::WriteCustomColors),
+            &proto::payload(token, 31, args),
+            Duration::from_secs(1),
+        );
+        (
+            r.is_ok(),
+            Outcome::from_byte(ch.status().unwrap().last_result),
+        )
+    };
+    for (args, want) in [
+        (vec![1, 0, 0], Outcome::BadLength),
+        (vec![17, 0, 0, 0], Outcome::BadArg),
+        (vec![0, 0x01, 0, 0], Outcome::BadArg),
+        (vec![0, 0x0c, 0, 0], Outcome::BadArg),
+        (vec![0, 0, 1, 0], Outcome::BadArg),
+        // Two colours need 4 + 6 bytes.
+        (vec![2, 0, 0, 0, 1, 2, 3, 4, 5], Outcome::BadLength),
+    ] {
+        let (ok, o) = send(&args);
+        assert!(!ok, "{args:?}");
+        assert_eq!(o, want, "{args:?}");
+    }
+    assert_eq!(ch.read_custom_colors().unwrap(), before, "nothing changed");
+    // A web-config preview runs: BUSY.
+    let pad = s16_colors(InputMode::Xinput, |c| c.lights_limits.preview = true);
+    let ch = connect(&pad);
+    assert!(ch.write_custom_colors(&[rgb(1)], false).is_err());
+    assert_eq!(
+        Outcome::from_byte(ch.status().unwrap().last_result),
+        Outcome::Busy
+    );
+    // A colour change waits for core 1: BUSY until LIGHTS_STATUS shows no
+    // PENDING.
+    let pad = s16_colors(InputMode::Xinput, |c| c.lights_limits.pending_reads = 1);
+    let ch = connect(&pad);
+    ch.write_custom_colors(&[rgb(0x123456)], false).unwrap();
+    let e = ch.write_custom_colors(&[rgb(1)], false).unwrap_err();
+    assert_eq!(e.exit_code(), exit::TRANSPORT, "{e}");
+    assert!(ch.lights_status().unwrap().pending());
+    assert!(!ch.lights_status().unwrap().pending());
+    ch.write_custom_colors(&[rgb(1)], false).unwrap();
+    // More than 16: the host refuses it before it sends.
+    let n = pad.control_log().len();
+    let e = ch.write_custom_colors(&[rgb(1); 17], false).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert_eq!(pad.control_log().len(), n);
+}
+
+#[test]
+fn a_ram_colour_write_makes_the_rest_black_and_goes_away_at_a_restart() {
+    let pad = s16_colors(InputMode::Xinput, |c| {
+        *c = c.clone().with_log();
+        // A colour after the count that is not black.
+        c.custom_colors.colors[9] = Rgb::from_u32(0xffffff);
+    });
+    let ch = connect(&pad);
+    let before = ch.read_custom_colors().unwrap();
+    ch.write_custom_colors(&[rgb(0x010203)], false).unwrap();
+    let c = ch.read_custom_colors().unwrap();
+    assert_eq!(c.count, 1);
+    assert_eq!(c.colors[0], rgb(0x010203));
+    assert!(
+        c.colors[1..].iter().all(|c| *c == Rgb::BLACK),
+        "black after it"
+    );
+    let st = ch.status().unwrap();
+    assert_eq!(st.last_command, proto::Command::WriteCustomColors as u8);
+    assert!(!saved(&pad), "RAM only");
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    let after = ch.read_custom_colors().unwrap();
+    assert_eq!(after.set(), before.set());
+    // An empty write: no colour is set.
+    ch.write_custom_colors(&[], false).unwrap();
+    let c = ch.read_custom_colors().unwrap();
+    assert_eq!(c.count, 0);
+    assert!(c.colors.iter().all(|c| *c == Rgb::BLACK));
+}
+
+/// The pad's log has a SAVE record.
+fn saved(pad: &Arc<SimPad>) -> bool {
+    pad.firmware()
+        .events
+        .is_some_and(|l| l.records.iter().any(|r| r.code == proto::log_code::SAVE))
+}
+
+#[test]
+fn a_saved_colour_write_survives_a_restart() {
+    let pad = s16_colors(InputMode::Xinput, |c| *c = c.clone().with_log());
+    let ch = connect(&pad);
+    let colors = [rgb(0x00ff00), rgb(0xff0000), rgb(0x0000ff)];
+    ch.write_custom_colors(&colors, true).unwrap();
+    assert!(saved(&pad), "a SAVE record");
+    assert_eq!(
+        pad.firmware().saved_custom_colors,
+        SimCustomColors::new(&colors)
+    );
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    assert_eq!(ch.read_custom_colors().unwrap().set(), colors);
 }
 
 // ---- v1.7: the input snapshot (§3.12) --------------------------------------------

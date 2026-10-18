@@ -222,6 +222,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x08` | IN | READ_CONFIG | byte offset in the image | reply: from the image, the 12-byte head + the saved config (§3.14); at most 328 bytes; the host asks for 512 | v1.6 |
 | `0x09` | IN | READ_INPUT | 0 | reply: 36 bytes, the pins and the gamepad state (§3.12) | v1.7 |
 | `0x0A` | IN | READ_LOG | the low 16 bits of the first sequence number | reply: 12-byte head + up to 9 records of 32 bytes (§3.13); `wLength` 12 or more, the host asks for 1024 | v1.8 |
+| `0x0B` | IN | READ_CUSTOM_COLORS | 0 | reply: 52 bytes, the count and the 16 custom colours (§3.15) | v1.9 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
@@ -232,6 +233,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x17` | OUT | WRITE_CONFIG | 0 | header + `u16 offset`, `u16 reserved` (0) + 1–316 bytes of the new config (§3.14) | v1.6 |
 | `0x18` | OUT | COMMIT_CONFIG | 0 | header + `u32 size`, `u32 crc32` of the new config (§3.14) | v1.6 |
 | `0x19` | OUT | PIN_SCAN | 0 | header + `u8` (1 on, 0 off) (§3.12) | v1.7 |
+| `0x1A` | OUT | WRITE_CUSTOM_COLORS | 0 | header + `u8 count`, `u8 flags`, `u16` 0 + count × RGB (§3.15) | v1.9 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -299,8 +301,9 @@ Capability bits:
 | 12 | CONFIG: READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG (v1.6, §3.14) |
 | 13 | INPUT: READ_INPUT and PIN_SCAN (v1.7, §3.12) |
 | 14 | LOG: READ_LOG (v1.8, §3.13) |
+| 15 | CUSTOM_COLORS: READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS (v1.9, §3.15; set only when the LEDs run) |
 
-Bits 15–31 are reserved.
+Bits 16–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -757,6 +760,8 @@ bytes. Profile 4 or more, or a pad without LEDs, STALLs. The active bit is
 set for the lights profile that runs now.
 
 **WRITE_LIGHTS** (`0x16`, OUT). The transfer is at most 8 + 4 + 227 bytes.
+A lights profile uses colour numbers 14–29 for the v1.9 custom colours
+(§3.15).
 
 - **Only the fields that the host sends change.** The firmware decodes them
   on top of the profile in RAM. A colour list goes complete. The enabled
@@ -1041,6 +1046,96 @@ from COMMIT_CONFIG says that nothing was saved. `channel/sim.rs` models it
 with `SimChannel::with_config`: a saved blob from the sim's strings and
 slots, the upload, every result in the firmware's order, a save that
 writes over the upload, and the restart after COMMIT_CONFIG.
+
+### 3.15 v1.9: the custom colours
+
+Additive. The protocol minor is **9**, and capability **bit 15,
+CUSTOM_COLORS**, covers READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS. The
+fork's commit is 587a9f3d. The firmware sets bit 15 only when the LEDs
+run. A host sends the commands only when HELLO gives major 1, minor 9 or
+higher, and bit 15. A 1.8 build STALLs READ_CUSTOM_COLORS and refuses
+WRITE_CUSTOM_COLORS with UNSUPPORTED.
+
+Main keeps 16 custom colours (`AnimationOptions.customColors`), one RGB
+value each, and a count (`customColors_count`). Web-config shows the
+first `count`. The LEDs use all 16: in a lights profile, colour numbers
+0–13 are the built-in colours, and 14–29 are custom colours 0–15
+(`notPressedStaticColors`, `pressedStaticColors` and the case colours).
+The custom colours are **global**: the 4 lights profiles share them.
+
+**READ_CUSTOM_COLORS** (`0x0B`, IN, `wValue` 0). The host asks for 64
+bytes. The reply is 52 bytes:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | `count`: how many are set |
+| 1 | u8 | the most: 16 |
+| 2 | u16 | 0 |
+| 4 | 16 × `{u8 r, u8 g, u8 b}` | all 16 colours, also the ones after `count` |
+
+A pad without LEDs STALLs it.
+
+**WRITE_CUSTOM_COLORS** (`0x1A`, OUT). After the 8-byte header:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | `count`, 0–16 |
+| 1 | u8 | flags: only bit 2, save to flash (the same bit as in WRITE_SLOT) |
+| 2 | u16 | 0 |
+| 4 | `count` × `{u8 r, u8 g, u8 b}` | the colours, custom colour 0 first |
+
+- **Checks, in this order:** fewer than 4 bytes is BAD_LENGTH; no LEDs is
+  UNSUPPORTED; BAD_ARG for a count over 16, another flag bit, or a `u16`
+  that is not 0; BAD_LENGTH for fewer than 4 + 3 × `count` bytes; BUSY
+  during a web-config preview, or while an earlier colour change waits.
+- **The colours after `count` become black,** so that RAM agrees with
+  what a save writes.
+- **Apply:** core 1 applies the colours on its next frame, and builds the
+  effects of the lights profile that runs again. A profile that uses
+  colours 14–29 changes at once. The profile itself does not change.
+  LIGHTS_STATUS bit 3 (PENDING) is set until then (27 ms on the S16). A
+  host polls it before it reads back, and before the next light write.
+- **RAM only** without bit 2: a restart gives the saved colours again.
+  With bit 2, the normal storage save, which writes all the settings.
+
+The firmware checks only the colour numbers that a WRITE_LIGHTS sends
+(§3.11). A stored profile can have numbers out of range (the S16's profile
+0 has 32). A colour number of 14 + `count` or more shows black.
+
+Host side: `Channel::read_custom_colors` / `write_custom_colors`, the
+module `colors` (the colours file, the theme file, `unset_numbers`), and
+`flow::colors_show` / `colors_write` / `theme_show` / `theme_apply`:
+
+- `gamepadii leds colors [show]`: the 16 colours, with their colour
+  numbers. The JSON is a **colours file**: `colors`, the `#rrggbb` list of
+  the colours that are set, then `count`, `max` and `all` (the 16, with
+  `custom`, `number`, `color` and `set`). A write uses only `colors` (and
+  `board`).
+- `gamepadii leds colors write FILE [--save] [--no-backup]`: the same
+  checks as the firmware, a backup (`<time>-<board>-colors.json`, a
+  colours file), the write, the wait until PENDING is clear and STATUS
+  gives the result, and a read back: the colours, then black. A note
+  tells which colour numbers of the lights profile that runs now show
+  black.
+- `gamepadii leds theme show [--profile N]` and `leds theme apply FILE
+  [--profile N] [--save] [--no-backup]`: a **theme file** has `colors` (a
+  `#rrggbb` list) and `lights` (a lights file, §3.11), both optional, and
+  `board`. A colour list in a lights file can give names: `red` (0–13)
+  or `custom 2` (14 + 2). The apply makes every check before the first
+  write. It backs up the colours and the profile as one theme file
+  (`<time>-<board>-theme<N>.json`). Then it writes the colours, waits
+  until PENDING is clear, writes the lights fields with "enabled" and
+  "active", waits again, and reads both back. It sends only the lights
+  fields that differ from the profile on the pad. Thus a theme from
+  `theme show`, or a backup, applies again also when the stored profile
+  has a colour number out of range. The profile is `--profile`,
+  else the one that runs now. Both writes are RAM only unless `--save`:
+  a save on each game start would wear the flash. Brightness is not part
+  of a theme: it is not part of a lights profile.
+
+`channel/sim.rs` models it with `SimChannel::with_custom_colors`: the
+colours in RAM and saved, every result in the firmware's order, PENDING
+and BUSY, black after `count`, and a restart that gives the saved colours.
 
 ## 4. Firmware implementation
 

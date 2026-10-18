@@ -34,11 +34,13 @@ it here in the same change.
 | channel | Short name for the control channel. |
 | chunk | One part of the config blob that gamepadii sends with one WRITE_CONFIG: at most 316 bytes. |
 | CLI | The command-line interface: you type a command, for example `gamepadii status`, and gamepadii writes the result. |
+| colours file | A JSON file with the custom colours. `gamepadii leds colors --json` makes one, and `gamepadii leds colors write` reads one. |
 | commit | One recorded change in git. A short hash (for example `0a23ea3`) identifies it. |
 | config blob | The saved config of the pad as one block of bytes: a `Config` message in protobuf, as the firmware keeps it in flash. Control channel 1.6 reads and writes it. A backup keeps it in hex. |
 | config, config sector | The settings of the pad. The firmware keeps them in a 32 KB area of flash memory at address `0x101F8000`. |
 | control channel | The USB connection that our firmware adds. gamepadii uses it to read the status of the pad and to change the profile, the input mode, and the LEDs, without a button press. |
 | CRC-32 | A 32-bit number that the pad and gamepadii calculate from a block of bytes (the zlib method). When one byte changes, the number changes. |
+| custom colour | On main firmware, one of 16 RGB colours that the user sets. A lights profile uses custom colour N as colour number 14 + N. All the lights profiles share them. |
 | custom theme | The LED colors that the user sets for each button, one color when the button is released and one color when it is pressed. |
 | D-pad | The four direction buttons: up, down, left and right. |
 | debounce | A check that a button change stays for some reads, so that a short electrical change (a bounce) does not count as a press. |
@@ -73,6 +75,7 @@ it here in the same change.
 | pull-up | A resistor in the chip that keeps an input pin high when nothing pushes it low. A pushed button makes the pin low. |
 | RAM only | A change that the pad keeps until it restarts. The pad does not write it to flash memory. |
 | release | A firmware version that the GP2040-CE project published with a version number, for example v0.7.12. |
+| RGB | A colour as three values: red, green and blue, 0 to 255 each. gamepadii writes it in hex, as `#rrggbb`. |
 | S16 | The Haute42 S16, the first pad that gamepadii supports. |
 | sequence number | The number of one record in the log of the pad. The pad counts the records from 0, from the start of the log. |
 | slot file | A JSON file with the pin mappings and the label of one profile. `gamepadii profile show --json` makes one, and `gamepadii profile write` reads one. |
@@ -83,6 +86,7 @@ it here in the same change.
 | stick | An analog control of a gamepad, with an X and a Y axis. The S16 has no stick: the firmware gives the axes at the centre. |
 | stock | Firmware from the GP2040-CE project, without our changes. |
 | test-boot build | A build for tests only. It starts in web-config after each installation, so that a test can continue without a person. |
+| theme file | A JSON file with custom colours and the fields of one lights profile. `gamepadii leds theme show --json` makes one, and `gamepadii leds theme apply` reads one. |
 | trigger | An analog control of a gamepad, L2 or R2, with a value from 0 to 255. |
 | TUI | The terminal user interface: a full-screen view in the terminal that you operate with keys. |
 | UF2 | The file format for firmware. You copy a UF2 file to the pad in BOOTSEL mode. |

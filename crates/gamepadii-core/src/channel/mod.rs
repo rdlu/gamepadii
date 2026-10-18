@@ -5,7 +5,8 @@
 //!
 //! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
 //!   commands, v1.3's board ID, v1.4's profile slots, v1.5's lights
-//!   profiles, v1.6's config blob, v1.7's input snapshot, v1.8's log.
+//!   profiles, v1.6's config blob, v1.7's input snapshot, v1.8's log,
+//!   v1.9's custom colours.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -34,8 +35,9 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, ConfigHead, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogEvent,
-    LogPage, LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status,
+    Caps, Command, ConfigHead, CustomColors, Hello, InputSnapshot, LedStatus, LightsData,
+    LightsStatus, LogEvent, LogPage, LogRecord, Outcome, Rgb, SetLed, SetLights, Setup, Slot,
+    SlotPin, Status,
 };
 
 /// How many times [`Channel::read_config_image`] reads the image when a
@@ -627,6 +629,55 @@ impl Channel {
             Command::WriteLights,
             &data.encode(),
             &format!("the write of lights profile {}", data.profile),
+        )
+    }
+
+    /// READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS need protocol 1.9 and
+    /// [`Caps::CUSTOM_COLORS`]: a 1.8 pad never gets them.
+    fn need_custom_colors(&self, cmd: Command) -> Result<()> {
+        if self.hello.has_custom_colors() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.9, and LEDs)",
+                cmd.name()
+            )))
+        }
+    }
+
+    /// READ_CUSTOM_COLORS (v1.9): the 16 custom colours as the pad has them
+    /// in RAM, and how many are set.
+    pub fn read_custom_colors(&self) -> Result<CustomColors> {
+        self.need_custom_colors(Command::ReadCustomColors)?;
+        let reply = self
+            .read(Command::ReadCustomColors, 0)
+            .map_err(|e| self.fail(e, Command::ReadCustomColors))?;
+        CustomColors::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "READ_CUSTOM_COLORS on {}: a reply of {} bytes that is not the custom colours",
+                self.node(),
+                reply.len()
+            ))
+        })
+    }
+
+    /// WRITE_CUSTOM_COLORS (v1.9): `colors` (at most 16) become the custom
+    /// colours, and the colours after them become black. Saved to flash
+    /// only with `save`. Core 1 applies them after the ACK: the caller waits
+    /// until LIGHTS_STATUS has no PENDING.
+    pub fn write_custom_colors(&self, colors: &[Rgb], save: bool) -> Result<()> {
+        self.need_custom_colors(Command::WriteCustomColors)?;
+        if colors.len() > proto::CUSTOM_COLORS_MAX {
+            return Err(Error::Usage(format!(
+                "{} custom colours: the pad keeps at most {}",
+                colors.len(),
+                proto::CUSTOM_COLORS_MAX
+            )));
+        }
+        self.command(
+            Command::WriteCustomColors,
+            &proto::custom_colors_arg(colors, save),
+            "the write of the custom colours",
         )
     }
 

@@ -228,6 +228,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A save on the pad during the upload gets one more upload. A file with
   no blob exits 3 and names web-config. `--mock-channel config` simulates
   it.
+- Control channel 1.9, the custom colours (fork 587a9f3d):
+  `gamepadii leds colors [show]` reads the 16 custom colours live, and
+  `leds colors write FILE [--save] [--no-backup]` writes them, RAM only
+  unless `--save`, with a backup and a read back. A theme file holds
+  custom colours and the fields of a lights profile together:
+  `leds theme show [--profile N]` makes one from the pad, and
+  `leds theme apply FILE [--profile N] [--save] [--no-backup]` writes the
+  colours, waits until the LEDs apply them, then writes and selects the
+  lights profile. A colour list in a lights file takes names (`red`,
+  `custom 2`). `--mock-channel custom-colors` for tests.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.

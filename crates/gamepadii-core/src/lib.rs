@@ -3,7 +3,8 @@
 //!
 //! Layering (each layer only depends on the ones before it):
 //! `discovery` → `transport` / `channel` → `client` → `blob` → `commands`
-//! / `display` / `leds` / `slots` / `input` / `log` / `flow`. `commands`
+//! / `display` / `leds` / `lights` / `colors` / `slots` / `input` / `log` /
+//! `flow`. `commands`
 //! returns plain serde data and nothing here prints; front ends own
 //! rendering.
 
@@ -13,6 +14,7 @@ pub mod buttons;
 pub mod cache;
 pub mod channel;
 pub mod client;
+pub mod colors;
 pub mod commands;
 pub mod discovery;
 pub mod display;

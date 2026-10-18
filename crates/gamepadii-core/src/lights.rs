@@ -12,7 +12,8 @@
 //! in [`FIELDS`], with the values as the firmware keeps them: the cycle
 //! times are 0–9 (web-config shows 1–10). A file can leave out fields, or
 //! give `null`: WRITE_LIGHTS sends only the others, and the pad keeps the
-//! fields it does not get. A colour list goes complete. Fields that
+//! fields it does not get. A colour list goes complete; each colour is its
+//! number, or a name (`red`, `custom 2`). Fields that
 //! gamepadii doesn't know go in `other_fields`, encoded, so that a backup
 //! from a newer firmware keeps them.
 
@@ -26,7 +27,7 @@ use crate::channel::LightsData;
 use crate::channel::proto::{ANIMATION_PROFILE_MAX, Slot};
 use crate::commands::Route;
 use crate::error::{Error, Result};
-use crate::leds::{MAIN_IDLE_EFFECTS, MAIN_PRESSED_EFFECTS};
+use crate::leds::{COLORS, MAIN_IDLE_EFFECTS, MAIN_PRESSED_EFFECTS};
 use crate::pb::{self, Value};
 
 /// The firmware's colours (`colors` in `animation.h`); the custom colours
@@ -165,6 +166,25 @@ pub const FIELDS: &[FieldDef] = &[
 
 pub fn field(number: u32) -> Option<&'static FieldDef> {
     FIELDS.iter().find(|f| f.number == number)
+}
+
+/// The colour number of a name in a colour list: a built-in colour
+/// (`red`, `limegreen`), 0–13, or `custom N`, 14 + N.
+pub fn color_number(name: &str) -> Option<u8> {
+    let name = name.trim().to_ascii_lowercase();
+    if let Some(n) = name.strip_prefix("custom") {
+        return n
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n < MAX_CUSTOM_COLORS)
+            .map(|n| (BASE_COLORS + n) as u8);
+    }
+    let plain: String = name.chars().filter(|c| !matches!(c, ' ' | '-')).collect();
+    COLORS[..BASE_COLORS]
+        .iter()
+        .position(|c| *c == plain)
+        .map(|n| n as u8)
 }
 
 /// The keys of a lights file that are not fields.
@@ -423,10 +443,15 @@ fn value_from(def: &FieldDef, v: &Json) -> std::result::Result<Value, String> {
             .as_array()
             .ok_or_else(|| "not a list".to_string())?
             .iter()
-            .map(|c| c.as_u64().and_then(|c| u8::try_from(c).ok()))
-            .collect::<Option<Vec<u8>>>()
-            .map(Value::Bytes)
-            .ok_or_else(|| "each colour is a number, 0 to 255".into()),
+            .map(|c| match c {
+                Json::String(s) => color_number(s).ok_or_else(|| format!("no colour {s}")),
+                _ => c
+                    .as_u64()
+                    .and_then(|c| u8::try_from(c).ok())
+                    .ok_or_else(|| "each colour is a number, 0 to 255, or a name".into()),
+            })
+            .collect::<std::result::Result<Vec<u8>, String>>()
+            .map(Value::Bytes),
     }
 }
 
@@ -664,6 +689,20 @@ mod tests {
             let e = LightsFile::parse(text).unwrap_err().to_string();
             assert!(e.contains(says), "{text}: {e}");
         }
+    }
+
+    #[test]
+    fn a_colour_list_takes_names() {
+        let f = LightsFile::parse(
+            r#"{"idle_colors": ["black", "Lime Green", "magenta", "custom 0", "custom15", 3]}"#,
+        )
+        .unwrap();
+        assert_eq!(f.values[&5], Value::Bytes(vec![0, 5, 13, 14, 29, 3]));
+        for bad in ["indigo", "custom 16", "custom", "custom -1", "rojo"] {
+            assert_eq!(color_number(bad), None, "{bad}");
+        }
+        let e = LightsFile::parse(r#"{"case_colors": ["violet"]}"#).unwrap_err();
+        assert!(e.to_string().contains("no colour violet"), "{e}");
     }
 
     #[test]
