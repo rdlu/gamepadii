@@ -1,0 +1,194 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::colors_show(human(), &show),\noutput::colors_show(human(), &after), output::colors_write(human(), &written),\noutput::theme_show(human(), &theme), output::theme_apply(human(), &applied),\noutput::colors_show(json(), &show), output::colors_write(json(), &written),\noutput::theme_apply(json(), &applied),)"
+---
+Custom colours
+set           2 of 16
+colours       14  #ff8800  custom 0
+              15  #0044ff  custom 1
+              16 to 29: not set (black)
+board         Haute42COSMOX
+via           the control channel (/dev/bus/usb/003/007)
+
+Custom colours
+set           1 of 16
+colours       14  #00ff00  custom 0
+              15 to 29: not set (black)
+board         Haute42COSMOX
+via           the control channel (/dev/bus/usb/003/007)
+
+Custom colours written and saved
+was           2 set
+set           1 of 16
+changed       custom 0, 1
+applied       yes
+saved         yes, in flash
+backup        20261017-165703-Haute42COSMOX-colors.json
+via           the control channel (/dev/bus/usb/003/007)
+note          the custom colours are global: the other lights profiles that use colours 14 to 29 change too
+
+Theme: lights profile 0 and the custom colours
+state         enabled, runs now
+colours       14 #ff8800, 15 #0044ff
+board         Haute42COSMOX
+idle          rainbow-synced, cycle 0, colours red ×30, special #ff0000, special rainbow: no
+pressed       static-color, colours white ×30, hold 500 ms, fade 500 ms, special #0000ff, cycle 0, special rainbow: no
+case          rainbow-synced, colours black ×32, in pressed animations: no, cycle 0, special rainbow: no, special #00ff00
+effects       param 0x0
+via           the control channel (/dev/bus/usb/003/007)
+
+Theme on lights profile 1 runs now
+colours       2 set, changed custom 0, 1
+changed       idle_colors
+applied       yes
+saved         no (RAM only)
+backup        20261017-165703-Haute42COSMOX-theme1.json
+via           the control channel (/dev/bus/usb/003/007)
+note          the custom colours are global: the other lights profiles that use colours 14 to 29 change too; lights profile 1 uses colour number 18, which shows black: only custom colours 0 and 1 (numbers 14 and 15) are set; not saved: a restart undoes the theme, unless something saves the settings first; --save keeps it
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "board": "Haute42COSMOX",
+  "count": 2,
+  "max": 16,
+  "colors": [
+    "#ff8800",
+    "#0044ff"
+  ],
+  "all": [
+    {
+      "custom": 0,
+      "number": 14,
+      "color": "#ff8800",
+      "set": true
+    },
+    {
+      "custom": 1,
+      "number": 15,
+      "color": "#0044ff",
+      "set": true
+    },
+    {
+      "custom": 2,
+      "number": 16,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 3,
+      "number": 17,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 4,
+      "number": 18,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 5,
+      "number": 19,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 6,
+      "number": 20,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 7,
+      "number": 21,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 8,
+      "number": 22,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 9,
+      "number": 23,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 10,
+      "number": 24,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 11,
+      "number": 25,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 12,
+      "number": 26,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 13,
+      "number": 27,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 14,
+      "number": 28,
+      "color": "#000000",
+      "set": false
+    },
+    {
+      "custom": 15,
+      "number": 29,
+      "color": "#000000",
+      "set": false
+    }
+  ]
+}
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "before_count": 2,
+  "count": 1,
+  "changed": [
+    0,
+    1
+  ],
+  "saved": true,
+  "applied": true,
+  "verified": true,
+  "backup": "20261017-165703-Haute42COSMOX-colors.json",
+  "note": "the custom colours are global: the other lights profiles that use colours 14 to 29 change too"
+}
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "profile": 1,
+  "colors": 2,
+  "colors_changed": [
+    0,
+    1
+  ],
+  "lights_changed": [
+    "idle_colors"
+  ],
+  "active": true,
+  "saved": false,
+  "applied": true,
+  "verified": true,
+  "backup": "20261017-165703-Haute42COSMOX-theme1.json",
+  "note": "the custom colours are global: the other lights profiles that use colours 14 to 29 change too; lights profile 1 uses colour number 18, which shows black: only custom colours 0 and 1 (numbers 14 and 15) are set; not saved: a restart undoes the theme, unless something saves the settings first; --save keeps it"
+}

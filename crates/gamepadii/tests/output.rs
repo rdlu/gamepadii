@@ -900,6 +900,67 @@ mod flows {
     }
 
     #[test]
+    fn custom_color_outputs() {
+        use gamepadii_core::channel::Rgb;
+        use gamepadii_core::channel::sim::SimCustomColors;
+        use gamepadii_core::colors::{ColorsFile, ColorsWrite, ThemeApply, ThemeFile};
+        let rig = Rig::new(
+            SimPad::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main"),
+                InputMode::Xinput,
+            )
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_custom_colors();
+                c.custom_colors =
+                    SimCustomColors::new(&[Rgb::from_u32(0xff8800), Rgb::from_u32(0x0044ff)]);
+                c.saved_custom_colors = c.custom_colors;
+            }),
+        );
+        let show = rig.run(flow::colors_show).unwrap();
+        let theme = rig.run(|env| flow::theme_show(env, None)).unwrap();
+        let file = ColorsFile {
+            board: None,
+            colors: vec![Rgb::from_u32(0x00ff00)],
+        };
+        let written = rig
+            .run(|env| flow::colors_write(env, &file, &ColorsWrite { save: true }, &mut Silent))
+            .unwrap();
+        let after = rig.run(flow::colors_show).unwrap();
+        let t = ThemeFile::parse(
+            r##"{"colors": ["#ff0000", "#0000ff"],
+                 "lights": {"idle_effect": "static-color", "idle_colors": ["custom 0", "custom 1", "custom 4"]}}"##,
+        )
+        .unwrap();
+        let applied = rig
+            .run(|env| {
+                let a = ThemeApply {
+                    profile: Some(1),
+                    save: false,
+                };
+                flow::theme_apply(env, &t, &a, &mut Silent)
+            })
+            .unwrap();
+        // The backup path has a temporary directory in it.
+        let plain = |p: &Option<PathBuf>| p.as_ref().map(|p| PathBuf::from(p.file_name().unwrap()));
+        let mut written = written;
+        written.backup = plain(&written.backup);
+        let mut applied = applied;
+        applied.backup = plain(&applied.backup);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            output::colors_show(human(), &show),
+            output::colors_show(human(), &after),
+            output::colors_write(human(), &written),
+            output::theme_show(human(), &theme),
+            output::theme_apply(human(), &applied),
+            output::colors_show(json(), &show),
+            output::colors_write(json(), &written),
+            output::theme_apply(json(), &applied),
+        ));
+    }
+
+    #[test]
     fn input_outputs() {
         use gamepadii_core::channel::sim::SimInput;
         let rig = |frames: std::collections::VecDeque<u64>| {

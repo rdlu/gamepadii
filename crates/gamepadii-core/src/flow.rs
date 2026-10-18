@@ -1,6 +1,7 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
 //! switch`, `profile show` and `profile write` (over the channel only),
-//! `leds` (and `leds set`, over the channel only), `input` and `input
+//! `leds` (and `leds set`, `leds profile`, `leds colors` and `leds theme`,
+//! over the channel only), `input` and `input
 //! find-pin` (over the channel only), `log` and `log --follow` (over the
 //! channel only), `backup --channel-only` and `restore` (over the channel
 //! only), and the trip through web-config that `info` and `backup` take
@@ -32,6 +33,10 @@ use crate::buttons::{Button, Combo};
 use crate::cache::{self, DeviceCache, Key, PadId};
 use crate::channel::{self, Caps, Channel, Hello, OpenControl, Probe, proto};
 use crate::client::{self, Client};
+use crate::colors::{
+    self, ColorsFile, ColorsReport, ColorsWrite, ColorsWriteReport, ThemeApply, ThemeApplyReport,
+    ThemeFile, ThemeReport,
+};
 use crate::commands::{self, Bundle, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
@@ -2502,8 +2507,14 @@ pub fn lights_write(
         board: ch.string(proto::string::BOARD).ok().flatten(),
         ..Firmware::default()
     };
-    let data = lights::plan(file, write, status.on(), firmware.board.as_deref())?;
     let before = read_lights_file(&ch, write.profile, firmware.board.clone())?;
+    // Only the fields that change go, as for a theme: the firmware checks
+    // each field that it gets, and a stored profile can have colours out of
+    // range. Thus a backup of the profile applies again.
+    let mut file = file.clone();
+    file.values
+        .retain(|number, v| before.values.get(number) != Some(v));
+    let data = lights::plan(&file, write, status.on(), firmware.board.as_deref())?;
     let backup = match &env.backups_dir {
         Some(dir) => {
             let name = format!(
@@ -2520,23 +2531,7 @@ pub fn lights_write(
         None => None,
     };
     ch.write_lights(&data)?;
-    // Core 1 applies it on its next frame: LIGHTS_STATUS shows PENDING
-    // until then.
-    let applied = wait_for(
-        env.clock,
-        Poll {
-            interval: Duration::from_millis(10),
-            timeout: Duration::from_secs(1),
-        },
-        || {
-            let l = ch.lights_status().ok().filter(|l| !l.pending())?;
-            let s = ch.status().ok()?;
-            (s.last_command == channel::Command::WriteLights as u8 && s.last_seq == ch.last_seq())
-                .then_some((l, s))
-        },
-        |_| {},
-    )
-    .is_some_and(|(_, s)| channel::Outcome::from_byte(s.last_result) == channel::Outcome::Ok);
+    let applied = lights_applied(env, &ch, channel::Command::WriteLights);
     let after = read_lights_file(&ch, write.profile, firmware.board.clone())?;
     let sent = LightsFile::from_data(&data, None).unwrap_or_default();
     let expect = lights::expected(&before, &sent, data.enabled());
@@ -2569,6 +2564,370 @@ pub fn lights_write(
         changed: lights::changed(&before, &after),
         active: ch.lights_status()?.on() == Some(write.profile),
         saved: write.save,
+        applied,
+        verified: true,
+        backup,
+        note: (!notes.is_empty()).then(|| notes.join("; ")),
+    })
+}
+
+/// Waits until core 1 applied the last command, `cmd`: LIGHTS_STATUS has
+/// no PENDING, and STATUS gives `cmd` with the last sequence number. Core 1
+/// applies a change on its next frame (27 to 57 ms on the S16). True when
+/// STATUS gives OK, in 1 s.
+fn lights_applied(env: &Env, ch: &Channel, cmd: channel::Command) -> bool {
+    wait_for(
+        env.clock,
+        Poll {
+            interval: Duration::from_millis(10),
+            timeout: Duration::from_secs(1),
+        },
+        || {
+            ch.lights_status().ok().filter(|l| !l.pending())?;
+            let s = ch.status().ok()?;
+            (s.last_command == cmd as u8 && s.last_seq == ch.last_seq()).then_some(s)
+        },
+        |_| {},
+    )
+    .is_some_and(|s| channel::Outcome::from_byte(s.last_result) == channel::Outcome::Ok)
+}
+
+// ---- custom colours and themes (control channel v1.9) -----------------------
+
+fn no_colors_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with the custom colour commands, so \
+         gamepadii can't read or write the custom colours live; that needs the gamepadii \
+         build of GP2040-CE with control channel v1.9, on a pad with LEDs",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// Why a channel has no custom colour commands.
+fn no_colors_why(h: &Hello) -> String {
+    if h.minor >= proto::CUSTOM_COLORS_MINOR {
+        "the pad's LEDs are not set up".into()
+    } else {
+        format!("this build's channel speaks v{}.{}", h.major, h.minor)
+    }
+}
+
+/// The pad and its control channel, when it has READ_CUSTOM_COLORS and
+/// WRITE_CUSTOM_COLORS.
+fn colors_channel(env: &Env) -> Result<(Device, Channel)> {
+    live_channel(
+        env,
+        Hello::has_custom_colors,
+        no_colors_channel,
+        no_colors_why,
+    )
+}
+
+/// `the file is for board X, but the pad is Y`, before anything is sent.
+fn same_board(want: Option<&str>, have: Option<&str>) -> Result<()> {
+    match (want, have) {
+        (Some(want), Some(have)) if want != have => Err(Error::Usage(format!(
+            "the file is for board {want}, but the pad is {have}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The note about colour numbers that show black in lights profile `n`
+/// with `count` custom colours set; `None` when it can't read the profile.
+fn unset_note(ch: &Channel, n: u8, count: usize) -> Option<String> {
+    let file = read_lights_file(ch, n, None).ok()?;
+    colors::unset_note(n, &colors::unset_numbers(&file, count), count)
+}
+
+/// Writes `colors`, waits until the LEDs apply them, and reads them back:
+/// whether they applied, and the 16 colours after it.
+fn write_colors(
+    env: &Env,
+    ch: &Channel,
+    colors: &[channel::Rgb],
+    save: bool,
+) -> Result<(bool, Vec<channel::Rgb>)> {
+    ch.write_custom_colors(colors, save)?;
+    let applied = lights_applied(env, ch, channel::Command::WriteCustomColors);
+    let after = ch.read_custom_colors()?;
+    if usize::from(after.count) != colors.len() || after.colors != colors::after_write(colors) {
+        return Err(Error::CheckFailed(format!(
+            "the pad accepted the write of {} custom colours, but READ_CUSTOM_COLORS gives \
+             other values",
+            colors.len()
+        )));
+    }
+    Ok((applied, after.colors))
+}
+
+/// `gamepadii leds colors`: the 16 custom colours with READ_CUSTOM_COLORS,
+/// live.
+pub fn colors_show(env: &Env) -> Result<ColorsReport> {
+    let (_, ch) = colors_channel(env)?;
+    let colors = ch.read_custom_colors()?;
+    Ok(ColorsReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        colors,
+    })
+}
+
+/// `gamepadii leds colors write FILE`: WRITE_CUSTOM_COLORS of the colours
+/// in `file`, live; saved with `write.save`. It backs up the colours first
+/// (into `env.backups_dir`, when set), waits for the LEDs to apply them,
+/// and reads them back.
+pub fn colors_write(
+    env: &Env,
+    file: &ColorsFile,
+    write: &ColorsWrite,
+    progress: &mut dyn Progress,
+) -> Result<ColorsWriteReport> {
+    let (_, ch) = colors_channel(env)?;
+    let status = ch.lights_status()?;
+    if status.preview() {
+        return Err(Error::NeedsUser(crate::leds::PREVIEW.to_string()));
+    }
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    same_board(file.board.as_deref(), firmware.board.as_deref())?;
+    if file.colors.len() > proto::CUSTOM_COLORS_MAX {
+        return Err(Error::Usage(format!(
+            "{} custom colours: the pad keeps at most {}",
+            file.colors.len(),
+            proto::CUSTOM_COLORS_MAX
+        )));
+    }
+    let before = ch.read_custom_colors()?;
+    let backup = match &env.backups_dir {
+        Some(dir) => {
+            let name = format!(
+                "{}-{}-colors.json",
+                Utc::from_system(env.clock.wall()).compact(),
+                commands::board_slug(&firmware),
+            );
+            let path = dir.join(name);
+            let old = ColorsFile {
+                board: firmware.board.clone(),
+                colors: before.set().to_vec(),
+            };
+            commands::write_json(&old, &path)?;
+            progress.step(Step::BackedUp(&path));
+            Some(path)
+        }
+        None => None,
+    };
+    let (applied, after) = write_colors(env, &ch, &file.colors, write.save)?;
+    let mut notes = Vec::new();
+    if !applied {
+        notes.push("the pad took the write but the LEDs haven't applied it after 1 s".into());
+    }
+    notes.push(colors::SHARED.to_string());
+    if let Some(n) = status.on()
+        && let Some(note) = unset_note(&ch, n, file.colors.len())
+    {
+        notes.push(note);
+    }
+    if !write.save {
+        notes.push(
+            "not saved: after a restart the pad has its saved custom colours again, unless \
+             something saves the settings first; --save keeps them"
+                .into(),
+        );
+    }
+    Ok(ColorsWriteReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        before_count: before.count,
+        count: file.colors.len() as u8,
+        changed: colors::changed(&before.colors, &after),
+        saved: write.save,
+        applied,
+        verified: true,
+        backup,
+        note: Some(notes.join("; ")),
+    })
+}
+
+/// `gamepadii leds theme show [--profile N]`: the custom colours and one
+/// lights profile, live, as a theme file; the profile that runs when
+/// `which` is `None`. A pad before 1.9 gives the profile only.
+pub fn theme_show(env: &Env, which: Option<u8>) -> Result<ThemeReport> {
+    let (_, ch) = lights_channel(env)?;
+    let status = ch.lights_status()?;
+    let n = match which {
+        Some(n) => n,
+        None => status.on().ok_or_else(|| {
+            Error::Usage("the lights are off: give a lights profile, --profile 0 to 3".into())
+        })?,
+    };
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    let lights = read_lights_file(&ch, n, board.clone())?;
+    let colors = if ch.hello().has_custom_colors() {
+        Some(ch.read_custom_colors()?.set().to_vec())
+    } else {
+        None
+    };
+    Ok(ThemeReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        active: status.on() == Some(n),
+        theme: ThemeFile {
+            board,
+            colors,
+            lights: Some(lights),
+        },
+    })
+}
+
+/// `gamepadii leds theme apply FILE`: the custom colours of `theme`
+/// (WRITE_CUSTOM_COLORS), then, after the LEDs apply them, its lights
+/// profile fields (WRITE_LIGHTS) to lights profile `apply.profile`, which
+/// it enables and selects. RAM only unless `apply.save`. Every check comes
+/// before the first write. It backs up the colours and the profile first
+/// (into `env.backups_dir`, when set), as one theme file.
+pub fn theme_apply(
+    env: &Env,
+    theme: &ThemeFile,
+    apply: &ThemeApply,
+    progress: &mut dyn Progress,
+) -> Result<ThemeApplyReport> {
+    if theme.colors.is_none() && theme.lights.is_none() {
+        return Err(Error::Usage(
+            "the theme file has no colors and no lights: nothing to apply".into(),
+        ));
+    }
+    let (pad, ch) = lights_channel(env)?;
+    if theme.colors.is_some() && !ch.hello().has_custom_colors() {
+        return Err(no_colors_channel(&pad, Some(no_colors_why(ch.hello()))));
+    }
+    let status = ch.lights_status()?;
+    if status.preview() {
+        return Err(Error::NeedsUser(crate::leds::PREVIEW.to_string()));
+    }
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    same_board(theme.board.as_deref(), firmware.board.as_deref())?;
+    let n = match apply.profile {
+        Some(n) => n,
+        None => status.on().ok_or_else(|| {
+            Error::Usage("the lights are off: give the lights profile, --profile 0 to 3".into())
+        })?,
+    };
+    if n > 3 {
+        return Err(Error::Usage(format!(
+            "lights profile {n}: the lights profiles are 0 to 3"
+        )));
+    }
+    let before = read_lights_file(&ch, n, firmware.board.clone())?;
+    // Only the fields that change go: the firmware checks each field that
+    // it gets, and a stored profile can have colours out of range. Thus a
+    // theme from `theme show`, or a backup, applies again.
+    let mut lights = theme.lights.clone().unwrap_or_default();
+    lights
+        .values
+        .retain(|number, v| before.values.get(number) != Some(v));
+    let write = LightsWrite {
+        profile: n,
+        select: true,
+        save: apply.save,
+    };
+    let data = lights::plan(&lights, &write, status.on(), firmware.board.as_deref())?;
+    if let Some(c) = &theme.colors
+        && c.len() > proto::CUSTOM_COLORS_MAX
+    {
+        return Err(Error::Usage(format!(
+            "{} custom colours: the pad keeps at most {}",
+            c.len(),
+            proto::CUSTOM_COLORS_MAX
+        )));
+    }
+    let before_colors = match &theme.colors {
+        Some(_) => Some(ch.read_custom_colors()?),
+        None => None,
+    };
+    let backup = match &env.backups_dir {
+        Some(dir) => {
+            let name = format!(
+                "{}-{}-theme{n}.json",
+                Utc::from_system(env.clock.wall()).compact(),
+                commands::board_slug(&firmware),
+            );
+            let path = dir.join(name);
+            let old = ThemeFile {
+                board: firmware.board.clone(),
+                colors: before_colors.as_ref().map(|c| c.set().to_vec()),
+                lights: Some(before.clone()),
+            };
+            commands::write_json(&old, &path)?;
+            progress.step(Step::BackedUp(&path));
+            Some(path)
+        }
+        None => None,
+    };
+    let mut applied = true;
+    let mut colors_changed = Vec::new();
+    if let (Some(colors), Some(old)) = (&theme.colors, &before_colors) {
+        // The colours first: core 1 builds the effects of the profile
+        // again with them.
+        let (ok, after) = write_colors(env, &ch, colors, apply.save)?;
+        applied &= ok;
+        colors_changed = colors::changed(&old.colors, &after);
+    }
+    ch.write_lights(&data)?;
+    applied &= lights_applied(env, &ch, channel::Command::WriteLights);
+    let after = read_lights_file(&ch, n, firmware.board.clone())?;
+    let sent = LightsFile::from_data(&data, None).unwrap_or_default();
+    let wrong = lights::changed(&lights::expected(&before, &sent, true), &after);
+    if !wrong.is_empty() {
+        return Err(Error::CheckFailed(format!(
+            "the pad accepted the write of lights profile {n}, but READ_LIGHTS gives other \
+             values: {}",
+            wrong.join(", ")
+        )));
+    }
+    let count = match (&theme.colors, ch.hello().has_custom_colors()) {
+        (Some(c), _) => Some(c.len()),
+        (None, true) => ch.read_custom_colors().ok().map(|c| c.count.into()),
+        (None, false) => None,
+    };
+    let mut notes = Vec::new();
+    if !applied {
+        notes.push("the pad took the theme but the LEDs haven't applied it after 1 s".into());
+    }
+    if theme.colors.is_some() {
+        notes.push(colors::SHARED.to_string());
+    }
+    if let Some(count) = count
+        && let Some(note) = colors::unset_note(n, &colors::unset_numbers(&after, count), count)
+    {
+        notes.push(note);
+    }
+    if !apply.save {
+        notes.push(
+            "not saved: a restart undoes the theme, unless something saves the settings first; \
+             --save keeps it"
+                .into(),
+        );
+    }
+    Ok(ThemeApplyReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        profile: n,
+        colors: theme.colors.as_ref().map(|c| c.len() as u8),
+        colors_changed,
+        lights_changed: lights::changed(&before, &after),
+        active: ch.lights_status()?.on() == Some(n),
+        saved: apply.save,
         applied,
         verified: true,
         backup,

@@ -6,16 +6,17 @@ use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
 use gamepadii::cli::{
-    self, Cli, Command, DisplayCommand, InputCommand, LedsCommand, LightsProfileCommand,
-    MockChannel, ProfileCommand, SetupCommand, TripArgs,
+    self, Cli, ColorsCommand, Command, DisplayCommand, InputCommand, LedsCommand,
+    LightsProfileCommand, MockChannel, ProfileCommand, SetupCommand, ThemeCommand, TripArgs,
 };
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
 use gamepadii::tui::worker::WithEnv;
 use gamepadii_core::cache::{self, DeviceCache};
-use gamepadii_core::channel::sim::{SimChannel, SimInput, Standalone};
-use gamepadii_core::channel::{ControlTransport, OpenControl, UsbError};
+use gamepadii_core::channel::sim::{SimChannel, SimCustomColors, SimInput, Standalone};
+use gamepadii_core::channel::{ControlTransport, OpenControl, Rgb, UsbError};
 use gamepadii_core::client::{self, Client};
+use gamepadii_core::colors::{ColorsFile, ColorsWrite, ThemeApply, ThemeFile};
 use gamepadii_core::discovery::Device;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Env, Timeouts};
@@ -394,6 +395,112 @@ fn main() -> ExitCode {
                 .and_then(|t| LightsFile::parse(&t))
                 .and_then(|f| flow::lights_write(&env, &f, &write, &mut progress))
                 .map(|r| output::lights_write(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command:
+                Some(LedsCommand::Colors {
+                    command: None | Some(ColorsCommand::Show),
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result = flow::colors_show(&env).map(|r| output::colors_show(style, &r));
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command:
+                Some(LedsCommand::Colors {
+                    command:
+                        Some(ColorsCommand::Write {
+                            file,
+                            save,
+                            no_backup,
+                        }),
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let mut progress = reporter(format);
+            let result = read_file(&file)
+                .and_then(|t| ColorsFile::parse(&t))
+                .and_then(|f| flow::colors_write(&env, &f, &ColorsWrite { save }, &mut progress))
+                .map(|r| output::colors_write(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command:
+                Some(LedsCommand::Theme {
+                    command: ThemeCommand::Show { profile },
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result = flow::theme_show(&env, profile).map(|r| output::theme_show(style, &r));
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command:
+                Some(LedsCommand::Theme {
+                    command:
+                        ThemeCommand::Apply {
+                            file,
+                            profile,
+                            save,
+                            no_backup,
+                        },
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let apply = ThemeApply { profile, save };
+            let mut progress = reporter(format);
+            let result = read_file(&file)
+                .and_then(|t| ThemeFile::parse(&t))
+                .and_then(|t| flow::theme_apply(&env, &t, &apply, &mut progress))
+                .map(|r| output::theme_apply(style, &r));
             drop(progress);
             finish(format, result)
         }
@@ -835,6 +942,19 @@ fn mock_control(
         .with_input()
         .with_log()
         .with_config(),
+        MockChannel::CustomColors => {
+            let mut sim = match api {
+                Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+                None => SimChannel::gamepadii(running),
+            }
+            .with_slots()
+            .with_custom_colors();
+            sim.custom_colors =
+                SimCustomColors::new(&[Rgb::from_u32(0xff8800), Rgb::from_u32(0x0044ff)]);
+            sim.saved_custom_colors = sim.custom_colors;
+            sim.lights_limits.pending_reads = 2;
+            sim
+        }
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the

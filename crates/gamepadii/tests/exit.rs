@@ -1048,6 +1048,101 @@ fn lights_profile_exit_codes() {
 }
 
 #[test]
+fn custom_colors_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-main"
+    );
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "custom-colors",
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, _) = run(&["leds", "colors"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Custom colours\n"), "{stdout}");
+    // The JSON of `colors` is a colours file for `colors write`.
+    let (code, stdout, _) = run(&["--json", "leds", "colors", "show"]);
+    assert_eq!(code, 0);
+    let file = home.path().join("colors.json");
+    std::fs::write(&file, &stdout).unwrap();
+    let path = file.to_str().unwrap();
+    let (code, stdout, stderr) = run(&["--json", "leds", "colors", "write", path]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (v["count"].as_u64(), v["applied"].as_bool()),
+        (Some(2), Some(true))
+    );
+    let backup = v["backup"].as_str().unwrap();
+    assert!(
+        backup.starts_with(home.path().join("data").to_str().unwrap()),
+        "{backup}"
+    );
+    // The JSON of `theme show` is a theme file for `theme apply`.
+    let (code, stdout, _) = run(&["--json", "leds", "theme", "show", "--profile", "1"]);
+    assert_eq!(code, 0);
+    let theme = home.path().join("theme.json");
+    std::fs::write(&theme, &stdout).unwrap();
+    let theme = theme.to_str().unwrap();
+    let (code, stdout, stderr) = run(&[
+        "--json",
+        "leds",
+        "theme",
+        "apply",
+        theme,
+        "--profile",
+        "1",
+        "--no-backup",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (
+            v["profile"].as_u64(),
+            v["active"].as_bool(),
+            v["backup"].is_null()
+        ),
+        (Some(1), Some(true), true)
+    );
+    // Usage errors: 3.
+    let bad = home.path().join("bad.json");
+    std::fs::write(&bad, r#"{"colors": ["red"]}"#).unwrap();
+    let bad = bad.to_str().unwrap();
+    for args in [
+        &["leds", "colors", "write"][..],
+        &["leds", "colors", "write", bad],
+        &["leds", "theme", "apply", bad],
+        &["leds", "theme", "apply", theme, "--profile", "4"],
+        &["leds", "theme", "show", "--profile", "4"],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 3, "{args:?}: {stderr}");
+    }
+    // No v1.9 channel: 5.
+    let (code, _, stderr) = webconfig(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "lights-profiles",
+        "--mock-api",
+        "%s16-main",
+        "leds",
+        "colors",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.9"), "{stderr}");
+}
+
+#[test]
 fn input_exit_codes() {
     let home = tempfile::tempdir().unwrap();
     let api = concat!(

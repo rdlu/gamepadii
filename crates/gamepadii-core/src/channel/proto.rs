@@ -2,7 +2,8 @@
 //! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
 //! the v1.3 board ID of §3.9, the v1.4 profile slots of §3.10, the v1.5
 //! lights profiles of §3.11, the v1.7 input snapshot of §3.12, the v1.8
-//! log of §3.13 and the v1.6 config blob of §3.14):
+//! log of §3.13, the v1.6 config blob of §3.14 and the v1.9 custom
+//! colours of §3.15):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -26,10 +27,10 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.8: the log). A
-/// pad's minor tells which STRING ids it has; what else it can do is in
+/// The newest protocol minor this host knows (v1.9: the custom colours).
+/// A pad's minor tells which STRING ids it has; what else it can do is in
 /// its capabilities.
-pub const MINOR: u8 = 8;
+pub const MINOR: u8 = 9;
 /// The first minor with STRING [`string::BOARD_ID`].
 pub const BOARD_ID_MINOR: u8 = 3;
 /// The first minor with READ_SLOT and WRITE_SLOT ([`Caps::SLOTS`]).
@@ -44,6 +45,9 @@ pub const CONFIG_MINOR: u8 = 6;
 pub const INPUT_MINOR: u8 = 7;
 /// The first minor with READ_LOG ([`Caps::LOG`]).
 pub const LOG_MINOR: u8 = 8;
+/// The first minor with READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS
+/// ([`Caps::CUSTOM_COLORS`]).
+pub const CUSTOM_COLORS_MINOR: u8 = 9;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -103,7 +107,7 @@ impl Setup {
 
 /// The v1 commands, v1.1's LED ones, v1.2's lights ones, v1.4's slot
 /// ones, v1.5's lights profile ones, v1.6's config ones, v1.7's input
-/// ones and v1.8's READ_LOG.
+/// ones, v1.8's READ_LOG and v1.9's custom colour ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
@@ -127,6 +131,8 @@ pub enum Command {
     /// v1.8, behind [`Caps::LOG`]: `wValue` is the low 16 bits of the
     /// first sequence number to read.
     ReadLog = 0x0A,
+    /// v1.9, behind [`Caps::CUSTOM_COLORS`]: the 16 custom colours.
+    ReadCustomColors = 0x0B,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
@@ -145,10 +151,12 @@ pub enum Command {
     CommitConfig = 0x18,
     /// v1.7, behind [`Caps::INPUT`]: 1 starts the pin scan, 0 stops it.
     PinScan = 0x19,
+    /// v1.9, behind [`Caps::CUSTOM_COLORS`].
+    WriteCustomColors = 0x1A,
 }
 
 impl Command {
-    pub const ALL: [Command; 20] = [
+    pub const ALL: [Command; 22] = [
         Command::Hello,
         Command::Status,
         Command::String,
@@ -159,6 +167,7 @@ impl Command {
         Command::ReadConfig,
         Command::ReadInput,
         Command::ReadLog,
+        Command::ReadCustomColors,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
@@ -169,6 +178,7 @@ impl Command {
         Command::WriteConfig,
         Command::CommitConfig,
         Command::PinScan,
+        Command::WriteCustomColors,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -189,6 +199,7 @@ impl Command {
                 | Command::ReadConfig
                 | Command::ReadInput
                 | Command::ReadLog
+                | Command::ReadCustomColors
         )
     }
 
@@ -214,11 +225,14 @@ impl Command {
             Command::ReadConfig => "READ_CONFIG",
             Command::WriteConfig => "WRITE_CONFIG",
             Command::CommitConfig => "COMMIT_CONFIG",
+            Command::ReadCustomColors => "READ_CUSTOM_COLORS",
+            Command::WriteCustomColors => "WRITE_CUSTOM_COLORS",
         }
     }
 
-    /// The OUT payload length after the header. WRITE_SLOT, WRITE_LIGHTS
-    /// and WRITE_CONFIG have none: the pin count or the data gives it.
+    /// The OUT payload length after the header. WRITE_SLOT, WRITE_LIGHTS,
+    /// WRITE_CONFIG and WRITE_CUSTOM_COLORS have none: the pin count, the
+    /// data or the colour count gives it.
     pub fn payload_len(self) -> Option<usize> {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
@@ -238,7 +252,9 @@ impl Command {
             | Command::ReadInput
             | Command::ReadLog
             | Command::ReadConfig
-            | Command::WriteConfig => None,
+            | Command::WriteConfig
+            | Command::ReadCustomColors
+            | Command::WriteCustomColors => None,
         }
     }
 
@@ -318,8 +334,11 @@ impl Caps {
     pub const INPUT: u32 = 1 << 13;
     /// v1.8: READ_LOG, the log of the pad's last 64 events.
     pub const LOG: u32 = 1 << 14;
+    /// v1.9: READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS, the 16 custom
+    /// colours. Set only when the LEDs run.
+    pub const CUSTOM_COLORS: u32 = 1 << 15;
 
-    const NAMES: [(u32, &'static str); 15] = [
+    const NAMES: [(u32, &'static str); 16] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -335,6 +354,7 @@ impl Caps {
         (Self::CONFIG, "config"),
         (Self::INPUT, "input"),
         (Self::LOG, "log"),
+        (Self::CUSTOM_COLORS, "custom_colors"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -464,6 +484,15 @@ impl Hello {
     /// [`Caps::LOG`]. Never send it to an older pad.
     pub fn has_log(&self) -> bool {
         self.major == MAJOR && self.minor >= LOG_MINOR && self.caps.has(Caps::LOG)
+    }
+
+    /// Whether the pad has READ_CUSTOM_COLORS and WRITE_CUSTOM_COLORS:
+    /// protocol 1.9 or later, with [`Caps::CUSTOM_COLORS`]. Never send them
+    /// to an older pad.
+    pub fn has_custom_colors(&self) -> bool {
+        self.major == MAJOR
+            && self.minor >= CUSTOM_COLORS_MINOR
+            && self.caps.has(Caps::CUSTOM_COLORS)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -742,8 +771,9 @@ impl LightsStatus {
     pub const UNSAVED: u8 = 1 << 1;
     /// A web-config preview runs: SET_LIGHTS is BUSY.
     pub const PREVIEW: u8 = 1 << 2;
-    /// v1.5: a SET_LIGHTS (or WRITE_LIGHTS) change waits for core 1, for
-    /// about 33 to 57 ms. Older firmware never sets it.
+    /// v1.5: a SET_LIGHTS (or WRITE_LIGHTS, or v1.9 WRITE_CUSTOM_COLORS)
+    /// change waits for core 1, for about 27 to 57 ms. Older firmware
+    /// never sets it.
     pub const PENDING: u8 = 1 << 3;
     /// An effect or cycle time when the lights are off.
     pub const NONE: u8 = 255;
@@ -915,6 +945,119 @@ impl LightsData {
         b.extend_from_slice(&self.protobuf);
         b
     }
+}
+
+/// The bytes before the colours of READ_CUSTOM_COLORS and
+/// WRITE_CUSTOM_COLORS: the count, the flags or the most, and a `u16` 0
+/// (§3.15).
+pub const CUSTOM_COLORS_HEAD_LEN: usize = 4;
+/// `MAX_CUSTOM_COLORS`: the pad always has this many custom colours.
+pub const CUSTOM_COLORS_MAX: usize = 16;
+/// The bytes of a READ_CUSTOM_COLORS reply: the head and 16 colours.
+pub const CUSTOM_COLORS_LEN: usize = CUSTOM_COLORS_HEAD_LEN + 3 * CUSTOM_COLORS_MAX;
+/// The WRITE_CUSTOM_COLORS flag that saves to flash (the same bit as
+/// [`Slot::SAVE`]). Any other flag is BAD_ARG.
+pub const CUSTOM_COLORS_SAVE: u8 = 1 << 2;
+
+/// One colour: red, green and blue, 0–255 each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Rgb {
+    pub const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
+
+    /// `0xRRGGBB`, as `AnimationOptions.customColors` keeps it.
+    pub fn from_u32(c: u32) -> Self {
+        let [_, r, g, b] = c.to_be_bytes();
+        Rgb { r, g, b }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        u32::from_be_bytes([0, self.r, self.g, self.b])
+    }
+
+    /// `#rrggbb`.
+    pub fn hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+
+    /// `#rrggbb` or `rrggbb`, in upper or lower case.
+    pub fn parse_hex(s: &str) -> Option<Self> {
+        let h = s.strip_prefix('#').unwrap_or(s);
+        if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u32::from_str_radix(h, 16).ok().map(Self::from_u32)
+    }
+}
+
+impl Serialize for Rgb {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.hex().serialize(s)
+    }
+}
+
+/// A READ_CUSTOM_COLORS reply (v1.9, §3.15): the custom colours, also the
+/// ones after the count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomColors {
+    /// How many are set (`customColors_count`): web-config shows this many.
+    pub count: u8,
+    /// The most that the pad keeps: 16.
+    pub max: u8,
+    /// All `max` colours. A lights profile gives custom colour n as colour
+    /// number 14 + n.
+    pub colors: Vec<Rgb>,
+}
+
+impl CustomColors {
+    /// `None` when the reply is shorter than its head says.
+    pub fn parse(b: &[u8]) -> Option<Self> {
+        let head = b.get(..CUSTOM_COLORS_HEAD_LEN)?;
+        let max = usize::from(head[1]);
+        let body = b.get(CUSTOM_COLORS_HEAD_LEN..CUSTOM_COLORS_HEAD_LEN + 3 * max)?;
+        Some(Self {
+            count: head[0],
+            max: head[1],
+            colors: body
+                .chunks(3)
+                .map(|c| Rgb {
+                    r: c[0],
+                    g: c[1],
+                    b: c[2],
+                })
+                .collect(),
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = vec![self.count, self.max, 0, 0];
+        for c in &self.colors {
+            b.extend_from_slice(&[c.r, c.g, c.b]);
+        }
+        b
+    }
+
+    /// The colours that are set: the first `count`.
+    pub fn set(&self) -> &[Rgb] {
+        &self.colors[..usize::from(self.count).min(self.colors.len())]
+    }
+}
+
+/// The WRITE_CUSTOM_COLORS argument: the count, the flags, a `u16` 0, then
+/// the colours.
+pub fn custom_colors_arg(colors: &[Rgb], save: bool) -> Vec<u8> {
+    let count = u8::try_from(colors.len()).unwrap_or(u8::MAX);
+    let flags = if save { CUSTOM_COLORS_SAVE } else { 0 };
+    let mut b = vec![count, flags, 0, 0];
+    for c in colors {
+        b.extend_from_slice(&[c.r, c.g, c.b]);
+    }
+    b
 }
 
 /// The bytes of a READ_INPUT reply.
@@ -1904,6 +2047,63 @@ mod tests {
             crc32(b"The quick brown fox jumps over the lazy dog"),
             0x414f_a339
         );
+    }
+
+    #[test]
+    fn v1_9_custom_color_commands() {
+        let s = Setup::read(Command::ReadCustomColors, 0);
+        assert_eq!((s.request_type, s.index, s.value), (TYPE_IN, 0x500b, 0));
+        assert!(Command::ReadCustomColors.is_in() && !Command::WriteCustomColors.is_in());
+        assert_eq!(Setup::command(Command::WriteCustomColors).index, 0x501a);
+        assert_eq!(Command::from_byte(0x0b), Some(Command::ReadCustomColors));
+        assert_eq!(Command::from_byte(0x1a), Some(Command::WriteCustomColors));
+        assert_eq!(Command::WriteCustomColors.max_len(), 64);
+        const { assert!(HEADER_LEN + CUSTOM_COLORS_LEN <= 64, "a write of 16 fits") };
+        assert_eq!(Command::WriteCustomColors.payload_len(), None);
+        assert_eq!(Caps(0xce2f).names().last(), Some(&"custom_colors"));
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(9, Caps::CUSTOM_COLORS).has_custom_colors());
+        assert!(
+            !hello(8, Caps::CUSTOM_COLORS).has_custom_colors(),
+            "1.8 never gets them"
+        );
+        assert!(!hello(9, Caps::LIGHTS_PROFILES).has_custom_colors());
+    }
+
+    #[test]
+    fn custom_colors_round_trip() {
+        let mut colors = vec![Rgb::BLACK; 16];
+        colors[0] = Rgb::from_u32(0xff00ff);
+        colors[1] = Rgb { r: 1, g: 2, b: 3 };
+        let c = CustomColors {
+            count: 2,
+            max: 16,
+            colors,
+        };
+        let b = c.encode();
+        assert_eq!(b.len(), CUSTOM_COLORS_LEN);
+        assert_eq!(&b[..10], &[2, 16, 0, 0, 0xff, 0, 0xff, 1, 2, 3]);
+        assert_eq!(CustomColors::parse(&b), Some(c.clone()));
+        assert_eq!(CustomColors::parse(&b[..51]), None, "short");
+        assert_eq!(c.set().len(), 2);
+        assert_eq!(c.set()[0].hex(), "#ff00ff");
+        assert_eq!(c.colors[1].to_u32(), 0x010203);
+        assert_eq!(Rgb::parse_hex("#FF00fF"), Some(Rgb::from_u32(0xff00ff)));
+        assert_eq!(Rgb::parse_hex("00ff00"), Some(Rgb::from_u32(0x00ff00)));
+        for bad in ["#ff00f", "ff00ff0", "#gg0000", "red", "", "#+f00ff"] {
+            assert_eq!(Rgb::parse_hex(bad), None, "{bad}");
+        }
+        assert_eq!(
+            custom_colors_arg(&c.colors[..2], true),
+            [2, 4, 0, 0, 0xff, 0, 0xff, 1, 2, 3]
+        );
+        assert_eq!(custom_colors_arg(&[], false), [0, 0, 0, 0]);
     }
 
     #[test]

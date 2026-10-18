@@ -12,6 +12,9 @@ use gamepadii_core::Error;
 use gamepadii_core::api::{Evidence, Line, LineEvidence, RebootAck};
 use gamepadii_core::buttons::Button;
 use gamepadii_core::channel::{LogEvent, proto};
+use gamepadii_core::colors::{
+    self, ColorEntry, ColorsReport, ColorsWriteReport, ThemeApplyReport, ThemeReport,
+};
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
@@ -1103,6 +1106,9 @@ pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
 fn color_runs(b: &[u8]) -> String {
     let name = |c: u8| match gamepadii_core::leds::COLORS.get(usize::from(c)) {
         Some(n) if usize::from(c) < lights::BASE_COLORS => (*n).to_string(),
+        _ if usize::from(c) >= lights::BASE_COLORS + lights::MAX_CUSTOM_COLORS => {
+            format!("colour {c} (out of range)")
+        }
         _ => format!(
             "custom {}",
             usize::from(c).saturating_sub(lights::BASE_COLORS)
@@ -1179,6 +1185,24 @@ fn lights_group(file: &lights::LightsFile, prefixes: &[&str]) -> String {
     }
 }
 
+/// The rows of a lights profile: its state, then its fields by group.
+fn profile_rows(f: &lights::LightsFile, active: bool) -> Vec<(&'static str, String)> {
+    let state = match (f.enabled == Some(true), active) {
+        (true, true) => "enabled, runs now",
+        (true, false) => "enabled",
+        (false, true) => "disabled, runs now",
+        (false, false) => "disabled",
+    };
+    vec![
+        ("state", state.to_string()),
+        ("board", f.board.clone().unwrap_or_else(|| "-".into())),
+        ("idle", lights_group(f, &["idle_"])),
+        ("pressed", lights_group(f, &["pressed_", "press_"])),
+        ("case", lights_group(f, &["case_"])),
+        ("effects", lights_group(f, &["effect_"])),
+    ]
+}
+
 pub fn lights_show(style: Style, r: &LightsReport) -> String {
     if style.format != Format::Human {
         return json(r);
@@ -1186,20 +1210,7 @@ pub fn lights_show(style: Style, r: &LightsReport) -> String {
     let f = &r.file;
     let n = f.profile.unwrap_or_default();
     let mut out = format!("{}\n", style.bold(&format!("Lights profile {n}")));
-    let state = match (f.enabled == Some(true), r.active) {
-        (true, true) => "enabled, runs now",
-        (true, false) => "enabled",
-        (false, true) => "disabled, runs now",
-        (false, false) => "disabled",
-    };
-    let mut rw = vec![
-        ("state", state.to_string()),
-        ("board", f.board.clone().unwrap_or_else(|| "-".into())),
-        ("idle", lights_group(f, &["idle_"])),
-        ("pressed", lights_group(f, &["pressed_", "press_"])),
-        ("case", lights_group(f, &["case_"])),
-        ("effects", lights_group(f, &["effect_"])),
-    ];
+    let mut rw = profile_rows(f, r.active);
     if !f.other.is_empty() {
         rw.push((
             "other fields",
@@ -1257,6 +1268,174 @@ pub fn lights_write(style: Style, r: &LightsWriteReport) -> String {
             "no (RAM only)".into()
         },
     ));
+    if let Some(b) = &r.backup {
+        rw.push(("backup", b.display().to_string()));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// The custom colours, one line each: `14  #ff8800  custom 0`. The colours
+/// after the count that are all black go on one line.
+fn custom_color_lines(entries: &[ColorEntry]) -> String {
+    let line = |e: &ColorEntry| {
+        let not_set = if e.set { "" } else { "  (not set)" };
+        format!(
+            "{:<3} {}  custom {}{not_set}",
+            e.number,
+            e.color.hex(),
+            e.custom
+        )
+    };
+    let unset: Vec<&ColorEntry> = entries.iter().filter(|e| !e.set).collect();
+    let mut lines: Vec<String> = entries.iter().filter(|e| e.set).map(line).collect();
+    match unset.as_slice() {
+        [] => {}
+        all if all.iter().all(|e| e.color == proto::Rgb::BLACK) => {
+            let (first, last) = (all[0].number, all[all.len() - 1].number);
+            lines.push(if first == last {
+                format!("{first}: not set (black)")
+            } else {
+                format!("{first} to {last}: not set (black)")
+            });
+        }
+        all => lines.extend(all.iter().map(|e| line(e))),
+    }
+    lines.join("\n")
+}
+
+/// `custom 0, 2`, or `nothing`.
+fn custom_list(changed: &[u8]) -> String {
+    if changed.is_empty() {
+        return "nothing".into();
+    }
+    let list: Vec<String> = changed.iter().map(u8::to_string).collect();
+    format!("custom {}", list.join(", "))
+}
+
+/// The custom colours of a theme: `14 #ff8800, 15 #0044ff`.
+fn custom_colors_text(c: &Option<Vec<proto::Rgb>>) -> String {
+    match c {
+        None => "-".into(),
+        Some(c) if c.is_empty() => "none set".into(),
+        Some(c) => c
+            .iter()
+            .enumerate()
+            .map(|(n, c)| format!("{} {}", colors::number(n), c.hex()))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+pub fn colors_show(style: Style, r: &ColorsReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let mut out = format!("{}\n", style.bold("Custom colours"));
+    let rw = vec![
+        ("set", format!("{} of {}", r.colors.count, r.colors.max)),
+        ("colours", custom_color_lines(&r.entries())),
+        ("board", r.board.clone().unwrap_or_else(|| "-".into())),
+        ("via", format!("the control channel ({})", r.host)),
+    ];
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// `written`, `written and saved`.
+fn saved_word(saved: bool) -> &'static str {
+    if saved {
+        "written and saved"
+    } else {
+        "written"
+    }
+}
+
+fn saved_row(saved: bool) -> (&'static str, String) {
+    (
+        "saved",
+        if saved {
+            "yes, in flash".into()
+        } else {
+            "no (RAM only)".into()
+        },
+    )
+}
+
+pub fn colors_write(style: Style, r: &ColorsWriteReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let name = style.bold("Custom colours");
+    let mut out = format!("{name} {}\n", saved_word(r.saved));
+    let mut rw = vec![
+        ("was", format!("{} set", r.before_count)),
+        ("set", format!("{} of 16", r.count)),
+        ("changed", custom_list(&r.changed)),
+        ("applied", if r.applied { "yes" } else { "not yet" }.into()),
+        saved_row(r.saved),
+    ];
+    if let Some(b) = &r.backup {
+        rw.push(("backup", b.display().to_string()));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn theme_show(style: Style, r: &ThemeReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let f = r.theme.lights.clone().unwrap_or_default();
+    let n = f.profile.unwrap_or_default();
+    let mut out = format!(
+        "{}\n",
+        style.bold(&format!("Theme: lights profile {n} and the custom colours"))
+    );
+    let mut rw = profile_rows(&f, r.active);
+    rw.insert(1, ("colours", custom_colors_text(&r.theme.colors)));
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn theme_apply(style: Style, r: &ThemeApplyReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let what = match (r.active, r.saved) {
+        (true, true) => "runs now, and saved",
+        (true, false) => "runs now",
+        (false, true) => "saved",
+        (false, false) => "written",
+    };
+    let name = format!("Theme on lights profile {}", r.profile);
+    let mut out = format!("{} {what}\n", style.bold(&name));
+    let colours = match r.colors {
+        Some(n) => format!("{n} set, changed {}", custom_list(&r.colors_changed)),
+        None => "not in the theme".into(),
+    };
+    let mut rw = vec![
+        ("colours", colours),
+        (
+            "changed",
+            if r.lights_changed.is_empty() {
+                "nothing".into()
+            } else {
+                r.lights_changed.join(", ")
+            },
+        ),
+        ("applied", if r.applied { "yes" } else { "not yet" }.into()),
+        saved_row(r.saved),
+    ];
     if let Some(b) = &r.backup {
         rw.push(("backup", b.display().to_string()));
     }
