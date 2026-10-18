@@ -19,7 +19,7 @@ use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::{Error, Result};
 
 use crate::output::{self, Format, Style};
-use crate::progress::waiting_for;
+use crate::progress::{push_button, waiting_for};
 
 /// What the UI asks the worker for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +134,7 @@ impl Progress for Notes<'_> {
             Step::RestoreFailed { profile, error } => Note::Line(format!(
                 "warning: profile {profile} not restored after the restart: {error}"
             )),
+            Step::PushButton { scan } => Note::Guide(push_button(scan)),
         };
         (self.0)(note);
     }

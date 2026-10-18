@@ -245,6 +245,46 @@ mod channel {
         assert!(status.devices[0].control_channel.is_some());
     }
 
+    /// READ_INPUT (v1.7), once: read-only.
+    #[test]
+    #[ignore = "needs the gamepadii firmware, the udev rule and GAMEPADII_LIVE_CHANNEL=1"]
+    fn input_snapshot() {
+        if !on() {
+            return;
+        }
+        let r = live(flow::input).expect("READ_INPUT");
+        print!("{}", output::input(Style::plain(Format::Human), &r));
+        assert!(!r.readable.is_empty());
+        assert!(!r.scan_on);
+    }
+
+    /// PIN_SCAN on and off (v1.7). The scan changes the pin setup, not the
+    /// settings; gate it as a write all the same.
+    #[test]
+    #[ignore = "changes the pin setup; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_WRITE=1"]
+    fn pin_scan_adds_the_free_pins() {
+        if !on() || !opted_in("GAMEPADII_LIVE_WRITE") {
+            return;
+        }
+        let pad = discovery::scan(&Root::live())
+            .into_iter()
+            .next()
+            .expect("a pad");
+        let ch = channel::probe(&open, &pad).found().expect("the channel");
+        let before = ch.read_input().unwrap();
+        ch.pin_scan(true).unwrap();
+        let on = ch.read_input();
+        ch.pin_scan(false).unwrap();
+        let on = on.unwrap();
+        let after = ch.read_input().unwrap();
+        eprintln!(
+            "the scan adds GPIO {:?}",
+            channel::proto::gpios(on.readable & !before.readable)
+        );
+        assert!(on.scan_on() && !after.scan_on());
+        assert_eq!(after.readable, before.readable);
+    }
+
     /// REBOOT into web-config over the channel, then back over HTTP.
     #[test]
     #[ignore = "reboots the pad; needs GAMEPADII_LIVE_CHANNEL=1 and GAMEPADII_LIVE_REBOOT=1"]

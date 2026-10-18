@@ -1046,3 +1046,81 @@ fn lights_profile_exit_codes() {
     assert_eq!(code, 5);
     assert!(stderr.contains("control channel v1.5"), "{stderr}");
 }
+
+#[test]
+fn input_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-v0.7.12"
+    );
+    // The mock: a person pushes GPIO 27 (Up) after 5 reads, for 6 reads.
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "input",
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, _) = run(&["input"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Nothing pressed\n"), "{stdout}");
+    let (code, stdout, _) = run(&["--json", "input"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (v["schema"].as_u64(), v["profile"].as_u64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(v["pressed"], serde_json::json!([]));
+    // One line for each change: nothing, Up, nothing.
+    let (code, stdout, _) = run(&["--json", "input", "--watch", "--reads", "14"]);
+    assert_eq!(code, 0);
+    let lines: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(lines[1]["pressed"][0]["gpio"], 27);
+    assert_eq!(lines[1]["dpad"], serde_json::json!(["Up"]));
+    let (code, stdout, stderr) = run(&["--json", "input", "find-pin", "--scan"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("Push one button"), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (v["gpio"].as_u64(), v["key"].as_str()),
+        (Some(27), Some("Up"))
+    );
+    assert_eq!(
+        (v["scan"].as_bool(), v["released"].as_bool()),
+        (Some(true), Some(true))
+    );
+    // Nobody pushes in time: 5, with an error object.
+    let (code, stdout, stderr) = run(&["--json", "input", "find-pin", "--timeout", "0"]);
+    assert_eq!(code, 5, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["error"]["exit_code"], 5);
+    assert!(stderr.contains("no button press"), "{stderr}");
+    // No waybar line for input: 3.
+    let (code, _, _) = run(&["--format", "waybar", "input"]);
+    assert_eq!(code, 3);
+    // No v1.7 channel: 5.
+    let (code, _, stderr) = gamepadii_in(
+        home.path(),
+        &[
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "slots",
+            "input",
+            "find-pin",
+        ],
+    );
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.7"), "{stderr}");
+}

@@ -272,6 +272,49 @@ fn parses_leds() {
 }
 
 #[test]
+fn help_input() {
+    insta::assert_snapshot!(help(&["input"]));
+}
+
+#[test]
+fn help_input_find_pin() {
+    insta::assert_snapshot!(help(&["input", "find-pin"]));
+}
+
+#[test]
+fn parses_input() {
+    use gamepadii::cli::InputCommand;
+    assert_eq!(
+        parse(&["input"]).unwrap().command,
+        Some(Command::Input {
+            watch: false,
+            reads: None,
+            command: None
+        })
+    );
+    assert!(matches!(
+        parse(&["input", "--watch"]).unwrap().command,
+        Some(Command::Input { watch: true, .. })
+    ));
+    let find = |args: &[&str]| match parse(args).unwrap().command {
+        Some(Command::Input {
+            command: Some(InputCommand::FindPin { scan, timeout }),
+            ..
+        }) => (scan, timeout),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(find(&["input", "find-pin"]), (false, 15));
+    assert_eq!(
+        find(&["input", "find-pin", "--scan", "--timeout", "30"]),
+        (true, 30)
+    );
+    // --watch is for the snapshot, not for find-pin.
+    assert!(parse(&["input", "--watch", "find-pin"]).is_err());
+    assert!(parse(&["input", "--reads", "3"]).is_err());
+    assert!(format(&["input", "--format", "waybar"]).is_err());
+}
+
+#[test]
 fn help_setup_udev() {
     insta::assert_snapshot!(help(&["setup", "udev"]));
 }

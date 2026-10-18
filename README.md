@@ -15,7 +15,8 @@ buttons. With our firmware fork, most changes do not need a button press.
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `display layout`,
-`leds`, `leds profile show`, `leds profile write` and `setup udev`. The TUI
+`leds`, `leds profile show`, `leds profile write`, `input`,
+`input find-pin` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -91,6 +92,13 @@ gamepadii leds profile write FILE --profile N [--select] [--save]
                                   write a lights file to lights profile
                                   0-3, live; only its fields change; RAM
                                   only unless --save; backs up first
+gamepadii input [--watch]         the buttons pressed now, live, with the
+                                  GPIO, action and key of each (needs
+                                  control channel v1.7); --watch prints
+                                  each change
+gamepadii input find-pin [--scan] push a button: its GPIO, action and
+                                  key; --scan reads the pins with no
+                                  action too
 gamepadii display layout          the OLED's button drawing, and the
                                   choices for this board
 gamepadii display layout <MODEL>  pick the drawing for a Haute42 model:
@@ -184,6 +192,14 @@ press:
   times are 0 to 9, as the firmware keeps them (web-config shows 1 to 10).
   gamepadii backs up the profile first, and a write is RAM only unless
   `--save`;
+- `input` reads the buttons with no reboot: the GPIOs pressed now, with
+  the action of each in the active profile and the key printed on the
+  case, and the buttons, D-pad, sticks and triggers that the pad sends.
+  This needs channel v1.7. `input --watch` is an input tester.
+  `input find-pin` waits until you push one button, and tells you its
+  GPIO. With `--scan`, the pad also reads the pins with no action, so you
+  can find a button that no profile uses. The scan changes no setting, and
+  gamepadii stops it at the end;
 - `info`, `backup` and `display layout` reboot it into web-config, read
   (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes

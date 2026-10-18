@@ -6,14 +6,14 @@ use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
 use gamepadii::cli::{
-    self, Cli, Command, DisplayCommand, LedsCommand, LightsProfileCommand, MockChannel,
-    ProfileCommand, SetupCommand, TripArgs,
+    self, Cli, Command, DisplayCommand, InputCommand, LedsCommand, LightsProfileCommand,
+    MockChannel, ProfileCommand, SetupCommand, TripArgs,
 };
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
 use gamepadii::tui::worker::WithEnv;
 use gamepadii_core::cache::{self, DeviceCache};
-use gamepadii_core::channel::sim::{SimChannel, Standalone};
+use gamepadii_core::channel::sim::{SimChannel, SimInput, Standalone};
 use gamepadii_core::channel::{ControlTransport, OpenControl, UsbError};
 use gamepadii_core::client::{self, Client};
 use gamepadii_core::discovery::Device;
@@ -369,6 +369,52 @@ fn main() -> ExitCode {
             let result = flow::leds_set(&env, &change).map(|r| output::leds_set(style, &r));
             finish(format, result)
         }
+        Some(Command::Input {
+            watch,
+            reads,
+            command: None,
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            if watch {
+                return watch_input(&env, style, reads);
+            }
+            finish(format, flow::input(&env).map(|r| output::input(style, &r)))
+        }
+        Some(Command::Input {
+            command: Some(InputCommand::FindPin { scan, timeout }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let find = flow::FindPin {
+                scan,
+                timeout: Duration::from_secs(timeout),
+            };
+            let mut progress = reporter(format);
+            let result =
+                flow::find_pin(&env, &find, &mut progress).map(|r| output::find_pin(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
         Some(Command::Display { command }) => {
             let arg = command.layout_arg();
             let DisplayCommand::Layout {
@@ -467,6 +513,34 @@ fn tui(cli: &Cli) -> ExitCode {
             eprintln!("gamepadii: the terminal UI failed: {e}");
             ExitCode::from(exit::TRANSPORT)
         }
+    }
+}
+
+/// `input --watch`: READ_INPUT every 20 ms, and a line on stdout each time
+/// the input changes, until Ctrl-C (or `reads` reads, in tests).
+fn watch_input(env: &Env, style: Style, reads: Option<u64>) -> ExitCode {
+    let reader = match flow::input_reader(env) {
+        Ok(r) => r,
+        Err(e) => return finish(style.format, Err(e)),
+    };
+    let mut last = None;
+    let mut n = 0;
+    loop {
+        let report = match reader.read() {
+            Ok(r) => r,
+            Err(e) => return finish(style.format, Err(e)),
+        };
+        if last.as_ref() != Some(&report) {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{}", output::input_line(style, &report));
+            let _ = out.flush();
+            last = Some(report);
+        }
+        n += 1;
+        if reads.is_some_and(|r| n >= r) {
+            return ExitCode::from(exit::OK);
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -618,6 +692,19 @@ fn mock_control(
         }
         .with_slots()
         .with_lights_profiles(),
+        MockChannel::Input => {
+            let mut sim = match api {
+                Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+                None => SimChannel::gamepadii(running),
+            }
+            .with_lights()
+            .with_slots()
+            .with_input();
+            sim.input.frames = SimInput::press(1 << 27, 5, 6);
+            // As on the S16: GPIO 25 has no action, but a function.
+            sim.input.functions = 1 << 25;
+            sim
+        }
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the

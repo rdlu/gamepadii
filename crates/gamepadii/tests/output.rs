@@ -900,6 +900,52 @@ mod flows {
     }
 
     #[test]
+    fn input_outputs() {
+        use gamepadii_core::channel::sim::SimInput;
+        let rig = |frames: std::collections::VecDeque<u64>| {
+            Rig::new(
+                SimPad::new(s16_dir(), InputMode::Xinput)
+                    .with_channel()
+                    .channel(|c| {
+                        *c = c.clone().with_slots().with_input();
+                        c.input.functions = 1 << 25;
+                        c.input.frames = frames;
+                    }),
+            )
+        };
+        let rest = rig([0].into()).run(flow::input).unwrap();
+        let held = rig([1 << 6 | 1 << 14 | 1 << 27].into())
+            .run(flow::input)
+            .unwrap();
+        let mut stderr = Vec::new();
+        let found = {
+            let mut p = Reporter::new(&mut stderr, false);
+            let find = flow::FindPin {
+                scan: true,
+                ..flow::FindPin::default()
+            };
+            rig(SimInput::press(1 << 22, 3, 4))
+                .run(|env| flow::find_pin(env, &find, &mut p))
+                .unwrap()
+        };
+        let up = rig(SimInput::press(1 << 27, 3, 4))
+            .run(|env| flow::find_pin(env, &flow::FindPin::default(), &mut Silent))
+            .unwrap();
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n--- stderr\n{}--- stdout\n{}\n{}\n{}\n{}",
+            output::input(human(), &rest),
+            output::input(human(), &held),
+            output::input_line(human(), &rest),
+            output::input_line(human(), &held),
+            String::from_utf8(stderr).unwrap(),
+            output::find_pin(human(), &found),
+            output::find_pin(human(), &up),
+            output::input_line(json(), &held),
+            output::find_pin(json(), &found),
+        ));
+    }
+
+    #[test]
     fn lights_outputs() {
         use gamepadii_core::leds::{LedChange, Level, LightsPick};
         let dir =

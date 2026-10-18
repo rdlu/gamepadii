@@ -1,6 +1,7 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
 //! switch`, `profile show` and `profile write` (over the channel only),
-//! `leds` (and `leds set`, over the channel only), and the trip through
+//! `leds` (and `leds set`, over the channel only), `input` and `input
+//! find-pin` (over the channel only), and the trip through
 //! web-config that `info` and `backup` take
 //! from a gamepad mode ([`through_webconfig`]). They poll USB through a
 //! [`Scan`] and time through a [`Clock`], open the web-config client and
@@ -31,6 +32,7 @@ use crate::client::{self, Client};
 use crate::commands::{self, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
+use crate::input::{self, Finder, FoundPin, InputReport, PinNames};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
 use crate::lights::{self, LightsFile, LightsReport, LightsWrite, LightsWriteReport};
 use crate::mode::{BootMode, Confidence, InputMode};
@@ -89,6 +91,10 @@ pub enum Awaiting {
     Reboot(BootMode),
     /// The web server, once the pad is in web-config.
     Server,
+    /// The user, to push a button (`input find-pin`).
+    Press,
+    /// The user, to release that button.
+    Release,
 }
 
 /// Progress, for a spinner or a log.
@@ -114,6 +120,11 @@ pub enum Step<'a> {
     RestoreFailed {
         profile: u8,
         error: &'a Error,
+    },
+    /// `input find-pin` reads the pad: the user pushes one button now.
+    /// `scan`: the pin scan is on.
+    PushButton {
+        scan: bool,
     },
 }
 
@@ -2541,6 +2552,215 @@ pub fn lights_write(
         backup,
         note: (!notes.is_empty()).then(|| notes.join("; ")),
     })
+}
+
+// ---- input snapshot (control channel v1.7) ----------------------------------
+
+fn no_input_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with the input commands, so gamepadii \
+         can't read its buttons; that needs the gamepadii build of GP2040-CE with control \
+         channel v1.7",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// The pad and its control channel, when it has READ_INPUT and PIN_SCAN.
+fn input_channel(env: &Env) -> Result<(Device, Channel)> {
+    live_channel(env, Hello::has_input, no_input_channel, |h| {
+        format!("this build's channel speaks v{}.{}", h.major, h.minor)
+    })
+}
+
+/// The names of the pins in the active profile: READ_SLOT when the pad has
+/// it (v1.4), else the device cache, else none.
+fn pin_names(env: &Env, pad: &Device, ch: &Channel) -> PinNames {
+    let active = ch.status().ok().map(|s| s.profile);
+    if let Some(n) = active.filter(|_| ch.hello().has_slots())
+        && let Ok(base) = ch.read_slot(1)
+    {
+        let slot = if n == 1 {
+            Ok(base.clone())
+        } else {
+            ch.read_slot(n)
+        };
+        if let Ok(slot) = slot {
+            return PinNames::from_slots(&slot, &base);
+        }
+    }
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    let board_id = ch.board_id().ok().flatten();
+    let pad = cache::identify(env.cache_dir.as_deref(), pad);
+    let key = Key::new(&firmware, PadId::with_board_id(pad, board_id.as_deref()));
+    let cached = env
+        .cache_dir
+        .as_deref()
+        .and_then(|dir| cache::load_for(dir, &key));
+    if let Some(c) = cached
+        && let Some(profiles) = c.profiles()
+    {
+        let n = active
+            .or_else(|| c.active_profile().and_then(|n| u8::try_from(n).ok()))
+            .unwrap_or(1);
+        return PinNames::from_profiles(&profiles, n);
+    }
+    PinNames::none(active)
+}
+
+/// READ_INPUT on one pad, with the names of its pins: `input` and `input
+/// --watch`.
+pub struct InputReader {
+    ch: Channel,
+    names: PinNames,
+}
+
+impl InputReader {
+    /// One snapshot, now.
+    pub fn read(&self) -> Result<InputReport> {
+        let snap = self.ch.read_input()?;
+        Ok(InputReport::new(self.ch.node(), &self.names, &snap))
+    }
+}
+
+/// Opens the pad's channel for READ_INPUT, and reads the names of its pins
+/// once.
+pub fn input_reader(env: &Env) -> Result<InputReader> {
+    let (pad, ch) = input_channel(env)?;
+    let names = pin_names(env, &pad, &ch);
+    Ok(InputReader { ch, names })
+}
+
+/// `gamepadii input`: one READ_INPUT snapshot, live, in any mode.
+pub fn input(env: &Env) -> Result<InputReport> {
+    input_reader(env)?.read()
+}
+
+/// What `input find-pin` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindPin {
+    /// Send PIN_SCAN 1 first, so a pin with no action can be read too.
+    pub scan: bool,
+    /// How long to wait for the press.
+    pub timeout: Duration,
+}
+
+impl FindPin {
+    pub const TIMEOUT: Duration = Duration::from_secs(15);
+    /// How often to read: the host does the debounce.
+    pub const INTERVAL: Duration = Duration::from_millis(15);
+    /// How long to wait for the release, after the press.
+    pub const RELEASE: Duration = Duration::from_secs(5);
+}
+
+impl Default for FindPin {
+    fn default() -> Self {
+        Self {
+            scan: false,
+            timeout: Self::TIMEOUT,
+        }
+    }
+}
+
+/// `gamepadii input find-pin`: reads READ_INPUT every 15 ms until a person
+/// pushes a button, and gives its GPIO, its action and its key. With
+/// `find.scan`, PIN_SCAN 1 comes first and PIN_SCAN 0 at the end, also
+/// after an error or a timeout.
+pub fn find_pin(env: &Env, find: &FindPin, progress: &mut dyn Progress) -> Result<FoundPin> {
+    let (pad, ch) = input_channel(env)?;
+    let names = pin_names(env, &pad, &ch);
+    if find.scan {
+        ch.pin_scan(true)?;
+    }
+    progress.step(Step::PushButton { scan: find.scan });
+    let found = seek_press(env, &ch, find.timeout, progress);
+    let stopped = find.scan.then(|| ch.pin_scan(false));
+    let (gpio, released) = found?;
+    let mut report = FoundPin::new(ch.node(), &names, gpio, find.scan, released);
+    if let Some(Err(e)) = stopped {
+        report.note = Some(format!(
+            "the pin scan did not stop ({e}); it stops at the next READ_INPUT after 10 s"
+        ));
+    }
+    Ok(report)
+}
+
+/// Waits for a new press ([`Finder`]), then for its release; the GPIO, and
+/// whether it was released.
+fn seek_press(
+    env: &Env,
+    ch: &Channel,
+    timeout: Duration,
+    progress: &mut dyn Progress,
+) -> Result<(u8, bool)> {
+    let mut finder = Finder::new();
+    // The spinner moves every 200 ms, not at each read.
+    let mut shown = None;
+    let mut tick = |awaiting, elapsed: Duration, timeout| {
+        let step = elapsed.as_millis() / 200;
+        if shown != Some((awaiting, step)) {
+            shown = Some((awaiting, step));
+            progress.step(Step::Waiting {
+                awaiting,
+                elapsed,
+                timeout,
+            });
+        }
+    };
+    let poll = Poll {
+        interval: FindPin::INTERVAL,
+        timeout,
+    };
+    let press = wait_for(
+        env.clock,
+        poll,
+        || match ch.read_input() {
+            Ok(snap) => finder.feed(snap.pressed).map(Ok),
+            Err(e) => Some(Err(e)),
+        },
+        |e| tick(Awaiting::Press, e, timeout),
+    );
+    let gpio = match press {
+        Some(r) => r?,
+        None => {
+            return Err(Error::NeedsUser(format!(
+                "no button press in {} s. Run the command again and push one button while it \
+                 waits. A button that is held at the start does not count: release it first",
+                timeout.as_secs()
+            )));
+        }
+    };
+    let mut up = 0;
+    let poll = Poll {
+        interval: FindPin::INTERVAL,
+        timeout: FindPin::RELEASE,
+    };
+    let released = wait_for(
+        env.clock,
+        poll,
+        || match ch.read_input() {
+            Ok(snap) if snap.is_pressed(gpio) => {
+                up = 0;
+                None
+            }
+            Ok(_) => {
+                up += 1;
+                (up >= input::DEBOUNCE_READS).then_some(Ok(()))
+            }
+            Err(e) => Some(Err(e)),
+        },
+        |e| tick(Awaiting::Release, e, FindPin::RELEASE),
+    );
+    match released {
+        Some(r) => r.map(|()| (gpio, true)),
+        None => Ok((gpio, false)),
+    }
 }
 
 // ---- leds -----------------------------------------------------------------------

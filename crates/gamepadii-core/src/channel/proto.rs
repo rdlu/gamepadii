@@ -1,6 +1,7 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
 //! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
-//! the v1.3 board ID of §3.9, and the v1.4 profile slots of §3.10):
+//! the v1.3 board ID of §3.9, the v1.4 profile slots of §3.10, the v1.5
+//! lights profiles of §3.11 and the v1.7 input snapshot of §3.12):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -24,10 +25,10 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.5: the lights profiles). A
+/// The newest protocol minor this host knows (v1.7: the input snapshot). A
 /// pad's minor tells which STRING ids it has; what else it can do is in
 /// its capabilities.
-pub const MINOR: u8 = 5;
+pub const MINOR: u8 = 7;
 /// The first minor with STRING [`string::BOARD_ID`].
 pub const BOARD_ID_MINOR: u8 = 3;
 /// The first minor with READ_SLOT and WRITE_SLOT ([`Caps::SLOTS`]).
@@ -35,6 +36,8 @@ pub const SLOTS_MINOR: u8 = 4;
 /// The first minor with READ_LIGHTS and WRITE_LIGHTS
 /// ([`Caps::LIGHTS_PROFILES`]).
 pub const LIGHTS_PROFILES_MINOR: u8 = 5;
+/// The first minor with READ_INPUT and PIN_SCAN ([`Caps::INPUT`]).
+pub const INPUT_MINOR: u8 = 7;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -109,6 +112,8 @@ pub enum Command {
     /// v1.5, behind [`Caps::LIGHTS_PROFILES`]: `wValue` is the lights
     /// profile (0–3).
     ReadLights = 0x07,
+    /// v1.7, behind [`Caps::INPUT`]: a snapshot of the inputs, at once.
+    ReadInput = 0x09,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
@@ -120,10 +125,12 @@ pub enum Command {
     WriteSlot = 0x15,
     /// v1.5, behind [`Caps::LIGHTS_PROFILES`].
     WriteLights = 0x16,
+    /// v1.7, behind [`Caps::INPUT`]: 1 starts the pin scan, 0 stops it.
+    PinScan = 0x19,
 }
 
 impl Command {
-    pub const ALL: [Command; 14] = [
+    pub const ALL: [Command; 16] = [
         Command::Hello,
         Command::Status,
         Command::String,
@@ -131,6 +138,7 @@ impl Command {
         Command::LightsStatus,
         Command::ReadSlot,
         Command::ReadLights,
+        Command::ReadInput,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
@@ -138,6 +146,7 @@ impl Command {
         Command::SetLights,
         Command::WriteSlot,
         Command::WriteLights,
+        Command::PinScan,
     ];
 
     pub fn from_byte(b: u8) -> Option<Command> {
@@ -155,6 +164,7 @@ impl Command {
                 | Command::LightsStatus
                 | Command::ReadSlot
                 | Command::ReadLights
+                | Command::ReadInput
         )
     }
 
@@ -174,6 +184,8 @@ impl Command {
             Command::WriteSlot => "WRITE_SLOT",
             Command::ReadLights => "READ_LIGHTS",
             Command::WriteLights => "WRITE_LIGHTS",
+            Command::ReadInput => "READ_INPUT",
+            Command::PinScan => "PIN_SCAN",
         }
     }
 
@@ -182,7 +194,7 @@ impl Command {
     pub fn payload_len(self) -> Option<usize> {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
-            Command::Reboot => Some(1),
+            Command::Reboot | Command::PinScan => Some(1),
             Command::SetLed => Some(SET_LED_LEN),
             Command::SetLights => Some(SET_LIGHTS_LEN),
             Command::Hello
@@ -193,7 +205,8 @@ impl Command {
             | Command::ReadSlot
             | Command::WriteSlot
             | Command::ReadLights
-            | Command::WriteLights => None,
+            | Command::WriteLights
+            | Command::ReadInput => None,
         }
     }
 
@@ -262,8 +275,10 @@ impl Caps {
     /// v1.5: READ_LIGHTS and WRITE_LIGHTS, the effects and colours of a
     /// lights profile. Set only when the LEDs run.
     pub const LIGHTS_PROFILES: u32 = 1 << 11;
+    /// v1.7: READ_INPUT and PIN_SCAN, the input snapshot.
+    pub const INPUT: u32 = 1 << 13;
 
-    const NAMES: [(u32, &'static str); 12] = [
+    const NAMES: [(u32, &'static str); 13] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -276,6 +291,7 @@ impl Caps {
         (Self::LIGHTS, "lights"),
         (Self::SLOTS, "slots"),
         (Self::LIGHTS_PROFILES, "lights_profiles"),
+        (Self::INPUT, "input"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -386,6 +402,12 @@ impl Hello {
         self.major == MAJOR
             && self.minor >= LIGHTS_PROFILES_MINOR
             && self.caps.has(Caps::LIGHTS_PROFILES)
+    }
+
+    /// Whether the pad has READ_INPUT and PIN_SCAN: protocol 1.7 or later,
+    /// with [`Caps::INPUT`]. Never send them to an older pad.
+    pub fn has_input(&self) -> bool {
+        self.major == MAJOR && self.minor >= INPUT_MINOR && self.caps.has(Caps::INPUT)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -839,6 +861,122 @@ impl LightsData {
     }
 }
 
+/// The bytes of a READ_INPUT reply.
+pub const INPUT_LEN: usize = 36;
+/// What the axes are at rest (`GAMEPAD_JOYSTICK_MID`).
+pub const AXIS_CENTRE: u16 = 0x7fff;
+
+/// A READ_INPUT reply (v1.7, §3.12): the inputs at the time of the read.
+/// The pins are raw, before the debounce. The rest is the gamepad state
+/// after the active profile, SOCD and the other processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputSnapshot {
+    /// Bit n: GPIO n is pressed now (a SIO input that is low).
+    pub pressed: u64,
+    /// Bit n: the snapshot can read GPIO n (it is a SIO input).
+    pub readable: u64,
+    /// `GamepadState.dpad`: 1 up, 2 down, 4 left, 8 right.
+    pub dpad: u8,
+    /// [`InputSnapshot::SCAN_ON`].
+    pub flags: u8,
+    /// `GamepadState.aux`: bit 15 is the Fn button.
+    pub aux: u16,
+    /// `GamepadState.buttons` (`GAMEPAD_MASK_*`).
+    pub buttons: u32,
+    pub lx: u16,
+    pub ly: u16,
+    pub rx: u16,
+    pub ry: u16,
+    pub lt: u8,
+    pub rt: u8,
+}
+
+impl Default for InputSnapshot {
+    /// Nothing pressed, the sticks at the centre.
+    fn default() -> Self {
+        Self {
+            pressed: 0,
+            readable: 0,
+            dpad: 0,
+            flags: 0,
+            aux: 0,
+            buttons: 0,
+            lx: AXIS_CENTRE,
+            ly: AXIS_CENTRE,
+            rx: AXIS_CENTRE,
+            ry: AXIS_CENTRE,
+            lt: 0,
+            rt: 0,
+        }
+    }
+}
+
+impl InputSnapshot {
+    /// The pin scan is on (PIN_SCAN).
+    pub const SCAN_ON: u8 = 1 << 0;
+
+    /// `None` when the reply is shorter than [`INPUT_LEN`].
+    pub fn parse(b: &[u8]) -> Option<Self> {
+        if b.len() < INPUT_LEN {
+            return None;
+        }
+        let u64_at = |at| u64::from(u32_at(b, at)) | u64::from(u32_at(b, at + 4)) << 32;
+        Some(Self {
+            pressed: u64_at(0),
+            readable: u64_at(8),
+            dpad: b[16],
+            flags: b[17],
+            aux: u16_at(b, 18),
+            buttons: u32_at(b, 20),
+            lx: u16_at(b, 24),
+            ly: u16_at(b, 26),
+            rx: u16_at(b, 28),
+            ry: u16_at(b, 30),
+            lt: b[32],
+            rt: b[33],
+        })
+    }
+
+    pub fn encode(&self) -> [u8; INPUT_LEN] {
+        let mut b = [0u8; INPUT_LEN];
+        b[0..8].copy_from_slice(&self.pressed.to_le_bytes());
+        b[8..16].copy_from_slice(&self.readable.to_le_bytes());
+        b[16] = self.dpad;
+        b[17] = self.flags;
+        b[18..20].copy_from_slice(&self.aux.to_le_bytes());
+        b[20..24].copy_from_slice(&self.buttons.to_le_bytes());
+        for (i, v) in [self.lx, self.ly, self.rx, self.ry].into_iter().enumerate() {
+            b[24 + 2 * i..26 + 2 * i].copy_from_slice(&v.to_le_bytes());
+        }
+        b[32] = self.lt;
+        b[33] = self.rt;
+        b
+    }
+
+    pub fn scan_on(&self) -> bool {
+        self.flags & Self::SCAN_ON != 0
+    }
+
+    pub fn is_pressed(&self, gpio: u8) -> bool {
+        gpio < 64 && self.pressed & (1 << gpio) != 0
+    }
+
+    /// The GPIOs pressed now, from the lowest.
+    pub fn pressed_gpios(&self) -> Vec<u8> {
+        gpios(self.pressed)
+    }
+
+    /// The GPIOs the snapshot can read, from the lowest.
+    pub fn readable_gpios(&self) -> Vec<u8> {
+        gpios(self.readable)
+    }
+}
+
+/// The set bits of `mask`, from the lowest.
+pub fn gpios(mask: u64) -> Vec<u8> {
+    (0..64).filter(|n| mask & (1 << n) != 0).collect()
+}
+
 /// The bytes before the pins of a slot.
 pub const SLOT_HEAD_LEN: usize = 20;
 /// The bytes of each pin: `i16` action, `u32` button mask, `u32` D-pad mask.
@@ -1236,6 +1374,62 @@ mod tests {
         assert_eq!(d.protobuf, [0x10, 1]);
         assert_eq!(LightsData::parse(&[2, 3, 5, 0, 0x10]), None, "short");
         assert_eq!(d.encode(), [2, 3, 0, 0, 0x10, 1]);
+    }
+
+    #[test]
+    fn v1_7_input_commands() {
+        let s = Setup::read(Command::ReadInput, 0);
+        assert_eq!((s.request_type, s.index, s.value), (TYPE_IN, 0x5009, 0));
+        assert!(Command::ReadInput.is_in() && !Command::PinScan.is_in());
+        assert_eq!(Setup::command(Command::PinScan).index, 0x5019);
+        assert_eq!(Command::from_byte(0x19), Some(Command::PinScan));
+        assert_eq!(Command::from_byte(0x09), Some(Command::ReadInput));
+        assert_eq!(Command::PinScan.payload_len(), Some(1));
+        assert_eq!(Command::ReadInput.max_len(), 64);
+        assert_eq!(Caps(0x2e2f).names().last(), Some(&"input"));
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(7, Caps::INPUT).has_input());
+        assert!(!hello(6, Caps::INPUT).has_input(), "1.6 never gets them");
+        assert!(!hello(7, Caps::LIGHTS_PROFILES).has_input());
+    }
+
+    #[test]
+    fn an_input_snapshot_round_trips() {
+        let i = InputSnapshot {
+            pressed: 1 << 27 | 1 << 3 | 1 << 40,
+            readable: 0x3fff_ffff,
+            dpad: 0x02,
+            flags: InputSnapshot::SCAN_ON,
+            aux: 0x8000,
+            buttons: 0x0201,
+            lx: 0,
+            ly: 0xffff,
+            rx: AXIS_CENTRE,
+            ry: 1,
+            lt: 255,
+            rt: 7,
+        };
+        let b = i.encode();
+        assert_eq!(&b[0..8], &[8, 0, 0, 8, 0, 1, 0, 0]);
+        assert_eq!(&b[16..24], &[2, 1, 0, 0x80, 1, 2, 0, 0]);
+        assert_eq!(&b[24..36], &[0, 0, 255, 255, 255, 127, 1, 0, 255, 7, 0, 0]);
+        assert_eq!(InputSnapshot::parse(&b), Some(i));
+        assert_eq!(InputSnapshot::parse(&b[..35]), None, "short");
+        let mut long = b.to_vec();
+        long.extend_from_slice(&[9; 4]);
+        assert_eq!(InputSnapshot::parse(&long), Some(i), "a later minor");
+        assert_eq!(i.pressed_gpios(), [3, 27, 40]);
+        assert_eq!(i.readable_gpios().len(), 30);
+        assert!(i.scan_on() && i.is_pressed(27) && !i.is_pressed(26) && !i.is_pressed(64));
+        let rest = InputSnapshot::default();
+        assert!(!rest.scan_on() && rest.pressed_gpios().is_empty());
+        assert_eq!(rest.lx, 32767);
     }
 
     #[test]

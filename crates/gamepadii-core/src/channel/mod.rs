@@ -4,7 +4,8 @@
 //! (`docs/design/control-channel.md`).
 //!
 //! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
-//!   commands, v1.3's board ID, v1.4's profile slots.
+//!   commands, v1.3's board ID, v1.4's profile slots, v1.5's lights
+//!   profiles, v1.7's input snapshot.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -33,8 +34,8 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, Hello, LedStatus, LightsData, LightsStatus, Outcome, SetLed, SetLights, Setup,
-    Slot, SlotPin, Status,
+    Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, Outcome, SetLed,
+    SetLights, Setup, Slot, SlotPin, Status,
 };
 
 /// How long a HELLO may take: short, since most pads have no channel.
@@ -586,6 +587,47 @@ impl Channel {
             &data.encode(),
             &format!("the write of lights profile {}", data.profile),
         )
+    }
+
+    fn need_input(&self, cmd: Command) -> Result<()> {
+        if self.hello.has_input() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.7)",
+                cmd.name()
+            )))
+        }
+    }
+
+    /// READ_INPUT (v1.7): a snapshot of the inputs now, with no wait. While
+    /// the pin scan is on, each read keeps it on for 10 s more.
+    pub fn read_input(&self) -> Result<InputSnapshot> {
+        self.need_input(Command::ReadInput)?;
+        let reply = self
+            .read(Command::ReadInput, 0)
+            .map_err(|e| self.fail(e, Command::ReadInput))?;
+        InputSnapshot::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "READ_INPUT on {}: {} bytes, expected {}",
+                self.node(),
+                reply.len(),
+                proto::INPUT_LEN
+            ))
+        })
+    }
+
+    /// PIN_SCAN (v1.7): `on` makes each pin with no action and no function
+    /// an input with a pull-up, so READ_INPUT reads it; off releases only
+    /// those pins. It changes no setting.
+    pub fn pin_scan(&self, on: bool) -> Result<()> {
+        self.need_input(Command::PinScan)?;
+        let what = if on {
+            "the start of the pin scan"
+        } else {
+            "the stop of the pin scan"
+        };
+        self.command(Command::PinScan, &[u8::from(on)], what)
     }
 
     /// The sequence number of the last OUT command, as STATUS echoes it.

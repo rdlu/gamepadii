@@ -2,10 +2,10 @@
 //! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
 //! [--save]`, `display layout [LAYOUT | --left N --right N]`, `leds [set
-//! ... | brightness up|down|N]`, `tui` (also
-//! no command on a terminal), `setup udev [--print|--install]`, `--host HOST`
-//! for the
-//! web-config ones and `--no-channel` to leave the control channel alone.
+//! ... | brightness up|down|N]`, `input [--watch | find-pin [--scan]]`,
+//! `tui` (also no command on a terminal), `setup udev [--print|--install]`,
+//! `--host HOST` for the web-config ones and `--no-channel` to leave the
+//! control channel alone.
 //! Hidden, for packagers: `gamepadii completions <shell>` and `gamepadii
 //! manpages <dir>`; for tests: `--sysroot <dir>`, `--mock-api <dir>` and
 //! `--mock-channel <kind>`.
@@ -95,6 +95,9 @@ pub enum MockChannel {
     /// The fork's main line, control channel v1.5: v1.4 and the lights
     /// profiles.
     LightsProfiles,
+    /// The fork's main line, control channel v1.7: v1.4 and the input
+    /// snapshot. A person pushes GPIO 27 after 5 reads, for 6 reads.
+    Input,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -199,6 +202,21 @@ pub enum Command {
         #[command(flatten)]
         trip: TripArgs,
     },
+    /// Read the buttons live (needs control channel v1.7 of the gamepadii
+    /// firmware): the GPIOs pressed now, with their action and key, and the
+    /// gamepad state.
+    #[command(args_conflicts_with_subcommands = true)]
+    Input {
+        /// Print a line each time the input changes, until Ctrl-C. With
+        /// --json, each line is one JSON object.
+        #[arg(long)]
+        watch: bool,
+        /// Stop after N reads (tests).
+        #[arg(long, hide = true, value_name = "N", requires = "watch")]
+        reads: Option<u64>,
+        #[command(subcommand)]
+        command: Option<InputCommand>,
+    },
     /// The terminal UI: the pad, its input modes and profiles, web-config
     /// and backups. `gamepadii` with no command opens it on a terminal.
     Tui,
@@ -279,6 +297,22 @@ pub enum ProfileCommand {
         /// Don't back up the slot first.
         #[arg(long)]
         no_backup: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum InputCommand {
+    /// Wait for one button press, and show the GPIO of that button, with
+    /// its action and key. A button that is held at the start does not
+    /// count.
+    FindPin {
+        /// Also read the pins with no action (PIN_SCAN). The scan changes
+        /// no setting, and gamepadii stops it at the end.
+        #[arg(long)]
+        scan: bool,
+        /// How long to wait for the press.
+        #[arg(long, value_name = "SECS", default_value_t = 15)]
+        timeout: u64,
     },
 }
 

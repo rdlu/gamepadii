@@ -1288,3 +1288,176 @@ fn a_saved_lights_write_survives_a_restart() {
         (Some(false), Some(3))
     );
 }
+
+// ---- v1.7: the input snapshot (§3.12) --------------------------------------------
+
+/// The S16 (v0.7.12 fixtures: profile 2 active) on a v1.7 build, in
+/// `mode`, with the inputs from `f`. GPIO 25 has a function, as on the S16.
+fn s16_input(mode: InputMode, f: impl FnOnce(&mut SimChannel)) -> Arc<SimPad> {
+    Arc::new(SimPad::new(s16_dir(), mode).with_channel().channel(|c| {
+        *c = c.clone().with_slots().with_input();
+        c.input.functions = 1 << 25;
+        f(c);
+    }))
+}
+
+fn bits(gpios: &[u8]) -> u64 {
+    gpios.iter().fold(0, |m, g| m | 1 << g)
+}
+
+#[test]
+fn a_1_7_build_reads_the_inputs() {
+    let pad = s16_input(InputMode::Xinput, |c| {
+        c.input.frames = [0, bits(&[27, 3, 6]), 0].into();
+    });
+    let ch = connect(&pad);
+    assert!(ch.hello().has_input());
+    assert_eq!(ch.caps().names().last(), Some(&"input"));
+    let rest = ch.read_input().unwrap();
+    assert!(rest.pressed_gpios().is_empty() && !rest.scan_on());
+    // The pins with an action in profile 2; not 15, 22, 25 or 29 (NONE),
+    // and not the add-on pins.
+    let readable = rest.readable_gpios();
+    assert_eq!(readable.len(), 21);
+    assert!(readable.contains(&27) && readable.contains(&14));
+    assert!(![0, 15, 22, 25, 29].iter().any(|g| readable.contains(g)));
+    let held = ch.read_input().unwrap();
+    assert_eq!(held.pressed_gpios(), [3, 6, 27]);
+    // Up and Down, and L2 on GPIO 6 in SilkSong.
+    assert_eq!(held.dpad, 0b0011);
+    assert_eq!(held.buttons, 1 << 6);
+    assert!(ch.read_input().unwrap().pressed_gpios().is_empty());
+    assert!(
+        ch.read_input().unwrap().pressed_gpios().is_empty(),
+        "the last stays"
+    );
+    assert_eq!(pad.firmware().input.reads, 4);
+}
+
+#[test]
+fn a_1_6_build_never_gets_an_input_command() {
+    let pad = s16_slots(InputMode::Xinput);
+    let ch = connect(&pad);
+    let e = ch.read_input().unwrap_err();
+    assert!(e.to_string().contains("no READ_INPUT"), "{e}");
+    let e = ch.pin_scan(true).unwrap_err();
+    assert!(e.to_string().contains("no PIN_SCAN"), "{e}");
+    assert!(
+        pad.control_log()
+            .iter()
+            .all(|s| !matches!(s.setup.command_byte(), 0x09 | 0x19))
+    );
+    // Even with bit 13, a 1.6 HELLO is not enough.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_input();
+    sim.minor = 6;
+    let ch = channel::hello(standalone(sim), 5).found().unwrap();
+    assert!(!ch.hello().has_input());
+    assert!(ch.read_input().is_err());
+    // On the wire, a build without bit 13 STALLs both.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_slots();
+    let r = sim.control_in(Setup::read(proto::Command::ReadInput, 0), 64);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = sim.token;
+    let r = sim.control_out(
+        Setup::command(proto::Command::PinScan),
+        &proto::payload(token, 1, &[1]),
+    );
+    assert!(matches!(r, Err(UsbError::Stall)));
+    assert_eq!(
+        Outcome::from_byte(sim.status().last_result),
+        Outcome::Unsupported
+    );
+}
+
+#[test]
+fn pin_scan_checks_its_argument() {
+    let pad = s16_input(InputMode::Xinput, |_| {});
+    let ch = connect(&pad);
+    let token = pad.firmware().token;
+    let t = open(&pad);
+    let send = |seq: u16, args: &[u8]| {
+        let r = t.control_out(
+            Setup::command(proto::Command::PinScan),
+            &proto::payload(token, seq, args),
+            Duration::from_secs(1),
+        );
+        let st = ch.status().unwrap();
+        assert_eq!(st.last_seq, seq);
+        (r.is_ok(), Outcome::from_byte(st.last_result))
+    };
+    assert_eq!(send(1, &[]), (false, Outcome::BadLength));
+    assert_eq!(send(2, &[2]), (false, Outcome::BadArg));
+    assert_eq!(send(3, &[0xff]), (false, Outcome::BadArg));
+    assert!(!pad.firmware().input.scan_on);
+    // Off when it is off: OK. Bytes after the argument are ignored.
+    assert_eq!(send(4, &[0]), (true, Outcome::Ok));
+    assert_eq!(send(5, &[1, 9]), (true, Outcome::Ok));
+    assert!(pad.firmware().input.scan_on);
+    // The client checks the result as for the other commands.
+    let sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_input();
+    let ch = channel::hello(standalone(sim), 5).found().unwrap();
+    ch.pin_scan(true).unwrap();
+    ch.pin_scan(false).unwrap();
+}
+
+#[test]
+fn the_scan_pins_are_there_only_while_the_scan_is_on() {
+    let pad = s16_input(InputMode::Xinput, |c| {
+        c.input.frames = [bits(&[15, 22, 25, 27])].into();
+    });
+    let ch = connect(&pad);
+    let before = ch.read_input().unwrap();
+    assert_eq!(before.pressed_gpios(), [27], "15 and 22 have no action");
+    ch.pin_scan(true).unwrap();
+    let on = ch.read_input().unwrap();
+    assert!(on.scan_on());
+    // GPIO 25 has no action, but a function: the scan leaves it alone.
+    assert_eq!(on.pressed_gpios(), [15, 22, 27]);
+    assert_eq!(on.readable & !before.readable, bits(&[15, 22, 29]));
+    // A press on a scan pin is not a gamepad button.
+    assert_eq!((on.dpad, on.buttons), (1, 0));
+    ch.pin_scan(true).unwrap();
+    assert_eq!(ch.read_input().unwrap().readable, on.readable, "on again");
+    ch.pin_scan(false).unwrap();
+    let off = ch.read_input().unwrap();
+    assert!(!off.scan_on());
+    assert_eq!(off.readable, before.readable);
+    assert_eq!(off.pressed_gpios(), [27]);
+}
+
+#[test]
+fn the_scan_stops_after_10_s_with_no_read() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_slots()
+        .with_input();
+    let token = sim.token;
+    sim.control_out(
+        Setup::command(proto::Command::PinScan),
+        &proto::payload(token, 1, &[1]),
+    )
+    .unwrap();
+    let read = |sim: &mut SimChannel| {
+        let r = sim
+            .control_in(Setup::read(proto::Command::ReadInput, 0), 64)
+            .unwrap();
+        assert_eq!(r.len(), proto::INPUT_LEN);
+        proto::InputSnapshot::parse(&r).unwrap()
+    };
+    // Each read keeps it on for 10 s more.
+    for _ in 0..3 {
+        sim.idle(Duration::from_secs(9));
+        assert!(read(&mut sim).scan_on());
+    }
+    sim.idle(Duration::from_secs(10));
+    let late = read(&mut sim);
+    assert!(!late.scan_on(), "the read after 10 s stops it");
+    assert_eq!(late.readable, 0, "every pin is NONE here, and released");
+    // A restart stops it too.
+    sim.control_out(
+        Setup::command(proto::Command::PinScan),
+        &proto::payload(token, 2, &[1]),
+    )
+    .unwrap();
+    sim.boot(Some(InputMode::Xinput), 7);
+    assert!(!read(&mut sim).scan_on());
+}
