@@ -1,7 +1,8 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
 //! switch`, `profile show` and `profile write` (over the channel only),
 //! `leds` (and `leds set`, over the channel only), `input` and `input
-//! find-pin` (over the channel only), and the trip through
+//! find-pin` (over the channel only), `log` and `log --follow` (over the
+//! channel only), and the trip through
 //! web-config that `info` and `backup` take
 //! from a gamepad mode ([`through_webconfig`]). They poll USB through a
 //! [`Scan`] and time through a [`Clock`], open the web-config client and
@@ -35,6 +36,7 @@ use crate::error::{Error, Result};
 use crate::input::{self, Finder, FoundPin, InputReport, PinNames};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
 use crate::lights::{self, LightsFile, LightsReport, LightsWrite, LightsWriteReport};
+use crate::log::LogReport;
 use crate::mode::{BootMode, Confidence, InputMode};
 use crate::slots::{self, SlotFile, SlotReport, SlotWrite, SlotWriteReport};
 use crate::timestamp::Utc;
@@ -3060,4 +3062,50 @@ fn not_saved_leds() -> &'static str {
     "not saved: the pad goes back to its saved LED settings when it restarts, unless \
      something saves its settings first (any hotkey, turbo or saved profile change does); \
      --save keeps it"
+}
+
+// ---- the log (control channel v1.8) ------------------------------------------
+
+fn no_log_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with READ_LOG, so gamepadii can't read \
+         its log; that needs the gamepadii build of GP2040-CE with control channel v1.8",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// `gamepadii log [--from N]`: the records from sequence number `from` (all
+/// of them when `None`) with READ_LOG, live, in any mode.
+pub fn log(env: &Env, from: Option<u32>) -> Result<LogReport> {
+    let (_, ch) = live_channel(env, Hello::has_log, no_log_channel, |h| {
+        format!("this build's channel speaks v{}.{}", h.major, h.minor)
+    })?;
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    let read = ch.read_log_all(from.unwrap_or(0))?;
+    Ok(LogReport::new(ch.node(), board, read))
+}
+
+/// How often `log --follow` reads the log.
+pub const FOLLOW_POLL: Duration = Duration::from_millis(500);
+
+/// `gamepadii log --follow`: [`log`] from `from`, then again every
+/// [`FOLLOW_POLL`] from the `next` of the last report. `each` gets every
+/// report: the first has all the records, the others only the new ones (or
+/// none). It stops when `each` gives `false`, or with the error when the
+/// pad goes away.
+pub fn log_follow(
+    env: &Env,
+    from: Option<u32>,
+    each: &mut dyn FnMut(&LogReport) -> bool,
+) -> Result<()> {
+    let mut report = log(env, from)?;
+    while each(&report) {
+        env.clock.sleep(FOLLOW_POLL);
+        report = log(env, Some(report.next)).map_err(|e| prefixed(e, "the log stops"))?;
+    }
+    Ok(())
 }

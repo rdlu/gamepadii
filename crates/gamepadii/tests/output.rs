@@ -976,4 +976,54 @@ mod flows {
             output::leds_set(json(), &ram),
         ));
     }
+
+    #[test]
+    fn log_outputs() {
+        use gamepadii_core::channel::proto::log_code as c;
+        let rig = Rig::new(
+            SimPad::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main"),
+                InputMode::Xinput,
+            )
+            .with_lights()
+            .channel(|ch| {
+                *ch = ch.clone().with_lights_profiles().with_log();
+                ch.panic("test 1 22 333 4444 abcde");
+            }),
+        );
+        let s = rig.status();
+        rig.pad.change_firmware(|ch| {
+            ch.add_log(c::PROFILE, &[254, 2]);
+            ch.add_log(c::COMMAND, &[0x10, 6, 0x8d, 0xb5]);
+            ch.add_log(c::COMMAND, &[0x17, 9, 0, 0]);
+            ch.add_log(c::SAVE, &[1, 0]);
+            ch.add_log(c::RESTART, &[2]);
+            ch.add_log(c::ERROR, b"no flash");
+            ch.add_log(c::USB_HOST, &[1, 1, 0x5e, 0x04, 0x8e, 0x02]);
+            ch.add_log(9, &[1, 2, 3]);
+        });
+        let all = rig.run(|env| flow::log(env, None)).unwrap();
+        rig.pad.change_firmware(|ch| {
+            for _ in 0..70 {
+                ch.add_log(c::SAVE, &[0, 0]);
+            }
+        });
+        let lost = rig.run(|env| flow::log(env, Some(all.next))).unwrap();
+        let mut tail = rig.run(|env| flow::log(env, Some(lost.next - 2))).unwrap();
+        tail.lost = 0;
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            output::log(human(), &all),
+            output::log_follow(human(), &tail, false),
+            output::log_follow(human(), &lost, false)
+                .lines()
+                .next()
+                .unwrap(),
+            output::status(human(), &s),
+            output::status(Style::plain(Format::Waybar), &s),
+            output::log_follow(json(), &tail, false),
+            output::log(json(), &all),
+            output::status(json(), &s),
+        ));
+    }
 }

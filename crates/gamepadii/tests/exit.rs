@@ -1124,3 +1124,102 @@ fn input_exit_codes() {
     assert_eq!(code, 5);
     assert!(stderr.contains("control channel v1.7"), "{stderr}");
 }
+
+#[test]
+fn log_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-main"
+    );
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "log",
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, _) = run(&["log"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("Haute42COSMOX log, boot 1 (next record 3)\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("PANIC    'test 1 22 333'"), "{stdout}");
+    let (code, stdout, _) = run(&["--json", "log", "--from", "1"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        (v["schema"].as_u64(), v["next"].as_u64()),
+        (Some(1), Some(3))
+    );
+    assert_eq!(v["records"][0]["code_name"], "PANIC");
+    // `status` warns about the panic.
+    let (code, stdout, _) = run(&["--json", "status"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let panic = &v["devices"][0]["control_channel"]["last_panic"];
+    assert_eq!(
+        (panic["boot"].as_u64(), panic["text"].as_str()),
+        (Some(0), Some("test 1 22 333"))
+    );
+    // Usage: 3. No v1.8 channel: 5.
+    let (code, _, _) = run(&["log", "--format", "waybar"]);
+    assert_eq!(code, 3);
+    let (code, stdout, stderr) = webconfig(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "lights-profiles",
+        "--mock-api",
+        "%s16-main",
+        "--json",
+        "log",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.8"), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["error"]["exit_code"], 5);
+}
+
+#[test]
+fn log_follow_prints_the_log_then_waits() {
+    use std::io::{BufRead, BufReader};
+    let home = tempfile::tempdir().unwrap();
+    let sysfs = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/sysfs/s16-xinput"
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gamepadii"))
+        .args([
+            "--sysroot",
+            sysfs,
+            "--mock-channel",
+            "log",
+            "--json",
+            "log",
+            "--follow",
+        ])
+        .env("NO_COLOR", "1")
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    // It runs until Ctrl-C (or until the pad goes away).
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().unwrap();
+    let _ = child.wait();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["records"].as_array().unwrap().len(), 3);
+}

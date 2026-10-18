@@ -25,6 +25,7 @@ it here in the same change.
 | backup | A file that contains a copy of the settings of the pad. gamepadii writes it before it changes the settings. |
 | board ID | The unique ID of the flash chip of the pad: 16 hex digits. The control channel gives it from protocol 1.3. It does not change, but pads with the same flash chip can have the same board ID. |
 | board config | The name of the hardware definition that the firmware was built for. The S16 uses `Haute42COSMOX`. |
+| boot number | The number of a boot in the log of the pad. It is 0 when a new log starts, and it goes up by 1 at each restart that keeps the log. |
 | boot mode | The mode that the pad starts in: gamepad mode, web-config, or BOOTSEL. |
 | BOOTSEL | A mode of the RP2040 chip. In this mode, the computer shows the pad as a USB drive, and you can install firmware. |
 | build | One firmware file (UF2) made from one commit, with one set of options. |
@@ -56,8 +57,10 @@ it here in the same change.
 | LED | A light under a button. The S16 has one LED for each button. |
 | lights file | A JSON file with the effects and colours of one lights profile. `gamepadii leds profile show --json` makes one, and `gamepadii leds profile write` reads one. |
 | lights profile | On main firmware, a set of LED effects: one when a button is released, one when it is pressed, and one for the case. The pad has 4, numbered from 0. The LEDs can also be off. |
+| log | On our firmware from control channel v1.8, the list of the last 64 events of the pad (boots, panics, commands, saves). `gamepadii log` shows it. |
 | main (upstream main) | The newest code of GP2040-CE. It is not a release. |
 | OLED | The small display on the pad. It shows the buttons and the active profile. |
+| panic | A firmware failure that stops the firmware. Our firmware writes the message to the log and then restarts the pad. |
 | pin scan | A temporary state that PIN_SCAN starts (control channel 1.7). Each pin with no action and no function becomes an input, so that gamepadii can read a button on it. It changes no setting. |
 | PR (pull request) | A request to merge a branch into `main` on GitHub. |
 | profile | A set of button mappings on the pad. The pad has up to 6 profiles. |
@@ -67,6 +70,7 @@ it here in the same change.
 | RAM only | A change that the pad keeps until it restarts. The pad does not write it to flash memory. |
 | release | A firmware version that the GP2040-CE project published with a version number, for example v0.7.12. |
 | S16 | The Haute42 S16, the first pad that gamepadii supports. |
+| sequence number | The number of one record in the log of the pad. The pad counts the records from 0, from the start of the log. |
 | slot file | A JSON file with the pin mappings and the label of one profile. `gamepadii profile show --json` makes one, and `gamepadii profile write` reads one. |
 | simulated pad | A model of the S16 in the code. Tests and demos use it in place of a real pad. |
 | snapshot | A recorded output of gamepadii that a test compares with the new output. |
@@ -80,6 +84,7 @@ it here in the same change.
 | UF2 | The file format for firmware. You copy a UF2 file to the pad in BOOTSEL mode. |
 | upstream | The GP2040-CE project and its maintainers. |
 | VID:PID | Two numbers that a USB device sends to identify itself (vendor and product). |
+| watchdog | A timer in the RP2040 chip that restarts it. The firmware uses it for a soft reboot. A watchdog reset keeps the RAM, thus the log stays. |
 | waybar | A status bar for Linux desktops. `gamepadii status --format waybar` gives one line for it. |
 | web-config | A mode in which the pad operates as a small web server. You use a web browser to change the settings. |
 | worktree | A second working folder for one git repository. Each agent uses its own worktree. |

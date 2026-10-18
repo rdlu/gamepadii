@@ -1461,3 +1461,270 @@ fn the_scan_stops_after_10_s_with_no_read() {
     sim.boot(Some(InputMode::Xinput), 7);
     assert!(!read(&mut sim).scan_on());
 }
+
+// ---- v1.8: the log (§3.13) ----------------------------------------------------------
+
+/// The S16 on a v1.8 main-line build, in `mode`.
+fn s16_log(mode: InputMode) -> Arc<SimPad> {
+    Arc::new(
+        SimPad::new(main_dir(), mode)
+            .with_lights()
+            .channel(|c| *c = c.clone().with_slots().with_lights_profiles().with_log()),
+    )
+}
+
+/// The codes of the records, in order.
+fn codes(records: &[proto::LogRecord]) -> Vec<u8> {
+    records.iter().map(|r| r.code).collect()
+}
+
+#[test]
+fn a_1_8_build_logs_its_boots_and_commands() {
+    use proto::{LogEvent, log_code as c};
+    let pad = s16_log(InputMode::Xinput);
+    let ch = connect(&pad);
+    assert!(ch.hello().has_log());
+    assert_eq!(ch.caps().names().last(), Some(&"log"));
+    let read = ch.read_log_all(0).unwrap();
+    assert_eq!((read.boot, read.next, read.lost), (0, 1, 0));
+    assert!(matches!(
+        read.records[0].event(),
+        LogEvent::Boot {
+            kept: false,
+            watchdog: false,
+            mode: 0,
+            ..
+        }
+    ));
+    // IN commands are not in the log; OUT commands are, refused ones too.
+    let st = ch.status().unwrap();
+    let other = *st.enabled().iter().find(|n| **n != st.profile).unwrap();
+    ch.set_profile(other, false).unwrap();
+    let off = (1..=6).find(|n| !st.enabled().contains(n)).unwrap();
+    assert!(ch.set_profile(off, false).is_err());
+    let seq = ch.last_seq().wrapping_add(1);
+    ch.reboot(BootMode::Webconfig).unwrap();
+    // The restart keeps the log: boot 1, in web-config.
+    replug(&pad);
+    let ch = connect(&pad);
+    let read = ch.read_log_all(read.next).unwrap();
+    assert_eq!(
+        codes(&read.records),
+        [
+            c::PROFILE,
+            c::COMMAND,
+            c::COMMAND,
+            c::RESTART,
+            c::COMMAND,
+            c::BOOT
+        ]
+    );
+    assert_eq!(
+        read.records[0].event(),
+        LogEvent::Profile {
+            old: st.profile,
+            new: other
+        }
+    );
+    assert_eq!(
+        read.records[4].event(),
+        LogEvent::Command {
+            cmd: proto::Command::Reboot as u8,
+            result: Outcome::Ok,
+            seq
+        }
+    );
+    assert!(matches!(
+        read.records[2].event(),
+        LogEvent::Command {
+            result: Outcome::ProfileDisabled,
+            ..
+        }
+    ));
+    assert_eq!(read.records[3].event(), LogEvent::Restart { mode: 2 });
+    assert_eq!(read.boot, 1);
+    assert_eq!(
+        read.records[5].event(),
+        LogEvent::Boot {
+            kept: true,
+            watchdog: true,
+            mode: 2,
+            version: "v0.7.12-119-g8013b41".into()
+        }
+    );
+    assert_eq!((read.records[4].boot, read.records[5].boot), (0, 1));
+}
+
+#[test]
+fn an_out_refused_in_setup_is_in_the_log_with_seq_0() {
+    use proto::LogEvent;
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_log();
+    let unknown = Setup {
+        index: 0x5030,
+        ..Setup::command(proto::Command::Reboot)
+    };
+    assert!(sim.control_out(unknown, &[0; 8]).is_err());
+    let short = Setup::command(proto::Command::Reboot);
+    assert!(sim.control_out(short, &[0; 4]).is_err());
+    let page = sim.events.as_ref().unwrap().page(0, 1024);
+    let events: Vec<LogEvent> = page.records.iter().skip(1).map(|r| r.event()).collect();
+    assert_eq!(
+        events,
+        [
+            LogEvent::Command {
+                cmd: 0x30,
+                result: Outcome::Unsupported,
+                seq: 0
+            },
+            LogEvent::Command {
+                cmd: 0x11,
+                result: Outcome::BadLength,
+                seq: 0
+            }
+        ]
+    );
+}
+
+#[test]
+fn a_1_7_build_never_gets_read_log() {
+    // Bit 14 on a 1.7 build: not the log.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights_profiles();
+    sim.minor = 7;
+    sim.caps = Caps(sim.caps.0 | Caps::LOG);
+    let pad = Arc::new(std::sync::Mutex::new(sim));
+    let t = Box::new(Standalone::shared(pad.clone(), "/dev/bus/usb/003/007"));
+    let ch = channel::hello(t, 7).found().unwrap();
+    let e = ch.read_log(0).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(e.to_string().contains("no READ_LOG"), "{e}");
+    assert!(ch.read_log_all(0).is_err());
+    assert!(gamepadii_core::log::last_panic(&ch).is_none());
+    let sim = pad.lock().unwrap();
+    assert!(sim.log.iter().all(|s| s.setup.command_byte() != 0x0a));
+    // A build without the log STALLs it.
+    let mut old = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights_profiles();
+    let r = old.control_in(Setup::read(proto::Command::ReadLog, 0), 1024);
+    assert!(matches!(r, Err(UsbError::Stall)));
+}
+
+#[test]
+fn read_log_needs_a_wlength_of_12_or_more() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_log();
+    let setup = Setup::read(proto::Command::ReadLog, 0);
+    assert!(matches!(sim.control_in(setup, 11), Err(UsbError::Stall)));
+    let head = sim.control_in(setup, 12).unwrap();
+    let page = proto::LogPage::parse(&head).unwrap();
+    assert_eq!((page.first, page.next, page.records.len()), (0, 1, 0));
+    let one = proto::LogPage::parse(&sim.control_in(setup, 44).unwrap()).unwrap();
+    assert_eq!(one.records.len(), 1);
+}
+
+#[test]
+fn the_host_reads_every_page_and_counts_the_lost_records() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_log();
+    for i in 0..100u8 {
+        sim.add_log(proto::log_code::ERROR, &[b'a' + i % 26]);
+    }
+    let pad = Arc::new(std::sync::Mutex::new(sim));
+    let t = Box::new(Standalone::shared(pad.clone(), "/dev/bus/usb/003/007"));
+    let ch = channel::hello(t, 7).found().unwrap();
+    let read = ch.read_log_all(0).unwrap();
+    assert_eq!((read.next, read.lost, read.records.len()), (101, 37, 64));
+    let seqs: Vec<u32> = read.records.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (37..101).collect::<Vec<_>>());
+    let reads = |pad: &std::sync::Mutex<SimChannel>| {
+        let sim = pad.lock().unwrap();
+        sim.log
+            .iter()
+            .filter(|s| s.setup.command_byte() == 0x0a)
+            .count()
+    };
+    assert_eq!(reads(&pad), 8, "9 records in each reply");
+    // From a number in the ring: no loss. From an old one: the rest.
+    let read = ch.read_log_all(90).unwrap();
+    assert_eq!((read.lost, read.records.len()), (0, 11));
+    assert_eq!(ch.read_log_all(10).unwrap().lost, 27);
+    // From `next`: nothing new.
+    let read = ch.read_log_all(101).unwrap();
+    assert_eq!((read.next, read.lost, read.records.len()), (101, 0, 0));
+    // A power-on starts a new log: an old number gets the new records.
+    pad.lock().unwrap().power_on();
+    let read = ch.read_log_all(101).unwrap();
+    assert_eq!(
+        (read.next, read.lost, codes(&read.records)),
+        (1, 0, vec![1])
+    );
+}
+
+#[test]
+fn the_pad_finds_the_full_number_from_16_bits() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_log();
+    let log = sim.events.as_mut().unwrap();
+    log.records.clear();
+    log.next = 0xffc8;
+    for _ in 0..64 {
+        sim.add_log(proto::log_code::SAVE, &[0, 0]);
+    }
+    assert_eq!(sim.events.as_ref().unwrap().next, 0x1_0008);
+    let pad = Arc::new(std::sync::Mutex::new(sim));
+    let t = Box::new(Standalone::shared(pad, "/dev/bus/usb/003/007"));
+    let ch = channel::hello(t, 7).found().unwrap();
+    // 0xfffc is in the last 65536: the one before the wrap.
+    let page = ch.read_log(0xfffc).unwrap();
+    assert_eq!((page.first, page.next), (0xfffc, 0x1_0008));
+    assert_eq!(ch.read_log(0x1_0002).unwrap().first, 0x1_0002);
+    let read = ch.read_log_all(0xfffc).unwrap();
+    assert_eq!((read.lost, read.records.len()), (0, 12));
+    assert_eq!(read.records.last().unwrap().seq, 0x1_0007);
+    // wValue 0 is 0x10000 now; the host still starts at the oldest record.
+    let read = ch.read_log_all(0).unwrap();
+    assert_eq!(read.records.first().unwrap().seq, 0xffc8);
+    assert_eq!((read.lost, read.records.len()), (0xffc8, 64));
+}
+
+#[test]
+fn a_panic_is_in_the_log_of_the_next_boot() {
+    use proto::LogEvent;
+    let pad = s16_log(InputMode::Xinput);
+    let ch = connect(&pad);
+    assert!(gamepadii_core::log::last_panic(&ch).is_none());
+    drop(ch);
+    let pad = Arc::new(
+        SimPad::new(main_dir(), InputMode::Xinput)
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_lights_profiles().with_log();
+                c.panic("0123456789abcdefghijklmnopq");
+            }),
+    );
+    let ch = connect(&pad);
+    let read = ch.read_log_all(0).unwrap();
+    assert_eq!(read.boot, 1);
+    assert_eq!(
+        read.records[1].event(),
+        LogEvent::Panic {
+            text: "0123456789abcdefghijklmn".into()
+        },
+        "cut at 24 bytes"
+    );
+    let p = gamepadii_core::log::last_panic(&ch).unwrap();
+    assert_eq!((p.boot, p.text.as_str()), (0, "0123456789abcdefghijklmn"));
+    // Many records after it: still found, in the newest 9.
+    for _ in 0..6 {
+        ch.set_profile(1, false).unwrap();
+    }
+    assert!(gamepadii_core::log::last_panic(&ch).is_some());
+    // One more restart: the panic is two boots back.
+    ch.reboot(BootMode::Gamepad).unwrap();
+    replug(&pad);
+    let ch = connect(&pad);
+    assert!(gamepadii_core::log::last_panic(&ch).is_none());
+}

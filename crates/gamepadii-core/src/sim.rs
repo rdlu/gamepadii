@@ -65,6 +65,8 @@ struct State {
     /// The RP2040's unique board id, which some modes put in their USB
     /// serial; `None` shows no serial at all.
     unique_id: Option<[u8; 8]>,
+    /// The pad is off USB because the user replugged it.
+    replugged: bool,
 }
 
 impl State {
@@ -107,6 +109,7 @@ impl SimPad {
                 channel: SimChannel::stock(Some(mode)),
                 no_access: false,
                 unique_id: None,
+                replugged: false,
             }),
         }
     }
@@ -204,6 +207,19 @@ impl SimPad {
         self.lock().channel.clone()
     }
 
+    /// Changes the running firmware (a log record, a panic) while a flow
+    /// uses the pad.
+    pub fn change_firmware(&self, f: impl FnOnce(&mut SimChannel)) {
+        f(&mut self.lock().channel);
+    }
+
+    /// The pad leaves USB, and does not come back.
+    pub fn unplug(&self) {
+        let mut s = self.lock();
+        s.mode = None;
+        s.coming_back = None;
+    }
+
     /// Opens the pad's EP0 as found at `d` (a [`crate::channel::OpenControl`]).
     /// The handle goes stale when the pad re-enumerates, like a real fd.
     pub fn open_control(
@@ -296,6 +312,9 @@ impl SimPad {
                 let token = 0x5eed_0000 ^ u32::from(s.devnum).wrapping_mul(0x9e37_79b9);
                 s.channel.sync_from(&self.mock);
                 s.channel.boot(Some(next), token);
+                if std::mem::take(&mut s.replugged) {
+                    s.channel.power_on();
+                }
             }
             return;
         }
@@ -315,6 +334,8 @@ impl SimPad {
                 _ => None,
             };
             if let Some(next) = due {
+                // A replug holding a boot button is a power-on: a new log.
+                s.replugged = matches!(s.user, Some(UserAction::BootButton { .. }));
                 s.user = None;
                 s.mode = None;
                 s.coming_back = Some((OFF_USB_SCANS, next));

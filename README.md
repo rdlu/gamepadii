@@ -16,7 +16,7 @@ buttons. With our firmware fork, most changes do not need a button press.
 `status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `display layout`,
 `leds`, `leds profile show`, `leds profile write`, `input`,
-`input find-pin` and `setup udev`. The TUI
+`input find-pin`, `log` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -119,6 +119,11 @@ gamepadii leds set [--lights-profile N|off] [--brightness N|up|down] [--save]
                                   the same on main firmware (channel v1.2)
 gamepadii leds brightness <up|down|N> [--save]
                                   one step, or a level
+gamepadii log [--from N] [--follow]
+                                  the pad's log of its last 64 events
+                                  (boots, panics, commands), live (needs
+                                  control channel v1.8); --follow shows
+                                  new records until Ctrl-C
 gamepadii setup udev [--print|--install]
                                   the udev rule the control channel needs
 ```
@@ -200,6 +205,13 @@ press:
   GPIO. With `--scan`, the pad also reads the pins with no action, so you
   can find a button that no profile uses. The scan changes no setting, and
   gamepadii stops it at the end;
+- `log` reads the pad's log, with no reboot. This needs channel v1.8. The
+  pad keeps its last 64 events: each boot, firmware panic, OUT command,
+  profile change, save and restart. A soft reboot keeps the log; a
+  power-on starts a new one. `--from N` starts at record N, and `--follow`
+  shows the new records as the pad writes them. When the boot before this
+  one ended with a firmware panic, `status` shows a warning with the
+  message (`last_panic` in the JSON);
 - `info`, `backup` and `display layout` reboot it into web-config, read
   (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes

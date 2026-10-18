@@ -415,6 +415,34 @@ fn main() -> ExitCode {
             drop(progress);
             finish(format, result)
         }
+        Some(Command::Log { from, follow }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            if !follow {
+                let result = flow::log(&env, from).map(|r| output::log(style, &r));
+                return finish(format, result);
+            }
+            let mut first = true;
+            let result = flow::log_follow(&env, from, &mut |r| {
+                let text = output::log_follow(style, r, first);
+                first = false;
+                let mut out = std::io::stdout().lock();
+                // A closed pipe (`| head`) ends it.
+                out.write_all(text.as_bytes())
+                    .and_then(|()| out.flush())
+                    .is_ok()
+            });
+            finish(format, result.map(|()| String::new()))
+        }
         Some(Command::Display { command }) => {
             let arg = command.layout_arg();
             let DisplayCommand::Layout {
@@ -703,6 +731,19 @@ fn mock_control(
             sim.input.frames = SimInput::press(1 << 27, 5, 6);
             // As on the S16: GPIO 25 has no action, but a function.
             sim.input.functions = 1 << 25;
+            sim
+        }
+        MockChannel::Log => {
+            let mut sim = match api {
+                Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+                None => SimChannel::gamepadii(running),
+            }
+            .with_slots()
+            .with_lights_profiles()
+            // A 1.8 build has 1.7 too.
+            .with_input()
+            .with_log();
+            sim.panic("test 1 22 333");
             sim
         }
     };

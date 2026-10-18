@@ -3,9 +3,9 @@
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
 //! [--save]`, `display layout [LAYOUT | --left N --right N]`, `leds [set
 //! ... | brightness up|down|N]`, `input [--watch | find-pin [--scan]]`,
-//! `tui` (also no command on a terminal), `setup udev [--print|--install]`,
-//! `--host HOST` for the web-config ones and `--no-channel` to leave the
-//! control channel alone.
+//! `log [--from N] [--follow]`, `tui` (also no command on a terminal),
+//! `setup udev [--print|--install]`, `--host HOST` for the web-config ones
+//! and `--no-channel` to leave the control channel alone.
 //! Hidden, for packagers: `gamepadii completions <shell>` and `gamepadii
 //! manpages <dir>`; for tests: `--sysroot <dir>`, `--mock-api <dir>` and
 //! `--mock-channel <kind>`.
@@ -98,6 +98,10 @@ pub enum MockChannel {
     /// The fork's main line, control channel v1.7: v1.4 and the input
     /// snapshot. A person pushes GPIO 27 after 5 reads, for 6 reads.
     Input,
+    /// The fork's main line, control channel v1.8: v1.5, the input
+    /// snapshot (no press) and the log, with a firmware panic in the last
+    /// boot.
+    Log,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -216,6 +220,22 @@ pub enum Command {
         reads: Option<u64>,
         #[command(subcommand)]
         command: Option<InputCommand>,
+    },
+    /// The pad's log of its last 64 events, live (needs control channel
+    /// v1.8 of the gamepadii firmware).
+    ///
+    /// The events are boots, firmware panics, commands, profile changes,
+    /// saves and restarts. A soft reboot keeps the log; a power-on starts a
+    /// new one.
+    Log {
+        /// Start at this sequence number. Default: the oldest record.
+        #[arg(long, value_name = "N")]
+        from: Option<u32>,
+        /// Read the log again every 500 ms and show only the new records,
+        /// until Ctrl-C or until the pad goes away. JSON: one line for each
+        /// read.
+        #[arg(long)]
+        follow: bool,
     },
     /// The terminal UI: the pad, its input modes and profiles, web-config
     /// and backups. `gamepadii` with no command opens it on a terminal.

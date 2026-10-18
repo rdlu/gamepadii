@@ -215,6 +215,34 @@ fn help_leds_set() {
 }
 
 #[test]
+fn help_log() {
+    insta::assert_snapshot!(help(&["log"]));
+}
+
+#[test]
+fn parses_log() {
+    use gamepadii::cli::Command;
+    let log = |args: &[&str]| parse(args).map(|c| c.command);
+    assert_eq!(
+        log(&["log"]).unwrap(),
+        Some(Command::Log {
+            from: None,
+            follow: false
+        })
+    );
+    assert_eq!(
+        log(&["log", "--from", "85", "--follow"]).unwrap(),
+        Some(Command::Log {
+            from: Some(85),
+            follow: true
+        })
+    );
+    assert!(log(&["log", "--from", "-1"]).is_err());
+    let cli = parse(&["log", "--format", "waybar"]).unwrap();
+    assert!(cli.output_format().is_err(), "no waybar line for the log");
+}
+
+#[test]
 fn parses_leds() {
     use gamepadii::cli::LedsCommand;
     use gamepadii_core::leds::{LedChange, Level, Pick};

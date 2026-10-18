@@ -3278,3 +3278,85 @@ fn input_needs_control_channel_1_7() {
     assert!(rig.channel_commands().is_empty());
     assert!(log.other.is_empty(), "no prompt");
 }
+
+// ---- the log (control channel v1.8) -------------------------------------------
+
+/// The S16 on a v1.8 main-line build, after a panic in boot 0.
+fn log_rig(mode: InputMode) -> Rig {
+    Rig::new(SimPad::new(main_dir(), mode).with_lights().channel(|c| {
+        *c = c.clone().with_lights_profiles().with_log();
+        c.panic("test 1 22 333");
+    }))
+}
+
+#[test]
+fn log_reads_every_record_live() {
+    let rig = log_rig(InputMode::Xinput);
+    let r = rig.run(|env| flow::log(env, None)).unwrap();
+    assert_eq!((r.boot, r.next, r.lost), (1, 3, 0));
+    assert_eq!(r.board.as_deref(), Some("Haute42COSMOX"));
+    let names: Vec<_> = r.records.iter().map(|e| e.code_name).collect();
+    assert_eq!(names, [Some("BOOT"), Some("PANIC"), Some("BOOT")]);
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["via"], "control");
+    assert_eq!(json["records"][1]["data"]["text"], "test 1 22 333");
+    assert_eq!(json["records"][2]["data"]["kept"], true);
+    assert_eq!(json["records"][1]["raw"], "74657374203120323220333333");
+    let r = rig.run(|env| flow::log(env, Some(2))).unwrap();
+    assert_eq!(r.records.len(), 1);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+    // In web-config too.
+    let rig = log_rig(InputMode::Webconfig);
+    assert_eq!(
+        rig.run(|env| flow::log(env, None)).unwrap().records.len(),
+        3
+    );
+}
+
+#[test]
+fn log_follow_reads_only_the_new_records() {
+    let rig = log_rig(InputMode::Xinput);
+    let mut seen = Vec::new();
+    rig.run(|env| {
+        flow::log_follow(env, None, &mut |r| {
+            seen.push((r.records.len(), r.next));
+            if seen.len() == 2 {
+                rig.pad.change_firmware(|c| {
+                    c.add_log(gamepadii_core::channel::proto::log_code::ERROR, b"x")
+                });
+            }
+            seen.len() < 4
+        })
+    })
+    .unwrap();
+    assert_eq!(seen, [(3, 3), (0, 3), (1, 4), (0, 4)]);
+    assert_eq!(rig.clock.elapsed(), flow::FOLLOW_POLL * 3);
+    // The pad goes away: the error, with its exit code.
+    let rig = log_rig(InputMode::Xinput);
+    let mut reads = 0;
+    let e = rig
+        .run(|env| {
+            flow::log_follow(env, Some(3), &mut |_| {
+                reads += 1;
+                rig.pad.unplug();
+                true
+            })
+        })
+        .unwrap_err();
+    assert_eq!((reads, e.exit_code()), (1, exit::NOT_FOUND));
+    assert!(e.to_string().contains("the log stops: no GP2040-CE"), "{e}");
+}
+
+#[test]
+fn log_needs_control_channel_1_8() {
+    for (rig, says) in [
+        (Rig::s16(InputMode::Xinput), "control channel v1.8"),
+        (lights_profiles_rig(0), "v1.5"),
+    ] {
+        let e = rig.run(|env| flow::log(env, None)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(reads(&rig).iter().all(|c| *c != 0x0a));
+    }
+}

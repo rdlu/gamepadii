@@ -1,7 +1,8 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
 //! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
 //! the v1.3 board ID of §3.9, the v1.4 profile slots of §3.10, the v1.5
-//! lights profiles of §3.11 and the v1.7 input snapshot of §3.12):
+//! lights profiles of §3.11, the v1.7 input snapshot of §3.12 and the
+//! v1.8 log of §3.13):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -25,10 +26,10 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.7: the input snapshot). A
+/// The newest protocol minor this host knows (v1.8: the log). A
 /// pad's minor tells which STRING ids it has; what else it can do is in
 /// its capabilities.
-pub const MINOR: u8 = 7;
+pub const MINOR: u8 = 8;
 /// The first minor with STRING [`string::BOARD_ID`].
 pub const BOARD_ID_MINOR: u8 = 3;
 /// The first minor with READ_SLOT and WRITE_SLOT ([`Caps::SLOTS`]).
@@ -38,6 +39,8 @@ pub const SLOTS_MINOR: u8 = 4;
 pub const LIGHTS_PROFILES_MINOR: u8 = 5;
 /// The first minor with READ_INPUT and PIN_SCAN ([`Caps::INPUT`]).
 pub const INPUT_MINOR: u8 = 7;
+/// The first minor with READ_LOG ([`Caps::LOG`]).
+pub const LOG_MINOR: u8 = 8;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -95,8 +98,9 @@ impl Setup {
     }
 }
 
-/// The v1 commands, v1.1's LED ones, v1.2's lights ones and v1.4's slot
-/// ones.
+/// The v1 commands, v1.1's LED ones, v1.2's lights ones, v1.4's slot
+/// ones, v1.5's lights profile ones, v1.7's input ones and v1.8's
+/// READ_LOG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
@@ -114,6 +118,9 @@ pub enum Command {
     ReadLights = 0x07,
     /// v1.7, behind [`Caps::INPUT`]: a snapshot of the inputs, at once.
     ReadInput = 0x09,
+    /// v1.8, behind [`Caps::LOG`]: `wValue` is the low 16 bits of the
+    /// first sequence number to read.
+    ReadLog = 0x0A,
     SetProfile = 0x10,
     Reboot = 0x11,
     SetInputMode = 0x12,
@@ -130,7 +137,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 16] = [
+    pub const ALL: [Command; 17] = [
         Command::Hello,
         Command::Status,
         Command::String,
@@ -139,6 +146,7 @@ impl Command {
         Command::ReadSlot,
         Command::ReadLights,
         Command::ReadInput,
+        Command::ReadLog,
         Command::SetProfile,
         Command::Reboot,
         Command::SetInputMode,
@@ -165,6 +173,7 @@ impl Command {
                 | Command::ReadSlot
                 | Command::ReadLights
                 | Command::ReadInput
+                | Command::ReadLog
         )
     }
 
@@ -186,6 +195,7 @@ impl Command {
             Command::WriteLights => "WRITE_LIGHTS",
             Command::ReadInput => "READ_INPUT",
             Command::PinScan => "PIN_SCAN",
+            Command::ReadLog => "READ_LOG",
         }
     }
 
@@ -206,15 +216,17 @@ impl Command {
             | Command::WriteSlot
             | Command::ReadLights
             | Command::WriteLights
-            | Command::ReadInput => None,
+            | Command::ReadInput
+            | Command::ReadLog => None,
         }
     }
 
     /// The longest data stage the firmware takes in SETUP: one packet, but
-    /// a slot (§3.10) and a lights profile (§3.11) are longer.
+    /// a slot (§3.10), a lights profile (§3.11) and the log (§3.13) are
+    /// longer.
     pub fn max_len(self) -> u16 {
         match self {
-            Command::ReadSlot | Command::ReadLights => u16::MAX,
+            Command::ReadSlot | Command::ReadLights | Command::ReadLog => u16::MAX,
             Command::WriteLights => (HEADER_LEN + LIGHTS_HEAD_LEN + ANIMATION_PROFILE_MAX) as u16,
             Command::WriteSlot => (HEADER_LEN + Slot::len(SLOT_MAX_PINS)) as u16,
             _ => MAX_LEN,
@@ -277,8 +289,10 @@ impl Caps {
     pub const LIGHTS_PROFILES: u32 = 1 << 11;
     /// v1.7: READ_INPUT and PIN_SCAN, the input snapshot.
     pub const INPUT: u32 = 1 << 13;
+    /// v1.8: READ_LOG, the log of the pad's last 64 events.
+    pub const LOG: u32 = 1 << 14;
 
-    const NAMES: [(u32, &'static str); 13] = [
+    const NAMES: [(u32, &'static str); 14] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -292,6 +306,7 @@ impl Caps {
         (Self::SLOTS, "slots"),
         (Self::LIGHTS_PROFILES, "lights_profiles"),
         (Self::INPUT, "input"),
+        (Self::LOG, "log"),
     ];
 
     pub fn has(self, bit: u32) -> bool {
@@ -408,6 +423,12 @@ impl Hello {
     /// with [`Caps::INPUT`]. Never send them to an older pad.
     pub fn has_input(&self) -> bool {
         self.major == MAJOR && self.minor >= INPUT_MINOR && self.caps.has(Caps::INPUT)
+    }
+
+    /// Whether the pad has READ_LOG: protocol 1.8 or later, with
+    /// [`Caps::LOG`]. Never send it to an older pad.
+    pub fn has_log(&self) -> bool {
+        self.major == MAJOR && self.minor >= LOG_MINOR && self.caps.has(Caps::LOG)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -1182,6 +1203,266 @@ impl Outcome {
             Outcome::Other(n) => n,
         }
     }
+
+    /// The name in the spec: `OK`, `BAD_TOKEN`, ...; `None` for a code that
+    /// this host doesn't know.
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            Outcome::Ok => "OK",
+            Outcome::BadToken => "BAD_TOKEN",
+            Outcome::BadLength => "BAD_LENGTH",
+            Outcome::BadArg => "BAD_ARG",
+            Outcome::Locked => "LOCKED",
+            Outcome::Unsupported => "UNSUPPORTED",
+            Outcome::ProfileDisabled => "PROFILE_DISABLED",
+            Outcome::Busy => "BUSY",
+            Outcome::Other(_) => return None,
+        })
+    }
+}
+
+/// The head of a READ_LOG reply (§3.13).
+pub const LOG_HEAD_LEN: usize = 12;
+/// The bytes of each log record.
+pub const LOG_RECORD_LEN: usize = 32;
+/// The data bytes of a record.
+pub const LOG_DATA_LEN: usize = 24;
+/// The records the pad keeps: older ones are gone.
+pub const LOG_RECORDS: u32 = 64;
+/// The `wLength` of a READ_LOG. The firmware's buffer is 328 bytes: 9
+/// records in each reply.
+pub const READ_LOG_LEN: u16 = 1024;
+
+/// The log codes (§3.13).
+pub mod log_code {
+    pub const BOOT: u8 = 1;
+    pub const PANIC: u8 = 2;
+    pub const COMMAND: u8 = 3;
+    pub const PROFILE: u8 = 4;
+    pub const SAVE: u8 = 5;
+    pub const RESTART: u8 = 6;
+    pub const ERROR: u8 = 7;
+    pub const USB_HOST: u8 = 8;
+
+    /// `BOOT`, `PANIC`, ...; `None` for a code that this host doesn't know.
+    pub fn name(code: u8) -> Option<&'static str> {
+        Some(match code {
+            BOOT => "BOOT",
+            PANIC => "PANIC",
+            COMMAND => "COMMAND",
+            PROFILE => "PROFILE",
+            SAVE => "SAVE",
+            RESTART => "RESTART",
+            ERROR => "ERROR",
+            USB_HOST => "USB_HOST",
+            _ => return None,
+        })
+    }
+}
+
+/// A boot mode in the log: 0 default, 1 gamepad, 2 web-config, 3 BOOTSEL;
+/// the firmware gives 255 for any other.
+pub fn log_boot_mode(b: u8) -> &'static str {
+    match b {
+        0 => "default",
+        1 => "gamepad",
+        2 => "webconfig",
+        3 => "bootsel",
+        _ => "other",
+    }
+}
+
+/// One record of the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRecord {
+    /// Its sequence number: the pad counts every record from 0, from the
+    /// start of the log.
+    pub seq: u32,
+    /// Milliseconds since that boot.
+    pub ms: u32,
+    /// The boot number: 0 at the start of the log, 1 more at each restart
+    /// that keeps the log.
+    pub boot: u16,
+    pub code: u8,
+    /// The bytes that the record uses (at most [`LOG_DATA_LEN`]).
+    pub data: Vec<u8>,
+}
+
+impl LogRecord {
+    /// One record of `LOG_RECORD_LEN` bytes, with its sequence number.
+    pub fn parse(b: &[u8], seq: u32) -> Option<LogRecord> {
+        let b = b.get(..LOG_RECORD_LEN)?;
+        let len = usize::from(b[7]).min(LOG_DATA_LEN);
+        Some(LogRecord {
+            seq,
+            ms: u32_at(b, 0),
+            boot: u16_at(b, 4),
+            code: b[6],
+            data: b[8..8 + len].to_vec(),
+        })
+    }
+
+    /// The wire bytes: the data is cut at [`LOG_DATA_LEN`] bytes, then
+    /// zeros.
+    pub fn encode(&self) -> [u8; LOG_RECORD_LEN] {
+        let mut b = [0u8; LOG_RECORD_LEN];
+        let n = self.data.len().min(LOG_DATA_LEN);
+        b[0..4].copy_from_slice(&self.ms.to_le_bytes());
+        b[4..6].copy_from_slice(&self.boot.to_le_bytes());
+        b[6] = self.code;
+        b[7] = n as u8;
+        b[8..8 + n].copy_from_slice(&self.data[..n]);
+        b
+    }
+
+    /// What the record says, by its code.
+    pub fn event(&self) -> LogEvent {
+        LogEvent::decode(self.code, &self.data)
+    }
+}
+
+/// A log record, decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogEvent {
+    /// The pad started. `kept`: the log was kept from the boot before.
+    /// `watchdog`: a watchdog reset (a soft reboot or a panic).
+    Boot {
+        kept: bool,
+        watchdog: bool,
+        mode: u8,
+        version: String,
+    },
+    /// The firmware panicked, and then restarted: the message, cut at 24
+    /// bytes.
+    Panic { text: String },
+    /// An OUT command, or an OUT that the pad refused in SETUP (`seq` 0).
+    Command { cmd: u8, result: Outcome, seq: u16 },
+    /// The profile changed. At boot, `old` can be 254.
+    Profile { old: u8, new: u8 },
+    /// A save of the settings to flash.
+    Save { force: bool, restart: bool },
+    /// A restart into the boot mode `mode`.
+    Restart { mode: u8 },
+    /// A system error, as text.
+    Error { text: String },
+    /// A device on the USB host port: mounted, or removed.
+    UsbHost {
+        mounted: bool,
+        address: u8,
+        vid: u16,
+        pid: u16,
+    },
+    /// A code that this host doesn't know, or data that is too short for
+    /// its code.
+    Unknown { code: u8, data: Vec<u8> },
+}
+
+impl LogEvent {
+    pub fn decode(code: u8, data: &[u8]) -> LogEvent {
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let need = match code {
+            log_code::BOOT | log_code::PROFILE | log_code::SAVE => 2,
+            log_code::COMMAND => 4,
+            log_code::RESTART => 1,
+            log_code::USB_HOST => 6,
+            _ => 0,
+        };
+        if data.len() < need {
+            return LogEvent::Unknown {
+                code,
+                data: data.to_vec(),
+            };
+        }
+        match code {
+            log_code::BOOT => LogEvent::Boot {
+                kept: data[0] & 1 != 0,
+                watchdog: data[0] & 2 != 0,
+                mode: data[1],
+                version: text(&data[2..]),
+            },
+            log_code::PANIC => LogEvent::Panic { text: text(data) },
+            log_code::COMMAND => LogEvent::Command {
+                cmd: data[0],
+                result: Outcome::from_byte(data[1]),
+                seq: u16_at(data, 2),
+            },
+            log_code::PROFILE => LogEvent::Profile {
+                old: data[0],
+                new: data[1],
+            },
+            log_code::SAVE => LogEvent::Save {
+                force: data[0] != 0,
+                restart: data[1] != 0,
+            },
+            log_code::RESTART => LogEvent::Restart { mode: data[0] },
+            log_code::ERROR => LogEvent::Error { text: text(data) },
+            log_code::USB_HOST => LogEvent::UsbHost {
+                mounted: data[0] != 0,
+                address: data[1],
+                vid: u16_at(data, 2),
+                pid: u16_at(data, 4),
+            },
+            _ => LogEvent::Unknown {
+                code,
+                data: data.to_vec(),
+            },
+        }
+    }
+}
+
+/// A READ_LOG reply (§3.13): the head, and the records from `first`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogPage {
+    /// The sequence number of the first record in the reply.
+    pub first: u32,
+    /// The sequence number of the next record that the pad writes.
+    pub next: u32,
+    /// The boot number now.
+    pub boot: u16,
+    pub records: Vec<LogRecord>,
+}
+
+impl LogPage {
+    /// A reply: `None` when the head is short, the record length is not
+    /// [`LOG_RECORD_LEN`], or the records don't fit in the reply.
+    pub fn parse(b: &[u8]) -> Option<LogPage> {
+        let head = b.get(..LOG_HEAD_LEN)?;
+        if usize::from(head[10]) != LOG_RECORD_LEN {
+            return None;
+        }
+        let first = u32_at(head, 0);
+        let count = usize::from(head[11]);
+        let body = b.get(LOG_HEAD_LEN..LOG_HEAD_LEN + count * LOG_RECORD_LEN)?;
+        let records = body
+            .chunks(LOG_RECORD_LEN)
+            .zip(first..)
+            .map(|(r, seq)| LogRecord::parse(r, seq))
+            .collect::<Option<Vec<_>>>()?;
+        Some(LogPage {
+            first,
+            next: u32_at(head, 4),
+            boot: u16_at(head, 8),
+            records,
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(LOG_HEAD_LEN + self.records.len() * LOG_RECORD_LEN);
+        b.extend_from_slice(&self.first.to_le_bytes());
+        b.extend_from_slice(&self.next.to_le_bytes());
+        b.extend_from_slice(&self.boot.to_le_bytes());
+        b.push(LOG_RECORD_LEN as u8);
+        b.push(u8::try_from(self.records.len()).unwrap_or(u8::MAX));
+        for r in &self.records {
+            b.extend_from_slice(&r.encode());
+        }
+        b
+    }
+
+    /// The sequence number after the last record in the reply.
+    pub fn end(&self) -> u32 {
+        self.first.wrapping_add(self.records.len() as u32)
+    }
 }
 
 /// An OUT payload: the header, then `args`.
@@ -1430,6 +1711,140 @@ mod tests {
         let rest = InputSnapshot::default();
         assert!(!rest.scan_on() && rest.pressed_gpios().is_empty());
         assert_eq!(rest.lx, 32767);
+    }
+
+    #[test]
+    fn v1_8_log_commands() {
+        let s = Setup::read(Command::ReadLog, 0x1234);
+        assert_eq!(
+            (s.request_type, s.index, s.value),
+            (TYPE_IN, 0x500a, 0x1234)
+        );
+        assert!(Command::ReadLog.is_in());
+        assert_eq!(Command::from_byte(0x0a), Some(Command::ReadLog));
+        assert_eq!(Command::ReadLog.max_len(), u16::MAX);
+        assert_eq!(Caps(0x4e2f).names().last(), Some(&"log"));
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(8, Caps::LOG).has_log());
+        assert!(!hello(7, Caps::LOG).has_log(), "1.7 never gets it");
+        assert!(!hello(8, Caps::SLOTS).has_log());
+    }
+
+    fn record(seq: u32, code: u8, data: &[u8]) -> LogRecord {
+        LogRecord {
+            seq,
+            ms: 27_054,
+            boot: 4,
+            code,
+            data: data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_log_page_round_trips() {
+        let page = LogPage {
+            first: 85,
+            next: 87,
+            boot: 5,
+            records: vec![
+                record(85, log_code::PANIC, b"test 1 22 333 4444 abcde"),
+                record(86, log_code::BOOT, b"\x03\x00v0.7.12"),
+            ],
+        };
+        let b = page.encode();
+        assert_eq!(b.len(), 12 + 2 * 32);
+        assert_eq!(&b[..12], &[85, 0, 0, 0, 87, 0, 0, 0, 5, 0, 32, 2]);
+        assert_eq!(&b[12..20], &[0xae, 0x69, 0, 0, 4, 0, 2, 24]);
+        assert_eq!(b[44 + 7], 9, "the data length of the BOOT record");
+        assert_eq!(&b[44 + 17..76], &[0; 15], "zeros after the data");
+        assert_eq!(LogPage::parse(&b), Some(page.clone()));
+        assert_eq!(page.end(), 87);
+        // A reply that is shorter than its count, or another record length.
+        assert_eq!(LogPage::parse(&b[..75]), None);
+        assert_eq!(LogPage::parse(&b[..11]), None);
+        let mut odd = b.clone();
+        odd[10] = 16;
+        assert_eq!(LogPage::parse(&odd), None);
+        // No records: the head only.
+        let empty = LogPage::parse(&[87, 0, 0, 0, 87, 0, 0, 0, 5, 0, 32, 0]).unwrap();
+        assert!(empty.records.is_empty() && empty.end() == 87);
+        // A data length past 24 is cut.
+        let mut long = b.clone();
+        long[12 + 7] = 30;
+        assert_eq!(LogPage::parse(&long).unwrap().records[0].data.len(), 24);
+    }
+
+    #[test]
+    fn log_records_decode_by_code() {
+        let e = |code, data: &[u8]| record(0, code, data).event();
+        assert_eq!(
+            e(1, b"\x03\x02v0.7.12-135"),
+            LogEvent::Boot {
+                kept: true,
+                watchdog: true,
+                mode: 2,
+                version: "v0.7.12-135".into()
+            }
+        );
+        assert_eq!(
+            e(2, b"oops"),
+            LogEvent::Panic {
+                text: "oops".into()
+            }
+        );
+        assert_eq!(
+            e(3, &[0x11, 0, 0x8d, 0xb5]),
+            LogEvent::Command {
+                cmd: 0x11,
+                result: Outcome::Ok,
+                seq: 46477
+            }
+        );
+        assert_eq!(e(4, &[254, 1]), LogEvent::Profile { old: 254, new: 1 });
+        assert_eq!(
+            e(5, &[1, 0]),
+            LogEvent::Save {
+                force: true,
+                restart: false
+            }
+        );
+        assert_eq!(e(6, &[2]), LogEvent::Restart { mode: 2 });
+        assert_eq!(e(7, b"bad"), LogEvent::Error { text: "bad".into() });
+        assert_eq!(
+            e(8, &[1, 3, 0x5e, 0x04, 0x8e, 0x02]),
+            LogEvent::UsbHost {
+                mounted: true,
+                address: 3,
+                vid: 0x045e,
+                pid: 0x028e
+            }
+        );
+        // A code from a later firmware, or data too short for its code.
+        assert_eq!(
+            e(9, &[1, 2]),
+            LogEvent::Unknown {
+                code: 9,
+                data: vec![1, 2]
+            }
+        );
+        assert!(matches!(
+            e(3, &[0x11, 0]),
+            LogEvent::Unknown { code: 3, .. }
+        ));
+        assert_eq!(log_code::name(8), Some("USB_HOST"));
+        assert_eq!(log_code::name(0), None);
+        assert_eq!(
+            (log_boot_mode(3), log_boot_mode(255), log_boot_mode(7)),
+            ("bootsel", "other", "other")
+        );
+        assert_eq!(Outcome::Busy.name(), Some("BUSY"));
+        assert_eq!(Outcome::Other(9).name(), None);
     }
 
     #[test]

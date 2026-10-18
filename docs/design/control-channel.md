@@ -220,6 +220,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x06` | IN | READ_SLOT | profile (1–6) | reply: one slot, 20 + 10 × pin count bytes (§3.10); `wLength` 512 | v1.4 |
 | `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: 4-byte head + `AnimationProfile` protobuf (§3.11); `wLength` 512 | v1.5 |
 | `0x09` | IN | READ_INPUT | 0 | reply: 36 bytes, the pins and the gamepad state (§3.12) | v1.7 |
+| `0x0A` | IN | READ_LOG | the low 16 bits of the first sequence number | reply: 12-byte head + up to 9 records of 32 bytes (§3.13); `wLength` 12 or more, the host asks for 1024 | v1.8 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
@@ -293,8 +294,9 @@ Capability bits:
 | 10 | SLOTS: READ_SLOT and WRITE_SLOT (v1.4, §3.10) |
 | 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5, §3.11; set only when the LEDs run) |
 | 13 | INPUT: READ_INPUT and PIN_SCAN (v1.7, §3.12) |
+| 14 | LOG: READ_LOG (v1.8, §3.13) |
 
-Bit 12 and bits 14–31 are reserved.
+Bit 12 and bits 15–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -860,6 +862,92 @@ reads every 20 ms and prints a line when the input changes; with `--json`
 each line is one JSON object. `channel/sim.rs` models it with
 `SimChannel::with_input`: the pins that a person holds come from a script,
 one entry for each read.
+
+### 3.13 v1.8: the log
+
+Additive. The protocol minor is **8**, and capability **bit 14, LOG**,
+covers READ_LOG. The fork's commit is a51474c8. A host sends READ_LOG only
+when HELLO gives major 1, minor 8 or higher, and bit 14. A 1.7 build
+STALLs it.
+
+The pad keeps its last 64 events in a ring in RAM. Each record has a
+sequence number: the pad counts the records from 0, from the start of the
+log. The log also counts the boots.
+
+- **A soft reboot keeps the log**: REBOOT, a reboot into web-config or
+  BOOTSEL, a panic, and a `picotool load` of a build with the same layout.
+  The boot number goes up by 1.
+- **A new log starts at boot 0, sequence number 0** after a power-on, a
+  build with a different layout, or a ring with bad header data.
+
+**READ_LOG** (`0x0A`, IN). `wValue` is the low 16 bits of the first
+sequence number to read. The firmware finds the full number: the one in
+the last 65536 that has these low bits. A number older than the oldest
+record starts at the oldest record, thus `wValue` 0 is correct the first
+time. `wValue` equal to `next` gives 0 records. A `wLength` less than 12
+STALLs. The firmware's buffer is 328 bytes, thus a reply has at most 9
+records (300 bytes).
+
+The reply head (12 bytes):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | `first`: the sequence number of the first record in this reply |
+| 4 | u32 | `next`: the sequence number of the next record that the pad writes |
+| 8 | u16 | the boot number now |
+| 10 | u8 | the record length: 32 |
+| 11 | u8 | the number of records in this reply |
+
+Each record (32 bytes):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | ms since the start of that boot |
+| 4 | u16 | the boot number |
+| 6 | u8 | the code (below) |
+| 7 | u8 | the data length, 0–24 |
+| 8 | `[u8;24]` | the data; the bytes after the length are 0 |
+
+| Code | Name | Data |
+|---|---|---|
+| 1 | BOOT | `u8` flags (bit 0: the log was kept; bit 1: a watchdog reset), `u8` boot mode, then the firmware version text (at most 22 bytes) |
+| 2 | PANIC | the message text, cut at 24 bytes |
+| 3 | COMMAND | `u8` command, `u8` result (the STATUS results), `u16` sequence number. Each OUT command, and each OUT that STALLs in SETUP (sequence number 0). IN commands are not in the log |
+| 4 | PROFILE | `u8` old profile, `u8` new profile (at boot, the old one can be 254) |
+| 5 | SAVE | `u8` force, `u8` restart |
+| 6 | RESTART | `u8` boot mode |
+| 7 | ERROR | the text of a system error |
+| 8 | USB_HOST | `u8` 1 mount or 0 unmount, `u8` address, `u16` VID, `u16` PID |
+
+Boot mode: 0 default, 1 gamepad, 2 web-config, 3 BOOTSEL, 255 other.
+
+- **To read all of the log:** send `wValue` 0, then `first + count`,
+  until `first + count` is `next` or more.
+- **To follow it:** keep `next`, and read from it.
+- **Lost records:** if `first` is more than the number that the host asked
+  for, the pad wrote over the records between them.
+- **Panics:** a firmware panic writes a PANIC record and reboots the pad.
+  The next boot can then read the message. After 3 panics in a row, each
+  less than 10 s after its boot, the pad stops (USB stops answering).
+
+Host side: `Channel::read_log` (one reply) and `read_log_all` (all
+replies from a number, at most 16), the module `log` (the report and the
+JSON of each code), and `flow::log` / `log_follow` (`gamepadii log
+[--from N] [--follow]`). `--follow` reads the log again every 500 ms from
+`next`, and shows only the new records. It stops at Ctrl-C, or with the
+error when the pad goes away. The low 16 bits of a number from before the
+last 65536 records can give a newer record. Thus, when the asked number is
+older than `next − 64` and the reply does not start at the oldest record,
+the host asks again from the oldest record.
+
+`status` reads the newest 9 records, with at most two READ_LOG requests
+(the first gives `next`). If a PANIC record is from the boot before this
+one, or from this boot, `status` shows it: `last_panic` in the JSON, a
+warning row for people and in the waybar tooltip. The waybar class does
+not change. After 8 more records in this boot, the panic is not in the
+newest 9 records, and the warning goes away. A read error gives `null`.
+`channel/sim.rs` models the log with `SimChannel::with_log`, and a test
+can add a PANIC (`panic`) or a power-on (`power_on`).
 
 ## 4. Firmware implementation
 

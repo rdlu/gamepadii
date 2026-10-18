@@ -1,0 +1,38 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"log\"])"
+---
+The pad's log of its last 64 events, live (needs control channel v1.8 of the gamepadii firmware).
+
+The events are boots, firmware panics, commands, profile changes, saves and restarts. A soft reboot keeps the log; a power-on starts a new one.
+
+Usage: gamepadii log [OPTIONS]
+
+Options:
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` and `leds` only
+          
+          [default: human]
+
+      --from <N>
+          Start at this sequence number. Default: the oldest record
+
+      --follow
+          Read the log again every 500 ms and show only the new records, until Ctrl-C or until the pad goes away. JSON: one line for each read
+
+      --json
+          Same as `--format json`
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
+  -h, --help
+          Print help (see a summary with '-h')

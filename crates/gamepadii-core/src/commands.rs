@@ -274,9 +274,13 @@ pub struct ChannelReport {
     /// both.
     pub forced_setup: u8,
     pub uptime_ms: u32,
+    /// v1.8: the firmware panic that ended the last boot, from the log;
+    /// `null` when there was none, or the pad has no log.
+    pub last_panic: Option<crate::log::LastPanic>,
 }
 
-/// STATUS and the strings (version, board, the active profile's label).
+/// STATUS and the strings (version, board, the active profile's label),
+/// and on a v1.8 pad the last panic from the log.
 pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
     let st = ch.status()?;
     let has_strings = ch.caps().has(Caps::STRING);
@@ -319,6 +323,7 @@ pub fn channel_report(ch: &Channel) -> Result<ChannelReport> {
         profile_pending: st.pending(),
         forced_setup: st.forced_setup,
         uptime_ms: st.uptime_ms,
+        last_panic: crate::log::last_panic(ch),
     })
 }
 
