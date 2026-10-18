@@ -7,7 +7,8 @@ built-in web configurator, with as few button presses and reboots as the
 firmware allows.
 
 **Status: pre-release, in development.** `status`, `info`, `backup`,
-`reboot`, `mode`, `webconfig`, `profile switch` and `setup udev` work so
+`reboot`, `mode`, `webconfig`, `profile switch`, `display layout`, `leds`
+and `setup udev` work so
 far, and a first TUI (`gamepadii` on a terminal) covers status, modes,
 profiles, web-config and backups. The roadmap is tracked in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1), and the design
@@ -60,6 +61,16 @@ gamepadii display layout <MODEL>  pick the drawing for a Haute42 model:
                                   alt0..alt5); backs up, writes, reads back
 gamepadii display layout --left N --right N
                                   the raw buttonLayout values, any board
+gamepadii leds                    the LEDs: animation, brightness, colours,
+                                  theme (live over the control channel;
+                                  else from web-config, partly unknown on
+                                  stock firmware)
+gamepadii leds set [--animation NAME|N] [--brightness N|up|down]
+    [--static-color NAME|N] [--button-color NAME|N] [--theme NAME|N] [--save]
+                                  change them live (needs control channel
+                                  v1.1); RAM only unless --save
+gamepadii leds brightness <up|down|N> [--save]
+                                  one step, or a level
 gamepadii setup udev [--print|--install]
                                   the udev rule the control channel needs
 ```
@@ -107,6 +118,10 @@ press:
 - `webconfig` and `reboot gamepad|webconfig` reboot it directly;
   `reboot bootsel` goes through web-config (BOOTSEL isn't offered on the
   channel);
+- `leds` reads the LEDs, and `leds set` / `leds brightness` change them,
+  with no reboot. This needs channel v1.1, the LED commands. Like
+  `profile switch`, a change is RAM only unless `--save`. A v1.0 channel
+  has no LED commands, so `leds` reads them through web-config instead;
 - `profile switch` changes the active pin-mapping profile with no reboot.
   Without `--save` nothing is written to flash, so the pad goes back to its
   saved profile when it restarts (unless something else, such as a hotkey,

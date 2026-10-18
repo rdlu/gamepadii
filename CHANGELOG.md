@@ -126,6 +126,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   JSON, a "full config" row for people). Stock firmware is never asked for
   `getConfig` or `getI2CPeripheralMap`; the backup there just has
   `"full_config": null` (additive, still schema 1).
+- `gamepadii leds`: the per-button RGB LEDs, meaning the animation,
+  brightness (level, steps, maximum), static and button colours, static
+  theme, custom theme and its colours. It uses control channel v1.1's
+  LED_STATUS when the firmware has it (capability `leds`, no reboot, any
+  mode). Otherwise it reads from web-config (`getLedOptions`,
+  `getCustomTheme`, and `getConfig`'s `animationOptions` on fork builds),
+  going through web-config and back from a gamepad mode, like `info`. On
+  stock firmware the animation and brightness show as unknown, because
+  v0.7.12's web configurator doesn't expose them. `--format waybar` gives
+  a status-bar line, over the channel only (it never reboots the pad).
+- `gamepadii leds set [--animation NAME|N] [--brightness N|up|down]
+  [--static-color NAME|N] [--button-color NAME|N] [--theme NAME|N]
+  [--save]` and `gamepadii leds brightness up|down|N`: live LED changes
+  over control channel v1.1 (SET_LED), RAM only unless `--save`, read
+  back with LED_STATUS. The names are GP2040-CE v0.7.12's effects,
+  colours and static themes. Without the LED commands (stock, or a v1.0
+  channel), these commands exit 5, and a value the pad doesn't have
+  exits 3.
+- Control channel v1.1 on the host: LED_STATUS (`0x04`), SET_LED
+  (`0x13`), capability bit 8, protocol minor 1; the simulator models them.
 
 ### Fixed
 

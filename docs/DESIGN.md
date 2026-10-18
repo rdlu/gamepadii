@@ -202,7 +202,7 @@ Used by `backup`: on a fork build the bundle gets `full_config`
 a failure there (a 503, a timeout) is recorded and the rest is kept. On
 stock it is `null`. `flow::backup` adds the channel's HELLO as evidence: on
 a trip, the one from before the reboot; in web-config, one HELLO there.
-`commands::full_config` returns the document for the LED commands
+`commands::full_config` returns the document for `gamepadii leds`
 (`animationOptions` is only there, #19). The mock hangs on both endpoints
 while its firmware version is a bare release tag, and the fork fixture
 (`tests/fixtures/api/s16-fork/`, an overlay of the stock capture with a
@@ -286,7 +286,29 @@ Host side (`gamepadii-core/src/channel/`):
   pad's (same mode, another serial). Board files from before still load,
   and the first read attributed to a pad of that board replaces them. A
   STRING with the unique id on the control channel would make this exact
-  in every mode; that needs a firmware change (protocol v1.1).
+  in every mode; that needs a firmware change (a later protocol minor).
+- LEDs (#19, protocol v1.1, capability bit 8: LED_STATUS and SET_LED,
+  `control-channel.md` §3.7). `gamepadii leds` (`flow::leds`,
+  `leds.rs`) takes the best route there is:
+  1. LED_STATUS, in any mode, with no reboot;
+  2. otherwise web-config: `getLedOptions` and `getCustomTheme`, plus
+     `getConfig`'s `animationOptions` on a fork build (`ForkFixes`). From a
+     gamepad mode it gets there through the same trip as `info`;
+  3. on stock firmware, the animation, brightness and colours are `null`
+     ("unknown on stock firmware").
+
+  `leds set` and `leds brightness` use SET_LED only, never web-config.
+  Changes are RAM only unless `--save`, with the same caveat as
+  `profile switch`: any later save keeps them. The host checks each value
+  against the counts in LED_STATUS before sending (exit 3). A pad without
+  the capability gets exit 5. Every change is verified by polling
+  LED_STATUS (1 s). In PS4/PS5 mode the firmware skips saves while the
+  controller authentication needs the flash, so an unconfirmed save is a
+  note, not an error. The names (`EFFECTS`, `COLORS`, `THEMES`) are
+  v0.7.12's `AnimationEffects`, `AnimationColor` and the static theme
+  order, and STRING `0x20 + n` names any effect past the table.
+  `--format waybar` reads over the channel only: a status bar must never
+  cause a reboot. LED profile blocks and a TUI panel come later.
 
 ## Profiles live in gamepadii, not on the pad
 
@@ -331,7 +353,7 @@ crates/gamepadii-core/src/
   wait.rs        wait_for(predicate, timeout) over a Clock (ManualClock in tests)
   mode.rs        InputMode / BootMode enums, VID:PID table
   transport/     http.rs (own HTTP/1.0 client, serialised), mock.rs (fixtures)
-  channel/       control channel: proto.rs (wire v1), usbfs.rs (Linux),
+  channel/       control channel: proto.rs (wire v1, v1.1 LEDs), usbfs.rs (Linux),
                  sim.rs (simulated firmware), mod.rs (probe, Channel)
   udev.rs        the opt-in uaccess rule (70-gamepadii.rules)
   api/           typed endpoint structs + raw serde_json::Value passthrough
@@ -340,9 +362,11 @@ crates/gamepadii-core/src/
   cache.rs       last web-config read per pad (~/.cache/gamepadii/<board>-<serial>.json,
                  else <board>.json), the profile the channel last reported
                  running, and which pad went into which web-config session
-  flow.rs        mode / webconfig / reboot / profile switch over Scan + Clock,
-                 the control channel first, the guided flows as fallback;
-                 the web-config round trip for info and backup
+  flow.rs        mode / webconfig / reboot / profile switch / leds over
+                 Scan + Clock, the control channel first, the guided flows
+                 as fallback; the web-config round trip for info and backup
+  leds.rs        LED names (v0.7.12 enums), LED_STATUS and web-config reads
+                 into one LedState, the SET_LED plan for `leds set`
   sim.rs         a simulated pad (Scan + mock Transport + EP0) for flow tests
   profile.rs     KDL profile files (~/.config/gamepadii/profiles), diff/apply
   commands.rs    status, info, backup, profile … → plain data

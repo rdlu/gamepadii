@@ -214,9 +214,11 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x01` | IN | HELLO | host nonce (u16) | reply: 20 bytes (§3.3) | v1 |
 | `0x02` | IN | STATUS | 0 | reply: 16 bytes (§3.3) | v1 |
 | `0x03` | IN | STRING | string id | reply: raw string, ≤ 63 bytes | v1 |
+| `0x04` | IN | LED_STATUS | 0 | reply: 12 bytes (§3.7) | v1.1 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
+| `0x13` | OUT | SET_LED | 0 | header + 8 bytes: mask, values, persist (§3.7) | v1.1 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -239,6 +241,7 @@ STRING ids:
 | 3 | `BOARD_CONFIG_LABEL` (`Haute42 COSMOX`) |
 | 4 | `GP2040CONFIG` (the build type) |
 | `0x11–0x16` | label of profile 1–6 |
+| `0x20 + n` | v1.1: the firmware's name for animation effect `n` (`EFFECT_STATIC_COLOR`, ...); `n` ≥ the effect count STALLs |
 
 ### 3.3 Replies
 
@@ -274,8 +277,9 @@ Capability bits:
 | 5 | SET_INPUT_MODE |
 | 6 | CFG_READ |
 | 7 | CFG_WRITE |
+| 8 | LEDS: LED_STATUS and SET_LED (v1.1, §3.7) |
 
-Bits 8–31 are reserved.
+Bits 9–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -436,6 +440,96 @@ bit. A host written against the draft keeps working.
     byte-identical to the freeze-fix build apart from the embedded version
     string (checked: 22 differing bytes, all in the two version strings;
     identical size and identical `tud_vendor_control_xfer_cb`).
+
+### 3.7 v1.1: LED commands
+
+Issue #19. Additive only: a v1 host keeps working, and a v1.1 host talks to
+a v1.0 pad by its capabilities.
+
+- **HELLO:** the protocol minor is **1**. Capability **bit 8, LEDS**, covers
+  LED_STATUS and SET_LED. The firmware sets it only once the LED addon
+  (AnimationStation) has run its setup: the LEDs are configured
+  (`ledOptions.dataPin >= 0`) on this build and board. The S16 advertises
+  `0x0000012F`.
+- **STRING `0x20 + n`:** the firmware's name for animation effect `n`
+  (`EFFECT_STATIC_COLOR`, ...). An `n` at or past the effect count STALLs.
+  The host keeps its own table from `proto/enums.proto` and asks only for
+  effects past it.
+- **Without bit 8**, LED_STATUS STALLs like any unknown IN. STATUS's
+  last-command fields are not touched, the §3.6 item 7 rule for IN
+  commands. SET_LED is an unknown OUT command: UNSUPPORTED, `last_seq` 0.
+  The host relies on the capability bit and never sends either without it.
+
+**LED_STATUS** (`0x04`, IN, `wValue` 0), a 12-byte reply:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | flags: bit 0 the LEDs run (always set in a reply), bit 1 `hasCustomTheme`, bit 2 unsaved (below) |
+| 1 | u8 | animation effect (`baseAnimationIndex`, the `AnimationEffects` enum) |
+| 2 | u8 | effects this build cycles through: 4, plus 1 with a custom theme (0 static colour, 1 rainbow, 2 chase, 3 static theme, 4 custom theme). The host checks `animation < count` |
+| 3 | u8 | brightness level (`AnimationOptions.brightness`, 0 to the steps) |
+| 4 | u8 | brightness steps (`ledOptions.brightnessSteps`, clamped to 255) |
+| 5 | u8 | brightness maximum (`ledOptions.brightnessMaximum`, clamped to 255) |
+| 6 | u8 | `staticColorIndex` |
+| 7 | u8 | `buttonColorIndex` |
+| 8 | u8 | `themeIndex` |
+| 9 | u8 | colours (`AnimationColor`) the colour indexes take: 16 |
+| 10 | u8 | static themes `themeIndex` takes: 20 |
+| 11 | u8 | reserved, 0 |
+
+Flag bit 2 is set when the effective values differ from a snapshot. The
+firmware takes that snapshot at LED setup and again on every storage save
+of any kind: hotkeys, web-config and the channel all count. LED_STATUS
+shows the last accepted SET_LED even before the LED core has applied it,
+which takes about 10 ms on core 1.
+
+**SET_LED** (`0x13`, OUT): the 8-byte header, then 8 bytes.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | mask: bit 0 animation, bit 1 brightness, bit 2 static colour, bit 3 button colour, bit 4 theme; bits 5–7 must be 0 |
+| 1 | u8 | animation |
+| 2 | u8 | brightness |
+| 3 | u8 | `staticColorIndex` |
+| 4 | u8 | `buttonColorIndex` |
+| 5 | u8 | `themeIndex` |
+| 6 | u8 | persist: 0 RAM only, 1 save to flash |
+| 7 | u8 | reserved (ignored) |
+
+- **Length:** the arguments must be all 8 bytes (16 with the header), else
+  BAD_LENGTH. Bytes past them are ignored.
+- **Checks, in order:** token (BAD_TOKEN), pending reboot (BUSY), length
+  (BAD_LENGTH), capability (UNSUPPORTED), values. Mask bits 5–7, or a
+  persist byte above 1, are BAD_ARG. So is any masked value out of range:
+  each index below its count from LED_STATUS, and brightness at most the
+  steps.
+- **All or nothing:** a refused SET_LED changes nothing. Fields outside
+  the mask are left as they are.
+- **No-ops and merging:** mask 0 with persist 1 saves the current state;
+  mask 0 with persist 0 is a no-op (OK). Two SET_LEDs that arrive before
+  the LED core applies the first are merged (the masks are OR'd).
+- **How it applies:** the control callback flags the request, and the core
+  that owns AnimationStation applies it, as the LED hotkey handlers do.
+  LED state is never touched from the USB IRQ context. There is no hotkey
+  cooldown, and it works in web-config mode too.
+- **RAM only (persist 0):** the change is lost on restart, unless something
+  else saves the config first (any later save writes `AnimationOptions`
+  from RAM). This is the SET_PROFILE caveat; flag bit 2 tells the host.
+- **Persist 1:** the normal (non-forced) storage save, with no reboot. The
+  firmware skips that save in PS4/PS5 mode while the dongle authentication
+  needs the flash, so flag bit 2 stays set; the host notes an unconfirmed
+  save rather than failing.
+
+Not in v1.1, maybe in v1.2: the custom theme's colours. 18 normal and 18
+pressed RGB values are 108 bytes, more than one setup's payload, so it
+would need a chunked SET_THEME. Web-config's `setCustomTheme` covers it
+for now.
+
+Host side: `channel::Channel::led_status` / `set_led`, `leds.rs` and
+`flow::leds` / `leds_set` (`gamepadii leds`, `leds set`, `leds
+brightness`). `channel/sim.rs` models the checks, the RAM and saved state,
+the effect count and the names (`SimChannel::with_leds`); it applies a
+SET_LED at once, so there is nothing to merge.
 
 ## 4. Firmware implementation
 
