@@ -1,0 +1,79 @@
+---
+source: crates/gamepadii-core/tests/flow.rs
+expression: r.kdl
+---
+// The profiles of the pad, from `gamepadii library pull`.
+// Board: haute42-s16 (firmware board Haute42COSMOX).
+
+profile "Default" {
+    board "haute42-s16"
+    pins {
+        left Left
+        down Down
+        right Right
+        m1 Up
+        up Up
+        m2 L3
+        rs R3
+        ls L3
+        p1 B3
+        p2 B4
+        p3 R1
+        p4 L1
+        k1 B1
+        k2 B2
+        k3 R2
+        k4 L2
+        fn1 A2
+        fn2 A1
+        fn3 S1
+        fn4 S2
+        turbo menu-navigation-toggle
+    }
+}
+
+profile "SilkSong" {
+    base "Default"
+    pins {
+        up B1
+        ls R1
+        p2 R2
+        p3 B4
+        p4 B2
+        k1 L2
+        k2 L1
+        k3 R1
+        k4 S1
+    }
+}
+
+profile "Celeste" {
+    base "Default"
+    pins {
+        up B1
+    }
+}
+
+profile "DKC" {
+    base "Default"
+    pins {
+        up B1
+        m2 L1
+        rs R1
+        ls S1
+        p3 L1
+        p4 R1
+        k3 R1
+        k4 L1
+    }
+}
+
+profile "TGX" {
+    base "Default"
+    pins {
+        up B4
+        m2 L1
+        rs R1
+        ls B2
+    }
+}

@@ -853,6 +853,46 @@ mod flows {
     }
 
     #[test]
+    fn library_outputs() {
+        use gamepadii_core::library::{self, Library, Origin};
+        let rig = Rig::new(
+            SimPad::new(s16_dir(), InputMode::Xinput)
+                .with_channel()
+                .channel(|c| *c = c.clone().with_slots()),
+        );
+        let mut pull = rig.run(flow::library_pull).unwrap();
+        let stdout = output::library_pull(human(), &pull);
+        assert_eq!(stdout, pull.kdl, "with no --write: the KDL");
+        let dir = rig.dirs.path().join("profiles");
+        library::save_pull(&mut pull, Some(&dir), "pad.kdl".as_ref(), false).unwrap();
+        pull.file = Some(PathBuf::from("/profiles/pad.kdl"));
+        let broken = "profile \"Hades\" {\n  base \"Default\"\n  pins { thumb B1; }\n}\n";
+        let lib = Library::from_sources(
+            vec![
+                (
+                    Origin::File("/profiles/pad.kdl".into()),
+                    std::fs::read_to_string(dir.join("pad.kdl")).unwrap(),
+                ),
+                (Origin::File("/profiles/hades.kdl".into()), broken.into()),
+            ],
+            true,
+        );
+        let mut list = lib.list();
+        list.dir = Some(PathBuf::from("/profiles"));
+        let show = lib.resolve("My Game").unwrap();
+        let json_show = output::library_show(json(), &show);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            output::library_list(human(), &list),
+            output::library_show(human(), &show),
+            output::library_pull(human(), &pull),
+            output::library_list(json(), &list),
+            &json_show[..json_show.find("\"pins\"").unwrap()],
+            output::slot_file(&show),
+        ));
+    }
+
+    #[test]
     fn lights_profile_outputs() {
         use gamepadii_core::lights::{LightsFile, LightsWrite};
         let rig = Rig::new(

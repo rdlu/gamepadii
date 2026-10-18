@@ -2786,6 +2786,67 @@ fn profile_write_refuses_before_it_sends() {
     }
 }
 
+// ---- the profile library -----------------------------------------------------
+
+#[test]
+fn library_pull_reads_the_slots_as_kdl() {
+    let rig = slots_rig(InputMode::Xinput);
+    let r = rig.run(flow::library_pull).unwrap();
+    assert_eq!(r.profiles, ["Default", "SilkSong", "Celeste", "DKC", "TGX"]);
+    assert_eq!(r.slots, [1, 2, 3, 4, 5]);
+    assert_eq!((r.board.as_str(), r.skipped.len()), ("haute42-s16", 0));
+    assert_eq!(r.file, None);
+    insta::assert_snapshot!(r.kdl);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+    // The KDL is a library that passes the checks, and each profile gives
+    // the pad its slot back.
+    let lib = gamepadii_core::library::Library::from_sources(
+        vec![(
+            gamepadii_core::library::Origin::File("pull.kdl".into()),
+            r.kdl.clone(),
+        )],
+        false,
+    );
+    assert_eq!(lib.list().errors, []);
+    let silksong = lib.resolve("SilkSong").unwrap().slot_file();
+    let shown = rig
+        .run(|env| flow::profile_show(env, Some(&"2".parse().unwrap())))
+        .unwrap();
+    for p in &silksong.pins {
+        assert_eq!(
+            shown.pins[usize::from(p.gpio)].action,
+            p.action.0,
+            "GPIO {}",
+            p.gpio
+        );
+    }
+}
+
+#[test]
+fn library_pull_needs_the_slot_commands_and_a_board_file() {
+    for (rig, says) in [
+        (Rig::cc(InputMode::Xinput), "v1.0"),
+        (Rig::s16(InputMode::Xinput), "control channel v1.4"),
+    ] {
+        let e = rig.run(flow::library_pull).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    let rig = Rig::new(
+        SimPad::new(s16_dir(), InputMode::Xinput)
+            .with_channel()
+            .channel(|c| {
+                *c = c.clone().with_slots();
+                c.strings
+                    .insert(gamepadii_core::channel::proto::string::BOARD, "Pico".into());
+            }),
+    );
+    let e = rig.run(flow::library_pull).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+    assert!(e.to_string().contains("no board file"), "{e}");
+}
+
 // ---- lights profiles (control channel v1.5) ----------------------------------
 
 fn lights_profiles_rig(pending_reads: u8) -> Rig {

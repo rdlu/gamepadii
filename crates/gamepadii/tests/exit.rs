@@ -7,8 +7,9 @@ fn gamepadii(args: &[&str]) -> (u8, String, String) {
     gamepadii_in(home.path(), args)
 }
 
-/// With `$XDG_CACHE_HOME` and `$XDG_DATA_HOME` under `home`, so the device
-/// cache and backups never touch the real ones.
+/// With `$XDG_CACHE_HOME`, `$XDG_DATA_HOME` and `$XDG_CONFIG_HOME` under
+/// `home`, so the device cache, backups and profile library never touch
+/// the real ones.
 fn gamepadii_in(home: &std::path::Path, args: &[&str]) -> (u8, String, String) {
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/sysfs/");
     let args: Vec<String> = args.iter().map(|a| a.replace("@", fixtures)).collect();
@@ -17,6 +18,7 @@ fn gamepadii_in(home: &std::path::Path, args: &[&str]) -> (u8, String, String) {
         .env("NO_COLOR", "1")
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
         .output()
         .expect("run gamepadii");
     (
@@ -865,6 +867,115 @@ fn lights_exit_codes() {
     assert!(stderr.contains("is not on this pad"), "{stderr}");
     let (code, _, stderr) = run(&["leds", "set", "--lights-profile", "dim"]);
     assert_eq!(code, 3, "{stderr}");
+}
+
+#[test]
+fn library_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-v0.7.12"
+    );
+    let pad = |channel: &'static str, args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            channel,
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let run = |args: &[&str]| gamepadii_in(home.path(), args);
+    let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+    let library = home.path().join("config/gamepadii/profiles");
+    // With no library directory: the shipped examples.
+    let (code, stdout, _) = run(&["--json", "library", "list"]);
+    assert_eq!(code, 0);
+    let v = json(&stdout);
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["dir"], library.to_str().unwrap());
+    assert_eq!(v["profiles"][0]["shipped"], true);
+    assert_eq!(v["errors"], serde_json::json!([]));
+    // A pull to standard output writes no file.
+    let (code, stdout, stderr) = pad("slots", &["library", "pull"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("profile \"SilkSong\" {"), "{stdout}");
+    assert!(!library.exists());
+    // --write: into the library, by the board name.
+    let (code, stdout, stderr) = pad("slots", &["library", "pull", "--write"]);
+    assert_eq!(code, 0, "{stderr}");
+    let file = library.join("haute42-s16.kdl");
+    assert!(
+        stdout.starts_with(&format!("5 profiles pulled into {}", file.display())),
+        "{stdout}"
+    );
+    assert!(file.is_file());
+    // Not again without --force.
+    let (code, _, stderr) = pad("slots", &["library", "pull", "--write"]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
+    let (code, stdout, _) = pad(
+        "slots",
+        &["--json", "library", "pull", "--write", "--force"],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(json(&stdout)["file"], file.to_str().unwrap());
+    // The pulled profiles hide the shipped ones with the same names.
+    let (code, stdout, _) = run(&["--json", "library", "show", "silksong"]);
+    assert_eq!(code, 0);
+    let v = json(&stdout);
+    assert_eq!(
+        (v["file"].as_str(), v["shipped"].as_bool()),
+        (file.to_str(), Some(false))
+    );
+    // The slot file of a library profile goes to `profile write`.
+    let (code, stdout, _) = run(&["library", "show", "My Game", "--slot-file"]);
+    assert_eq!(code, 0);
+    let slot = home.path().join("my-game.json");
+    std::fs::write(&slot, &stdout).unwrap();
+    let path = slot.to_str().unwrap();
+    let (code, stdout, stderr) = pad(
+        "slots",
+        &["--json", "profile", "write", path, "--slot", "6"],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(json(&stdout)["label"], "My Game");
+    // Files with errors: `list` names them, and exits 0.
+    std::fs::write(library.join("broken.kdl"), "profile \"X\" {\n").unwrap();
+    std::fs::write(
+        library.join("bad.kdl"),
+        "profile \"Y\" {\n  base \"Nope\"\n}\n",
+    )
+    .unwrap();
+    let (code, stdout, _) = run(&["--json", "library", "list"]);
+    assert_eq!(code, 0);
+    let v = json(&stdout);
+    let errors = v["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(
+        (errors[1]["line"].as_u64(), errors[1]["column"].as_u64()),
+        (Some(2), Some(3))
+    );
+    // Usage errors: 3.
+    let (code, stdout, stderr) = run(&["--json", "library", "show", "Y"]);
+    assert_eq!(code, 3);
+    assert!(
+        stderr.contains("bad.kdl:2:3: base profile \"Nope\""),
+        "{stderr}"
+    );
+    assert_eq!(json(&stdout)["error"]["kind"], "usage");
+    let (code, _, _) = run(&["library", "show", "Nobody"]);
+    assert_eq!(code, 3);
+    let (code, _, _) = pad("slots", &["library", "pull", "--write", "pad.txt"]);
+    assert_eq!(code, 3);
+    // No v1.4 channel: 5; no pad: 2.
+    let (code, _, stderr) = pad("channel", &["library", "pull"]);
+    assert_eq!(code, 5, "{stderr}");
+    let (code, _, _) = run(&["--sysroot", "@no-pad", "library", "pull"]);
+    assert_eq!(code, 2);
 }
 
 #[test]

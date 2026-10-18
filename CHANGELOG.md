@@ -257,6 +257,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Right after a pad connects, udev can apply the ACL a moment late. With
   the udev rule installed, gamepadii tries again for up to 1 s on a new
   node before it shows the udev hint.
+- The profile library (first step of #5): profiles in KDL 2.0 files in
+  `~/.config/gamepadii/profiles/` (the `kdl` crate, 6.5.0). A profile names
+  the physical buttons of a board file, has an optional base, label and
+  input mode, and takes what it leaves out from its base. gamepadii ships
+  the board file of the S16 (`haute42-s16`) and example profiles. Errors
+  give the file, line and column: unknown buttons and actions, a button
+  twice, input-mode conflicts, a missing base and a loop of bases.
+  `gamepadii library list` shows the profiles and the errors;
+  `library show NAME` shows a profile with its bases applied, and
+  `--slot-file` gives the slot file for `profile write`;
+  `library pull [--write [FILE]] [--force]` reads the enabled slots of the
+  pad (READ_SLOT, control channel 1.4) and writes them as KDL.
 
 ### Fixed
 

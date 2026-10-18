@@ -54,9 +54,10 @@ every action is pinned to a commit SHA with its version in a comment.
   (`confirmed` / `likely`), never claim certainty.
 - Hotkeys and boot buttons are logical; anything telling the user what to
   press names the physical keys too (`buttons.rs`, from the device cache).
-- Tests that run the binary point `XDG_CACHE_HOME` and `XDG_DATA_HOME` at
-  temporary directories (`exit.rs`'s `gamepadii_in`): commands write the
-  device cache and backups there.
+- Tests that run the binary point `XDG_CACHE_HOME`, `XDG_DATA_HOME` and
+  `XDG_CONFIG_HOME` at temporary directories (`exit.rs`'s `gamepadii_in`):
+  commands write the device cache and backups there, and read the profile
+  library there.
 
 ## Writing
 

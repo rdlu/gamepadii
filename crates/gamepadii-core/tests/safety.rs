@@ -166,6 +166,7 @@ fn every_command(fake: &Fake, dir: &Path) {
             ..Default::default()
         };
         let _ = flow::profile_write(env, &file, &write, &mut Silent);
+        let _ = flow::library_pull(env);
         let _ = flow::lights_show(env, None);
         let file = gamepadii_core::lights::LightsFile::default();
         let write = gamepadii_core::lights::LightsWrite {

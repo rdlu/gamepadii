@@ -2,8 +2,9 @@
 //! `info`, `backup [-o FILE] [--channel-only]`, `restore FILE`,
 //! `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
-//! [--save]`, `display layout [LAYOUT | --left N --right N]`, `leds [set
-//! ... | brightness up|down|N]`, `input [--watch | find-pin [--scan]]`,
+//! [--save]`, `library list|show NAME|pull`, `display layout [LAYOUT |
+//! --left N --right N]`, `leds [set ... | brightness up|down|N]`, `input
+//! [--watch | find-pin [--scan]]`,
 //! `log [--from N] [--follow]`, `tui` (also no command on a terminal),
 //! `setup udev [--print|--install]`, `--host HOST` for the web-config ones
 //! and `--no-channel` to leave the control channel alone.
@@ -225,6 +226,13 @@ pub enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// The profile library on this computer: KDL files in
+    /// ~/.config/gamepadii/profiles/, and the examples that gamepadii
+    /// ships. A profile names the physical buttons of a board file.
+    Library {
+        #[command(subcommand)]
+        command: LibraryCommand,
+    },
     /// The per-button RGB LEDs: animation, brightness, colours and the
     /// custom theme, or the lights profile on main firmware. Over the
     /// control channel when the firmware has the LED
@@ -348,6 +356,38 @@ pub enum ProfileCommand {
         /// Don't back up the slot first.
         #[arg(long)]
         no_backup: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum LibraryCommand {
+    /// List the profiles in the library, with their file, base and label.
+    /// It also shows each file that does not parse, and each profile that
+    /// does not pass the checks.
+    List,
+    /// Show a profile with its bases applied: the action of each button,
+    /// and the profile that gives it.
+    Show {
+        /// The name of the profile, any case.
+        name: String,
+        /// Print the slot file for `gamepadii profile write` (JSON) in
+        /// place of the profile. Buttons with no action are not in it, so
+        /// they follow profile 1.
+        #[arg(long)]
+        slot_file: bool,
+    },
+    /// Read the enabled profiles of the pad, live, and write them as KDL
+    /// (needs control channel v1.4 of the gamepadii firmware). It reads
+    /// only: it changes nothing on the pad.
+    Pull {
+        /// Write the KDL into a file, not to standard output. A file name
+        /// with no directory goes into the library [default: the board
+        /// name, for example haute42-s16.kdl].
+        #[arg(long, value_name = "FILE", num_args = 0..=1)]
+        write: Option<Option<PathBuf>>,
+        /// Replace the file when it is there.
+        #[arg(long, requires = "write")]
+        force: bool,
     },
 }
 

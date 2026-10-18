@@ -23,6 +23,8 @@ it here in the same change.
 | ADC | The part of the RP2040 chip that reads an analog value, for example the position of a stick. |
 | allowlist | The list of web-config endpoints that gamepadii can read safely. gamepadii does not send a request to an endpoint that is not on this list. |
 | backup | A file that contains a copy of the settings of the pad. gamepadii writes it before it changes the settings. |
+| base profile, base | A profile in the library that another profile starts from. The other profile gets each part that it does not give from its base. A base can have its own base. |
+| board file | A KDL file that gamepadii ships for one pad model. It gives the name of each physical button and its GPIO, so that a profile names buttons and not GPIOs. |
 | board ID | The unique ID of the flash chip of the pad: 16 hex digits. The control channel gives it from protocol 1.3. It does not change, but pads with the same flash chip can have the same board ID. |
 | board config | The name of the hardware definition that the firmware was built for. The S16 uses `Haute42COSMOX`. |
 | boot number | The number of a boot in the log of the pad. It is 0 when a new log starts, and it goes up by 1 at each restart that keeps the log. |
@@ -59,8 +61,10 @@ it here in the same change.
 | hotkey | A set of buttons that you push together to do an action on the pad, for example to change the LED brightness. |
 | input mode | The type of controller that the pad shows to the host: XInput, Switch, PS4, keyboard, and others. |
 | input snapshot | The reply to READ_INPUT (control channel 1.7): the pins that are pressed at that time, and the gamepad state. |
-| KDL | A text format for configuration files. gamepadii will keep its profile library in KDL files. |
+| KDL | A text format for configuration files. gamepadii keeps its profile library in KDL 2.0 files. |
+| label | The name of a profile that the pad keeps and shows, at most 16 bytes. |
 | LED | A light under a button. The S16 has one LED for each button. |
+| library, profile library | The profiles that gamepadii keeps on the computer, in KDL files in `~/.config/gamepadii/profiles/`, and the example profiles that it ships. The library can have more profiles than the pad. |
 | lights file | A JSON file with the effects and colours of one lights profile. `gamepadii leds profile show --json` makes one, and `gamepadii leds profile write` reads one. |
 | lights profile | On main firmware, a set of LED effects: one when a button is released, one when it is pressed, and one for the case. The pad has 4, numbered from 0. The LEDs can also be off. |
 | log | On our firmware from control channel v1.8, the list of the last 64 events of the pad (boots, panics, commands, saves). `gamepadii log` shows it. |
@@ -106,9 +110,12 @@ it here in the same change.
 | commit | To record a change in git. |
 | flash | To write firmware or data to the flash memory of the pad. |
 | merge | To add the changes of one branch to another branch. |
+| parse | To read a text file and find its parts (for example, the profiles in a KDL file). A file that "does not parse" has an error in its syntax. |
+| pull | To read the profiles of the pad and write them as KDL (`gamepadii library pull`). |
 | push | To send commits from the computer to GitHub. |
 | reboot | To restart the pad. Use instead: restart (STE approved), when you can. |
 | restore | To put back a state from before: the settings of a backup (`gamepadii restore`), or the profile that a restart removed. |
+| ship | To include a file in gamepadii, so that each installation has it (for example, the board files and the example profiles). |
 
 ## Words not to use
 

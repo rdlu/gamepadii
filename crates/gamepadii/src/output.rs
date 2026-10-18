@@ -26,6 +26,7 @@ use gamepadii_core::flow::{
 };
 use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
+use gamepadii_core::library::{ListReport, PullReport, Resolved};
 use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
 use gamepadii_core::log::{self, LogEntry, LogReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
@@ -1098,6 +1099,186 @@ pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
     if let Some(n) = &r.note {
         rw.push(("note", n.clone()));
     }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// `name  base  label  file:line` lines with the columns padded.
+fn table(head: &[&str], lines: &[Vec<String>]) -> String {
+    let widths: Vec<usize> = (0..head.len())
+        .map(|i| {
+            lines
+                .iter()
+                .map(|l| l[i].chars().count())
+                .chain([head[i].len()])
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let line = |cells: Vec<String>| {
+        let last = cells.len() - 1;
+        cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| match i == last {
+                true => c,
+                false => format!("{c:<w$}  ", w = widths[i]),
+            })
+            .collect::<String>()
+    };
+    std::iter::once(line(head.iter().map(|h| h.to_string()).collect()))
+        .chain(lines.iter().map(|l| line(l.clone())))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn library_list(style: Style, r: &ListReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let n = r.profiles.len();
+    let head = format!(
+        "{n} profile{} in the library",
+        if n == 1 { "" } else { "s" }
+    );
+    let mut out = format!("{}\n", style.bold(&head));
+    let mut rw = vec![(
+        "directory",
+        r.dir
+            .as_ref()
+            .map_or_else(|| "- (no $HOME)".into(), |d| d.display().to_string()),
+    )];
+    if !r.profiles.is_empty() {
+        let lines: Vec<Vec<String>> = r
+            .profiles
+            .iter()
+            .map(|p| {
+                vec![
+                    p.name.clone(),
+                    p.base.clone().unwrap_or_else(|| "-".into()),
+                    p.label.clone(),
+                    format!(
+                        "{}:{}{}",
+                        p.file,
+                        p.line,
+                        if p.ok { "" } else { " (see the errors)" }
+                    ),
+                ]
+            })
+            .collect();
+        rw.push((
+            "profiles",
+            table(&["name", "base", "label", "file"], &lines),
+        ));
+    }
+    if !r.errors.is_empty() {
+        let errors = r
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        rw.push(("errors", errors));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn library_show(style: Style, r: &Resolved) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let mut out = format!("{}\n", style.bold(&format!("Profile {}", r.name)));
+    let lines: Vec<Vec<String>> = r
+        .pins
+        .iter()
+        .map(|p| {
+            let action = match (&p.action_name, p.action) {
+                (Some(n), Some(40)) => format!("{n} {:#x}/{:#x}", p.button_mask, p.dpad_mask),
+                (Some(n), _) => n.clone(),
+                (None, Some(a)) => a.to_string(),
+                (None, None) => "same as profile 1".into(),
+            };
+            vec![
+                p.button.clone(),
+                format!("{:>4}", p.gpio),
+                action,
+                p.from.clone().unwrap_or_else(|| "-".into()),
+            ]
+        })
+        .collect();
+    let rw = vec![
+        ("file", format!("{}:{}", r.file, r.line)),
+        (
+            "bases",
+            match r.bases.is_empty() {
+                true => "none".into(),
+                false => r.bases.join(" > "),
+            },
+        ),
+        ("board", format!("{} ({})", r.board, r.firmware_board)),
+        ("label", r.label.clone()),
+        (
+            "input mode",
+            r.input_mode
+                .map_or_else(|| "any".into(), |m| m.label().to_string()),
+        ),
+        ("pins", table(&["button", "GPIO", "action", "from"], &lines)),
+    ];
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// The slot file of a library profile: always JSON, for `profile write`.
+pub fn slot_file(r: &Resolved) -> String {
+    serde_json::to_string_pretty(&r.slot_file()).expect("serialising plain data cannot fail")
+}
+
+/// The KDL on standard output; with `--write`, what went where.
+pub fn library_pull(style: Style, r: &PullReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let Some(file) = &r.file else {
+        return r.kdl.clone();
+    };
+    let n = r.profiles.len();
+    let head = format!(
+        "{n} profile{} pulled into {}",
+        if n == 1 { "" } else { "s" },
+        file.display()
+    );
+    let mut out = format!("{}\n", style.bold(&head));
+    let names = r
+        .profiles
+        .iter()
+        .zip(&r.slots)
+        .map(|(name, n)| format!("{n} {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut rw = vec![
+        ("profiles", names),
+        ("board", format!("{} ({})", r.board, r.firmware_board)),
+    ];
+    if !r.skipped.is_empty() {
+        let s = r
+            .skipped
+            .iter()
+            .map(|s| {
+                format!(
+                    "profile {}, GPIO {}: {}",
+                    s.profile,
+                    s.gpio,
+                    s.action_name
+                        .clone()
+                        .unwrap_or_else(|| s.action.to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        rw.push(("not pulled", s));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
     rows(style, &mut out, &rw);
     out
 }
