@@ -333,7 +333,7 @@ pub fn set_layout(
         }
         None => None,
     };
-    let write = api::set_display_options(client.transport(), |d| {
+    let write = api::set_display_options(client.transport(), client.line()?.line, |d| {
         d.button_layout = Some(left);
         d.button_layout_right = Some(right);
     })?;

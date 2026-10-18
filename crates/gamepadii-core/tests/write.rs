@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gamepadii_core::api::FirmwareLine::{Main, V0712};
 use gamepadii_core::api::write::{self, SETTER_KEYS};
 use gamepadii_core::api::{self, RebootAck};
 use gamepadii_core::error::exit;
@@ -59,7 +60,7 @@ fn the_mock_zeroes_what_a_partial_body_leaves_out() {
 #[test]
 fn the_mock_round_trips_a_full_web_ui_style_body() {
     let current = fixture_options();
-    let body = write::setter_body(&current).unwrap();
+    let body = write::setter_body(&current, V0712).unwrap();
     assert_eq!(
         mock::firmware_set_gamepad_options(&current, &Value::Object(body)),
         current
@@ -73,7 +74,7 @@ fn the_mock_round_trips_a_full_web_ui_style_body() {
 #[test]
 fn setter_body_converts_the_usb_ids_and_keeps_everything() {
     let current = fixture_options();
-    let body = write::setter_body(&current).unwrap();
+    let body = write::setter_body(&current, V0712).unwrap();
     assert_eq!(body["usbVendorID"], 0x10c4);
     assert_eq!(body["usbProductID"], 0x82c0);
     assert_eq!(body.len(), current.len());
@@ -93,24 +94,24 @@ fn setter_body_refuses_an_incomplete_object() {
     ] {
         let mut o = fixture_options();
         o.remove(key);
-        let err = write::setter_body(&o).unwrap_err();
+        let err = write::setter_body(&o, V0712).unwrap_err();
         assert!(err.to_string().contains(key), "{err}");
     }
     let mut o = fixture_options();
     o["usbDescProduct"] = Value::Null;
-    assert!(write::setter_body(&o).is_err());
+    assert!(write::setter_body(&o, V0712).is_err());
     let mut o = fixture_options();
     o["hotkey03"] = json!({"action": 2});
-    assert!(write::setter_body(&o).is_err());
+    assert!(write::setter_body(&o, V0712).is_err());
     let mut o = fixture_options();
     o["usbVendorID"] = json!("XYZW");
-    assert!(write::setter_body(&o).is_err());
+    assert!(write::setter_body(&o, V0712).is_err());
 }
 
 #[test]
 fn read_modify_write_posts_the_whole_object_and_verifies() {
     let (t, mock) = s16(Mock::new(s16_dir()));
-    let w = api::set_gamepad_options(&t, |o| o.input_mode = Some(3)).unwrap();
+    let w = api::set_gamepad_options(&t, V0712, |o| o.input_mode = Some(3)).unwrap();
     assert!(w.posted);
     assert_eq!(w.changed.len(), 1);
     assert_eq!(w.changed[0].key, "inputMode");
@@ -160,7 +161,7 @@ fn unknown_fields_survive_the_write() {
     )
     .unwrap();
     let (t, mock) = s16(Mock::new(dir.path()));
-    api::set_gamepad_options(&t, |o| o.input_mode = Some(1)).unwrap();
+    api::set_gamepad_options(&t, V0712, |o| o.input_mode = Some(1)).unwrap();
     let sent = mock.requests()[1].json();
     assert_eq!(sent["someNewOption"], 7);
 }
@@ -168,7 +169,7 @@ fn unknown_fields_survive_the_write() {
 #[test]
 fn no_change_posts_nothing() {
     let (t, mock) = s16(Mock::new(s16_dir()));
-    let w = api::set_gamepad_options(&t, |o| o.input_mode = Some(0)).unwrap();
+    let w = api::set_gamepad_options(&t, V0712, |o| o.input_mode = Some(0)).unwrap();
     assert!(!w.posted);
     assert!(w.changed.is_empty());
     assert!(mock.requests().iter().all(|r| r.method == Method::Get));
@@ -177,7 +178,7 @@ fn no_change_posts_nothing() {
 #[test]
 fn a_write_that_does_not_take_is_a_failed_check() {
     let (t, _) = s16(Mock::new(s16_dir()).set_fault(SetFault::Ignore));
-    let err = api::set_gamepad_options(&t, |o| o.input_mode = Some(3)).unwrap_err();
+    let err = api::set_gamepad_options(&t, V0712, |o| o.input_mode = Some(3)).unwrap_err();
     assert_eq!(err.exit_code(), exit::CHECK_FAILED);
     assert!(
         err.to_string()
@@ -189,7 +190,7 @@ fn a_write_that_does_not_take_is_a_failed_check() {
 #[test]
 fn a_write_that_changes_something_else_is_a_failed_check() {
     let (t, _) = s16(Mock::new(s16_dir()).set_fault(SetFault::Clobber("socdMode", json!(0))));
-    let err = api::set_gamepad_options(&t, |o| o.input_mode = Some(3)).unwrap_err();
+    let err = api::set_gamepad_options(&t, V0712, |o| o.input_mode = Some(3)).unwrap_err();
     assert_eq!(err.exit_code(), exit::CHECK_FAILED);
     let msg = err.to_string();
     assert!(msg.contains("socdMode: wanted 2, the pad has 0"), "{msg}");
@@ -199,7 +200,7 @@ fn a_write_that_changes_something_else_is_a_failed_check() {
 #[test]
 fn set_endpoints_are_never_read() {
     let (t, mock) = s16(Mock::new(s16_dir()));
-    api::set_gamepad_options(&t, |o| o.socd_mode = Some(1)).unwrap();
+    api::set_gamepad_options(&t, V0712, |o| o.socd_mode = Some(1)).unwrap();
     for r in mock.requests() {
         if r.path.starts_with("/api/set") {
             assert_eq!(r.method, Method::Post, "{}", r.path);
@@ -222,7 +223,7 @@ fn reboot_acks() {
     assert_eq!(mock.requests().len(), 1);
     // A hang before the reboot was ever sent is still an error.
     let (t, _) = s16(Mock::new(s16_dir()).hang_on("/api/getGamepadOptions"));
-    assert!(api::set_gamepad_options(&t, |_| {}).is_err());
+    assert!(api::set_gamepad_options(&t, V0712, |_| {}).is_err());
 }
 
 // ---- setDisplayOptions ------------------------------------------------------
@@ -253,7 +254,7 @@ fn the_mock_zeroes_what_a_partial_display_body_leaves_out() {
 #[test]
 fn the_mock_round_trips_the_display_getter() {
     let current = fixture_display();
-    let body = write::display_setter_body(&current).unwrap();
+    let body = write::display_setter_body(&current, V0712).unwrap();
     assert_eq!(body, current, "sent back as it is");
     assert_eq!(
         mock::firmware_set_display_options(&current, &Value::Object(body)),
@@ -269,7 +270,7 @@ fn display_setter_body_refuses_an_incomplete_object() {
     for key in ["enabled", "buttonLayoutRight", "inputHistoryRow"] {
         let mut o = fixture_display();
         o.remove(key);
-        let err = write::display_setter_body(&o).unwrap_err();
+        let err = write::display_setter_body(&o, V0712).unwrap_err();
         assert!(err.to_string().contains(key), "{err}");
         assert!(
             err.to_string().contains("setDisplayOptions: not writing"),
@@ -278,23 +279,23 @@ fn display_setter_body_refuses_an_incomplete_object() {
     }
     let mut o = fixture_display();
     o["splashMode"] = json!("0");
-    assert!(write::display_setter_body(&o).is_err());
+    assert!(write::display_setter_body(&o, V0712).is_err());
     let mut o = fixture_display();
     o.remove("buttonLayoutCustomOptions");
-    assert!(write::display_setter_body(&o).is_err());
+    assert!(write::display_setter_body(&o, V0712).is_err());
     let mut o = fixture_display();
     o["buttonLayoutCustomOptions"]["paramsRight"]
         .as_object_mut()
         .unwrap()
         .remove("buttonPadding");
-    let err = write::display_setter_body(&o).unwrap_err();
+    let err = write::display_setter_body(&o, V0712).unwrap_err();
     assert!(err.to_string().contains("paramsRight"), "{err}");
 }
 
 #[test]
 fn display_read_modify_write_posts_the_whole_object_and_verifies() {
     let (t, mock) = s16(Mock::new(s16_dir()));
-    let w = api::set_display_options(&t, |d| {
+    let w = api::set_display_options(&t, V0712, |d| {
         d.button_layout = Some(36);
         d.button_layout_right = Some(42);
     })
@@ -346,12 +347,12 @@ fn display_read_modify_write_posts_the_whole_object_and_verifies() {
 #[test]
 fn display_no_change_posts_nothing_and_faults_fail_the_check() {
     let (t, mock) = s16(Mock::new(s16_dir()));
-    let w = api::set_display_options(&t, |d| d.button_layout = Some(27)).unwrap();
+    let w = api::set_display_options(&t, V0712, |d| d.button_layout = Some(27)).unwrap();
     assert!(!w.posted);
     assert!(mock.requests().iter().all(|r| r.method == Method::Get));
 
     let (t, _) = s16(Mock::new(s16_dir()).set_fault(SetFault::Ignore));
-    let err = api::set_display_options(&t, |d| d.button_layout = Some(36)).unwrap_err();
+    let err = api::set_display_options(&t, V0712, |d| d.button_layout = Some(36)).unwrap_err();
     assert_eq!(err.exit_code(), exit::CHECK_FAILED);
     let msg = err.to_string();
     assert!(msg.contains("setDisplayOptions was written"), "{msg}");
@@ -361,11 +362,110 @@ fn display_no_change_posts_nothing_and_faults_fail_the_check() {
     );
 
     let (t, _) = s16(Mock::new(s16_dir()).set_fault(SetFault::Clobber("splashMode", json!(3))));
-    let err = api::set_display_options(&t, |d| d.button_layout = Some(36)).unwrap_err();
+    let err = api::set_display_options(&t, V0712, |d| d.button_layout = Some(36)).unwrap_err();
     assert_eq!(err.exit_code(), exit::CHECK_FAILED);
     assert!(
         err.to_string()
             .contains("splashMode: wanted 0, the pad has 3"),
         "{err}"
     );
+}
+
+// ---- upstream main (tests/fixtures/api/s16-main, synthetic) --------------
+
+fn main_dir() -> PathBuf {
+    s16_dir().join("../s16-main")
+}
+
+fn main_object(name: &str) -> Map<String, Value> {
+    let text = std::fs::read_to_string(main_dir().join(format!("{name}.json"))).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// A main pad whose `name` getter lacks `key` (an overlay of s16-main).
+fn main_without(name: &str, key: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let pad = dir.path().join("pad");
+    std::fs::create_dir(&pad).unwrap();
+    std::fs::write(pad.join("BASE"), main_dir().to_str().unwrap()).unwrap();
+    let mut o = main_object(name);
+    o.remove(key).unwrap();
+    std::fs::write(
+        pad.join(format!("{name}.json")),
+        Value::Object(o).to_string(),
+    )
+    .unwrap();
+    (dir, pad)
+}
+
+#[test]
+fn mains_setters_read_more_keys() {
+    let gamepad = write::setter_keys(Main);
+    assert_eq!(gamepad.len(), SETTER_KEYS.len() + 15);
+    assert!(gamepad.contains(&"switch2ProJoyCon2RightStickColor"));
+    assert_eq!(write::setter_keys(V0712), SETTER_KEYS);
+    let display = write::display_setter_keys(Main);
+    assert_eq!(display.last(), Some(&"displayContrast"));
+    assert_eq!(
+        write::display_setter_keys(V0712),
+        write::DISPLAY_SETTER_KEYS
+    );
+    // Main's getters return every key its setters read.
+    let options = main_object("getGamepadOptions");
+    for k in gamepad {
+        assert!(options.contains_key(k), "{k}");
+    }
+    let display_options = main_object("getDisplayOptions");
+    for k in display {
+        assert!(display_options.contains_key(k), "{k}");
+    }
+}
+
+#[test]
+fn the_mock_zeroes_mains_new_keys_too() {
+    let current = main_object("getGamepadOptions");
+    assert_ne!(current["switch2ProBodyColor"], json!(0));
+    let after = mock::firmware_set_gamepad_options(&current, &json!({"inputMode": 3}));
+    assert_eq!(after["switch2ProBodyColor"], json!(0));
+    let display = main_object("getDisplayOptions");
+    let after = mock::firmware_set_display_options(&display, &json!({"enabled": 1}));
+    assert_eq!(after["displayContrast"], json!(0));
+}
+
+#[test]
+fn a_write_on_main_keeps_its_new_keys() {
+    let (t, mock) = s16(Mock::new(main_dir()));
+    let before = main_object("getGamepadOptions");
+    let w = api::set_gamepad_options(&t, Main, |o| o.input_mode = Some(3)).unwrap();
+    assert_eq!(w.changed.len(), 1);
+    assert_eq!(w.changed[0].key, "inputMode");
+    let sent = mock.requests()[1].json();
+    for k in write::MAIN_SETTER_KEYS {
+        assert_eq!(sent[*k], before[*k], "{k}");
+    }
+    let after = mock.current("getGamepadOptions").unwrap();
+    assert_eq!(after["switch2ProBodyColor"], before["switch2ProBodyColor"]);
+
+    let (t, mock) = s16(Mock::new(main_dir()));
+    let w = api::set_display_options(&t, Main, |d| d.button_layout = Some(36)).unwrap();
+    assert_eq!(w.changed.len(), 1);
+    assert_eq!(mock.requests()[1].json()["displayContrast"], json!(255));
+}
+
+#[test]
+fn main_refuses_a_getter_without_a_key_its_setter_reads() {
+    let (_dir, pad) = main_without("getGamepadOptions", "switch2ProGripColor");
+    let (t, mock) = s16(Mock::new(pad));
+    let err = api::set_gamepad_options(&t, Main, |o| o.input_mode = Some(3)).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+    let msg = err.to_string();
+    assert!(msg.contains("switch2ProGripColor"), "{msg}");
+    assert!(msg.contains("main firmware reads it"), "{msg}");
+    assert!(mock.requests().iter().all(|r| r.method == Method::Get));
+
+    let (_dir, pad) = main_without("getDisplayOptions", "displayContrast");
+    let (t, mock) = s16(Mock::new(pad));
+    let err = api::set_display_options(&t, Main, |d| d.button_layout = Some(36)).unwrap_err();
+    assert!(err.to_string().contains("displayContrast"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method == Method::Get));
 }
