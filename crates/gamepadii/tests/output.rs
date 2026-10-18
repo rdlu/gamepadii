@@ -893,6 +893,49 @@ mod flows {
     }
 
     #[test]
+    fn library_diff_and_apply_outputs() {
+        use gamepadii_core::library::Library;
+        use gamepadii_core::library::diff::Apply;
+        let rig = Rig::new(
+            SimPad::new(s16_dir(), InputMode::Keyboard)
+                .with_channel()
+                .channel(|c| *c = c.clone().with_slots()),
+        );
+        let lib = Library::from_sources(Vec::new(), true);
+        let my_game = lib.resolve("My Game").unwrap();
+        let silksong = lib.resolve("SilkSong").unwrap();
+        let diff = rig
+            .run(|env| flow::library_diff(env, &silksong, Some(3)))
+            .unwrap();
+        let same = rig
+            .run(|env| flow::library_apply(env, &silksong, &Apply::default(), &mut Silent))
+            .unwrap();
+        let apply = Apply {
+            slot: Some(6),
+            select: true,
+            save: false,
+        };
+        let mut written = rig
+            .run(|env| flow::library_apply(env, &my_game, &apply, &mut Silent))
+            .unwrap();
+        // The backup path has a temporary directory in it.
+        if let Some(w) = written.write.as_mut() {
+            w.backup = w
+                .backup
+                .take()
+                .map(|p| PathBuf::from(p.file_name().unwrap()));
+        }
+        let json_diff = output::library_diff(json(), &diff);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}",
+            output::library_diff(human(), &diff),
+            output::library_apply(human(), &same),
+            output::library_apply(human(), &written),
+            &json_diff[..json_diff.find("\"pins\"").unwrap()],
+        ));
+    }
+
+    #[test]
     fn lights_profile_outputs() {
         use gamepadii_core::lights::{LightsFile, LightsWrite};
         let rig = Rig::new(

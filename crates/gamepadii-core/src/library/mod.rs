@@ -8,9 +8,11 @@
 //! base. In this step a profile holds what the pad can take live: a pin
 //! mapping, a label and an input mode. [`Resolved::slot_file`] turns a
 //! profile into a slot file for `gamepadii profile write`, and [`pull`]
-//! turns the pad's slots into profiles.
+//! turns the pad's slots into profiles. [`diff`] compares a profile with a
+//! slot, for `library diff` and `library apply`.
 
 pub mod board;
+pub mod diff;
 pub mod parse;
 pub mod pull;
 pub mod write;

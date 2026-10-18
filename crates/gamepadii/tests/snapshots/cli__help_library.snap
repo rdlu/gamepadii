@@ -7,10 +7,12 @@ The profile library on this computer: KDL files in ~/.config/gamepadii/profiles/
 Usage: gamepadii library [OPTIONS] <COMMAND>
 
 Commands:
-  list  List the profiles in the library, with their file, base and label. It also shows each file that does not parse, and each profile that does not pass the checks
-  show  Show a profile with its bases applied: the action of each button, and the profile that gives it
-  pull  Read the enabled profiles of the pad, live, and write them as KDL (needs control channel v1.4 of the gamepadii firmware). It reads only: it changes nothing on the pad
-  help  Print this message or the help of the given subcommand(s)
+  list   List the profiles in the library, with their file, base and label. It also shows each file that does not parse, and each profile that does not pass the checks
+  show   Show a profile with its bases applied: the action of each button, and the profile that gives it
+  pull   Read the enabled profiles of the pad, live, and write them as KDL (needs control channel v1.4 of the gamepadii firmware). It reads only: it changes nothing on the pad
+  diff   Compare a library profile with a slot of the pad, live (needs control channel v1.4). It shows what `library apply` writes: the label, the state, and each button that changes. It reads only. Exit 0: no change; exit 1: `apply` writes
+  apply  Write a library profile to a slot of the pad, live, with no reboot (needs control channel v1.4). RAM only unless --save. gamepadii backs up the slot first, and writes nothing when the slot has the profile already. It does not change the input mode
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
       --format <FORMAT>

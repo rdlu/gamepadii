@@ -503,4 +503,37 @@ fn parses_library() {
         lib(&["library", "pull", "--force"]).is_err(),
         "--force needs --write"
     );
+    assert_eq!(
+        lib(&["library", "diff", "silksong"]).unwrap(),
+        LibraryCommand::Diff {
+            name: "silksong".into(),
+            slot: None
+        }
+    );
+    assert_eq!(
+        lib(&["library", "apply", "My Game", "--slot", "6", "--select"]).unwrap(),
+        LibraryCommand::Apply {
+            name: "My Game".into(),
+            slot: Some(6),
+            select: true,
+            save: false,
+            no_backup: false
+        }
+    );
+    // Profile 1 is the base of the others: never a target.
+    for cmd in ["diff", "apply"] {
+        for slot in ["1", "7"] {
+            assert!(lib(&["library", cmd, "X", "--slot", slot]).is_err());
+        }
+    }
+}
+
+#[test]
+fn help_library_diff() {
+    insta::assert_snapshot!(help(&["library", "diff"]));
+}
+
+#[test]
+fn help_library_apply() {
+    insta::assert_snapshot!(help(&["library", "apply"]));
 }

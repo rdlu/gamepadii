@@ -26,6 +26,7 @@ use gamepadii_core::flow::{
 };
 use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
+use gamepadii_core::library::diff::{ApplyReport, Change, DiffReport, PinState};
 use gamepadii_core::library::{ListReport, PullReport, Resolved};
 use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
 use gamepadii_core::log::{self, LogEntry, LogReport};
@@ -1054,6 +1055,12 @@ pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
     };
     let name = format!("Profile {}", slot_name(r.profile, &r.label));
     let mut out = format!("{} {what}\n", style.bold(&name));
+    rows(style, &mut out, &slot_write_rows(r));
+    out
+}
+
+/// The rows of `profile write`, after the headline.
+fn slot_write_rows(r: &SlotWriteReport) -> Vec<(&'static str, String)> {
     let was = if r.before_label.is_empty() {
         "no label".into()
     } else {
@@ -1099,8 +1106,7 @@ pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
     if let Some(n) = &r.note {
         rw.push(("note", n.clone()));
     }
-    rows(style, &mut out, &rw);
-    out
+    rw
 }
 
 /// `name  base  label  file:line` lines with the columns padded.
@@ -1279,6 +1285,189 @@ pub fn library_pull(style: Style, r: &PullReport) -> String {
         rw.push(("not pulled", s));
     }
     rw.push(("via", format!("the control channel ({})", r.host)));
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// One pin of `library diff`: its action, or profile 1's.
+fn pin_state(p: &PinState) -> String {
+    let name = |n: &Option<String>, a: i16| match (n, a) {
+        (Some(n), 40) => format!("{n} {:#x}/{:#x}", p.button_mask, p.dpad_mask),
+        (Some(n), _) => n.clone(),
+        (None, a) => a.to_string(),
+    };
+    if p.from_profile_1 {
+        format!(
+            "same as profile 1 ({})",
+            name(&p.pad_action_name, p.pad_action)
+        )
+    } else {
+        name(&p.action_name, p.action)
+    }
+}
+
+/// `X -> Y`, or `X` when it does not change.
+fn now_after<T: PartialEq>(c: &Change<T>, show: impl Fn(&T) -> String) -> String {
+    match c.changed() {
+        true => format!("{} -> {}", show(&c.now), show(&c.after)),
+        false => show(&c.now),
+    }
+}
+
+/// The rows of a diff: the slot, the label, the state, the pins.
+fn diff_rows(r: &DiffReport) -> Vec<(&'static str, String)> {
+    let label = |l: &String| match l.is_empty() {
+        true => "no label".to_string(),
+        false => l.clone(),
+    };
+    let state = |e: &bool| match e {
+        true => "enabled".to_string(),
+        false => "disabled".to_string(),
+    };
+    let mut rw = vec![
+        (
+            "slot",
+            format!(
+                "profile {}{}{}",
+                r.slot,
+                if r.active { ", active" } else { "" },
+                if r.slot_by_label {
+                    " (it has the label of the profile)"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        ("label", now_after(&r.label, label)),
+        ("state", now_after(&r.enabled, state)),
+        ("board", format!("{} ({})", r.board, r.firmware_board)),
+    ];
+    let lines: Vec<Vec<String>> = r
+        .pins
+        .iter()
+        .filter(|p| !p.same_action)
+        .map(|p| {
+            vec![
+                p.button.clone().unwrap_or_else(|| "-".into()),
+                format!("{:>4}", p.gpio),
+                pin_state(&p.now),
+                pin_state(&p.after),
+            ]
+        })
+        .collect();
+    rw.push((
+        "pins",
+        match lines.is_empty() {
+            true => "no change".into(),
+            false => table(&["button", "GPIO", "now", "after"], &lines),
+        },
+    ));
+    let same: Vec<String> = r
+        .pins
+        .iter()
+        .filter(|p| p.same_action)
+        .map(|p| match &p.button {
+            Some(b) => b.clone(),
+            None => format!("GPIO {}", p.gpio),
+        })
+        .collect();
+    if !same.is_empty() {
+        rw.push((
+            "same action",
+            format!(
+                "{} pin{}: the stored value changes, the action does not{}\n{}",
+                same.len(),
+                if same.len() == 1 { "" } else { "s" },
+                if r.changed {
+                    ""
+                } else {
+                    "; for this alone, apply writes nothing"
+                },
+                same.join(", ")
+            ),
+        ));
+    }
+    rw.push((
+        "input mode",
+        match (r.input_mode, r.pad_input_mode) {
+            (None, _) => "any".into(),
+            (Some(m), Some(p)) if m == p => format!("{} (the pad runs it)", m.label()),
+            (Some(m), Some(p)) => format!("{} (the pad runs {})", m.label(), p.label()),
+            (Some(m), None) => m.label().to_string(),
+        },
+    ));
+    rw
+}
+
+pub fn library_diff(style: Style, r: &DiffReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let n = r.pins.iter().filter(|p| !p.same_action).count()
+        + usize::from(r.label.changed())
+        + usize::from(r.enabled.changed());
+    let what = match n {
+        0 => "no change".to_string(),
+        1 => "1 change".to_string(),
+        n => format!("{n} changes"),
+    };
+    let head = format!("Profile {} against profile {}: {what}", r.name, r.slot);
+    let mut out = format!("{}\n", style.bold(&head));
+    let mut rw = diff_rows(r);
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn library_apply(style: Style, r: &ApplyReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let d = &r.diff;
+    let Some(w) = &r.write else {
+        let head = format!(
+            "Profile {} is in profile {} already: nothing written",
+            d.name, d.slot
+        );
+        let mut out = format!("{}\n", style.bold(&head));
+        let mut rw = diff_rows(d);
+        rw.push(("via", format!("the control channel ({})", d.host)));
+        if let Some(n) = &d.note {
+            rw.push(("note", n.clone()));
+        }
+        rows(style, &mut out, &rw);
+        return out;
+    };
+    let what = match (w.active, w.saved) {
+        (true, true) => ", active and saved",
+        (true, false) => " and active",
+        (false, true) => " and saved",
+        (false, false) => "",
+    };
+    let head = format!(
+        "Profile {} written to profile {}{what}",
+        d.name,
+        slot_name(w.profile, &w.label)
+    );
+    let mut out = format!("{}\n", style.bold(&head));
+    let mut rw = diff_rows(d);
+    rw.retain(|(k, _)| !matches!(*k, "slot" | "state"));
+    // From the write: what the slot was, the backup, the notes.
+    let mut notes = Vec::new();
+    for (k, v) in slot_write_rows(w) {
+        match k {
+            "changed" | "enabled" => {}
+            "note" => notes.push(v),
+            _ => rw.push((k, v)),
+        }
+    }
+    notes.extend(d.note.clone());
+    if !notes.is_empty() {
+        rw.push(("note", notes.join("; ")));
+    }
     rows(style, &mut out, &rw);
     out
 }
