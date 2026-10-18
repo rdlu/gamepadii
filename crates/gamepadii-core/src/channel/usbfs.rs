@@ -16,6 +16,12 @@ use std::time::Duration;
 use super::{ControlTransport, Setup, UsbError};
 use crate::discovery::Device;
 use crate::sysfs::Root;
+use crate::udev::{self, Installed};
+use crate::wait::Clock;
+
+fn rule_installed(root: &Root) -> bool {
+    udev::installed(root) != Installed::No
+}
 
 /// `struct usbdevfs_ctrltransfer` from `<linux/usbdevice_fs.h>`.
 #[repr(C)]
@@ -53,10 +59,19 @@ pub fn classify(e: std::io::Error) -> UsbError {
     }
 }
 
+/// A node younger than this is new on USB: its ACL can still be on the
+/// way ([`super::wait_for_acl`]).
+pub const NEW_NODE: Duration = Duration::from_secs(5);
+
 impl Usbfs {
     /// Opens `d`'s node under `root` (`/` live; a fixture tree in tests,
-    /// which has no `dev/`, so tests can never reach a real pad).
+    /// which has no `dev/`, so tests can never reach a real pad). Never as
+    /// root ([`UsbError::AsRoot`]).
     pub fn open(root: &Root, d: &Device) -> Result<Usbfs, UsbError> {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return Err(UsbError::AsRoot);
+        }
         let node = super::node_path(d).ok_or(UsbError::Gone)?;
         let file = OpenOptions::new()
             .read(true)
@@ -64,6 +79,36 @@ impl Usbfs {
             .open(root.path(&node))
             .map_err(classify)?;
         Ok(Usbfs { file, node })
+    }
+
+    /// [`Usbfs::open`], and when it fails with `EACCES` on a node that is
+    /// new on USB with the udev rule installed, again for a short time
+    /// ([`super::wait_for_acl`]): udev can apply the rule's ACL a moment
+    /// after it makes the node.
+    pub fn open_new(root: &Root, d: &Device, clock: &dyn Clock) -> Result<Usbfs, UsbError> {
+        match Self::open(root, d) {
+            Err(UsbError::NoAccess) if Self::is_new(root, d) && rule_installed(root) => {
+                super::wait_for_acl(clock, || Self::open(root, d))
+            }
+            r => r,
+        }
+    }
+
+    /// Whether `d`'s node was made less than [`NEW_NODE`] ago (its change
+    /// time: udev makes the node, then sets its ACL).
+    fn is_new(root: &Root, d: &Device) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let Some(node) = super::node_path(d) else {
+            return false;
+        };
+        let Ok(meta) = std::fs::metadata(root.path(&node)) else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let ctime = u64::try_from(meta.ctime()).unwrap_or(0);
+        now.saturating_sub(ctime) < NEW_NODE.as_secs()
     }
 
     fn transfer(&self, setup: Setup, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {

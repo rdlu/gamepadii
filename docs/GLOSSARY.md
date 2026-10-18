@@ -22,6 +22,7 @@ it here in the same change.
 |---|---|
 | allowlist | The list of web-config endpoints that gamepadii can read safely. gamepadii does not send a request to an endpoint that is not on this list. |
 | backup | A file that contains a copy of the settings of the pad. gamepadii writes it before it changes the settings. |
+| board ID | The unique ID of the flash chip of the pad: 16 hex digits. The control channel gives it from protocol 1.3. It does not change, but pads with the same flash chip can have the same board ID. |
 | board config | The name of the hardware definition that the firmware was built for. The S16 uses `Haute42COSMOX`. |
 | boot mode | The mode that the pad starts in: gamepad mode, web-config, or BOOTSEL. |
 | BOOTSEL | A mode of the RP2040 chip. In this mode, the computer shows the pad as a USB drive, and you can install firmware. |

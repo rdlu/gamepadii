@@ -3,11 +3,14 @@
 //! which boot button selects a mode and which physical keys the hotkeys
 //! are on in the active profile.
 //!
-//! One file per pad: `$XDG_CACHE_HOME/gamepadii/<board>-<serial>.json`
-//! (`~/.cache/gamepadii/Haute42COSMOX-0C0FFEE.json`). Web-config reports no
-//! unique serial (every pad says `123456`), but XInput and Xbox One build
-//! theirs from the RP2040's unique id ([`PadId`]), so the pad is told
-//! apart by the serial it had in a gamepad mode. gamepadii learns which pad
+//! One file per pad: `$XDG_CACHE_HOME/gamepadii/<board>-<id>.json`
+//! (`~/.cache/gamepadii/Haute42COSMOX-433030383835362E.json`). From protocol
+//! 1.3, the control channel gives the board ID ([`PadId`]) in every mode,
+//! and that is the key. Without it, the key is the USB serial
+//! (`Haute42COSMOX-0C0FFEE.json`). Web-config reports no unique serial
+//! (every pad says `123456`), but XInput and Xbox One build theirs from
+//! the board ID, so the pad is told apart by the serial it had in a
+//! gamepad mode. gamepadii learns which pad
 //! is in web-config when it sees it go there: it records the serial it saw
 //! just before against that web-config enumeration (bus, port and device
 //! number, which a replug or a reboot changes), in
@@ -22,7 +25,9 @@
 //! channel or the pad) and the pad. The pad's own file wins, however old;
 //! otherwise the newest that can be this pad (a board file, or a pad seen
 //! in another mode, whose serial can't be compared), never one of a pad
-//! known to be another (same mode, another serial). The hints say how old
+//! known to be another (another board ID, or the same mode with another
+//! serial). A board ID and a serial compare too: the serial comes from the
+//! ID ([`PadId::serials_in`]). The hints say how old
 //! they are.
 //!
 //! The control channel can't read the settings, but its STATUS says which
@@ -80,25 +85,44 @@ pub struct DeviceCache {
     pub read_in: Option<Enumeration>,
 }
 
-/// A pad, told apart from others with the same board config by the USB
-/// serial a gamepad mode builds from the RP2040's unique id. The serial
-/// differs between modes, so the mode is part of it.
+/// A pad, told apart from others with the same board config.
 ///
-/// In v0.7.12 (`headers/drivers/*/*Descriptors.h`): XInput sends `"0"` and
-/// three bytes of the unique id in hex (`0C0FFEE`), Xbox One eight letters
-/// from all eight bytes and then `8ABCDEFGH`. Every other mode sends none
-/// (Keyboard, HID, Switch, PS3, PS4/PS5, ...) or a fixed one (web-config
-/// `123456`, Switch Pro `000000000001`, SInput and Switch 2 Pro theirs).
-/// `usbDescOverride` replaces XInput's with the user's string, which only
-/// counts when it still looks like one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The best key is the board ID: the unique ID of the flash chip, which the
+/// control channel gives from protocol 1.3 (STRING 0x05) in every mode,
+/// web-config too. It is stable, but not guaranteed unique: a flash chip
+/// can give a fixed value, so pads with the same chip can share it. When
+/// two connected pads give the same one, `port` tells them apart.
+///
+/// Without it (stock firmware, or a channel older than 1.3), the pad goes by
+/// the USB serial that a gamepad mode builds from the same ID. The serial
+/// differs between modes, so the mode is part of it. In v0.7.12 and main
+/// (`headers/drivers/*/*Descriptors.h`): XInput sends `"0"` and bytes 5 to
+/// 7 of the ID in hex (`0C0FFEE`), Xbox One eight letters from all eight
+/// bytes and then `8ABCDEFGH`. Every other mode sends none (Keyboard, HID,
+/// Switch, PS3, PS4/PS5, ...) or a fixed one (web-config `123456`, Switch
+/// Pro `000000000001`, SInput and Switch 2 Pro theirs). `usbDescOverride`
+/// replaces XInput's with the user's string, which only counts when it
+/// still looks like one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PadId {
-    pub serial: String,
-    pub mode: InputMode,
+    /// The board ID, 16 upper-case hex digits (`433030383835362E`); `null`
+    /// when the channel did not give it. Absent in older files.
+    #[serde(default)]
+    pub board_id: Option<String>,
+    /// The USB serial in `mode`.
+    #[serde(default)]
+    pub serial: Option<String>,
+    #[serde(default)]
+    pub mode: Option<InputMode>,
+    /// The USB port (`3-2`), only when another connected pad gives the
+    /// same board ID; `null` otherwise. Absent in older files.
+    #[serde(default)]
+    pub port: Option<String>,
 }
 
 impl PadId {
-    /// `d`'s id, when it is in a mode whose serial is unique per board.
+    /// `d`'s id from its USB serial, when it is in a mode whose serial is
+    /// unique per board.
     pub fn of(d: &Device) -> Option<Self> {
         let serial = d.serial.as_deref()?.trim();
         let mode = d.mode?;
@@ -118,9 +142,97 @@ impl PadId {
             _ => false,
         };
         unique.then(|| Self {
-            serial: serial.to_string(),
-            mode,
+            serial: Some(serial.to_string()),
+            mode: Some(mode),
+            ..Self::default()
         })
+    }
+
+    /// A pad known by its board ID only.
+    pub fn board(id: &str) -> Self {
+        Self {
+            board_id: Some(id.to_string()),
+            ..Self::default()
+        }
+    }
+
+    /// `pad` (from [`identify`]) with the board ID, when the channel gave
+    /// one.
+    pub fn with_board_id(pad: Option<PadId>, id: Option<&str>) -> Option<PadId> {
+        match (pad, id) {
+            (Some(p), Some(id)) => Some(PadId {
+                board_id: Some(id.to_string()),
+                ..p
+            }),
+            (None, Some(id)) => Some(PadId::board(id)),
+            (p, None) => p,
+        }
+    }
+
+    /// The USB serials this pad can send in `mode`: the one it was seen
+    /// with, or the ones the firmware makes from the board ID. Xbox One has
+    /// two: v0.7.12 takes `'A' + byte % 25`, main `'A' + byte % 26`.
+    pub fn serials_in(&self, mode: InputMode) -> Vec<String> {
+        if self.mode == Some(mode) {
+            return self.serial.iter().cloned().collect();
+        }
+        let Some(id) = self.board_id.as_deref() else {
+            return Vec::new();
+        };
+        let Some(bytes) = (0..8)
+            .map(|i| u8::from_str_radix(id.get(2 * i..2 * i + 2)?, 16).ok())
+            .collect::<Option<Vec<u8>>>()
+        else {
+            return Vec::new();
+        };
+        let letters =
+            |m: u8| -> String { bytes.iter().map(|b| char::from(b'A' + b % m)).collect() };
+        match mode {
+            InputMode::Xinput => vec![format!("0{}", &id[10..16])],
+            InputMode::Xbone => [25, 26]
+                .map(|m| format!("{}8ABCDEFGH", letters(m)))
+                .to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether `self` and `other` are the same pad: `Some(true)` or
+    /// `Some(false)` when the ids can tell, `None` when they can't (two
+    /// serials from different modes, say).
+    pub fn same(&self, other: &PadId) -> Option<bool> {
+        if let (Some(a), Some(b)) = (&self.port, &other.port)
+            && a != b
+        {
+            return Some(false);
+        }
+        if let (Some(a), Some(b)) = (&self.board_id, &other.board_id) {
+            return Some(a == b);
+        }
+        let mode = self.mode.or(other.mode)?;
+        let mode = if self.serial.is_some() && other.serial.is_some() {
+            // Two serials compare only in the same mode.
+            (self.mode == other.mode).then_some(mode)?
+        } else {
+            mode
+        };
+        let (a, b) = (self.serials_in(mode), other.serials_in(mode));
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        Some(a.iter().any(|s| b.contains(s)))
+    }
+
+    /// The file name part: the board ID (and the port, when it is there),
+    /// else the serial; `None` when there is neither.
+    fn file_key(&self) -> Option<String> {
+        let clean =
+            |s: &str| -> String { s.chars().filter(|c| c.is_ascii_alphanumeric()).collect() };
+        match (&self.board_id, &self.port, &self.serial) {
+            (Some(id), Some(port), _) => Some(format!("{}-{}", clean(id), clean(port))),
+            (Some(id), None, _) => Some(clean(id)),
+            (None, _, Some(serial)) => Some(clean(serial)),
+            (None, _, None) => None,
+        }
     }
 }
 
@@ -265,19 +377,13 @@ impl DeviceCache {
         };
     }
 
-    /// `Haute42COSMOX-0C0FFEE.json` for a known pad, else
+    /// `Haute42COSMOX-433030383835362E.json` for a pad with a board ID,
+    /// `Haute42COSMOX-0C0FFEE.json` for one known by its serial, else
     /// `Haute42COSMOX.json`.
     pub fn file_name(&self) -> String {
         let board = self.board();
-        match &self.pad {
-            Some(p) => {
-                let serial: String = p
-                    .serial
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric())
-                    .collect();
-                format!("{board}-{serial}.json")
-            }
+        match self.pad.as_ref().and_then(PadId::file_key) {
+            Some(key) => format!("{board}-{key}.json"),
             None => format!("{board}.json"),
         }
     }
@@ -338,14 +444,26 @@ pub fn cache_dir() -> Option<PathBuf> {
 
 /// Writes the cache into `dir`, replacing that pad's (or, unattributed,
 /// that board's) last one. The first cache attributed to a pad replaces
-/// the board's file from before pads were told apart.
+/// the board's file from before pads were told apart, and the first one
+/// with a board ID replaces that pad's file by serial.
 pub fn store(dir: &Path, cache: &DeviceCache) -> Result<PathBuf> {
     let path = dir.join(cache.file_name());
     commands::write_json(cache, &path)?;
-    if cache.pad.is_some() {
+    if let Some(pad) = &cache.pad {
         let legacy = dir.join(format!("{}.json", cache.board()));
         if read(&legacy).is_some_and(|c| c.pad.is_none() && c.read_in.is_none()) {
             let _ = fs::remove_file(legacy);
+        }
+        if pad.board_id.is_some() {
+            for (old, c) in all(dir) {
+                let by_serial = c
+                    .pad
+                    .as_ref()
+                    .is_some_and(|p| p.board_id.is_none() && pad.same(p) == Some(true));
+                if old != path && c.board() == cache.board() && by_serial {
+                    let _ = fs::remove_file(old);
+                }
+            }
         }
     }
     Ok(path)
@@ -393,19 +511,19 @@ fn newest<'a>(
 fn resolve(dir: &Path, key: &Key) -> Option<(PathBuf, DeviceCache)> {
     let all = all(dir);
     let on_board = |c: &DeviceCache| key.board.as_ref().is_none_or(|b| c.board() == *b);
-    if let Some(p) = &key.pad
-        && let Some(own) = newest(
-            all.iter()
-                .filter(|(_, c)| on_board(c) && c.pad.as_ref() == Some(p)),
-        )
-    {
+    let same = |c: &DeviceCache| match (&c.pad, &key.pad) {
+        (Some(theirs), Some(ours)) => theirs.same(ours),
+        _ => None,
+    };
+    if let Some(own) = newest(
+        all.iter()
+            .filter(|(_, c)| on_board(c) && same(c) == Some(true)),
+    ) {
         return Some(own.clone());
     }
-    // Another pad's own cache: seen in the same mode, with another serial.
-    let other = |c: &DeviceCache| match (&c.pad, &key.pad) {
-        (Some(theirs), Some(ours)) => theirs.mode == ours.mode && theirs.serial != ours.serial,
-        _ => false,
-    };
+    // Another pad's own cache: another board ID, or the same mode with
+    // another serial.
+    let other = |c: &DeviceCache| same(c) == Some(false);
     let maybe: Vec<_> = all.iter().filter(|(_, c)| !other(c)).collect();
     newest(maybe.iter().copied().filter(|(_, c)| on_board(c)))
         .or_else(|| newest(maybe.into_iter()))
@@ -589,4 +707,55 @@ pub fn record_channel(dir: &Path, board: &str, hello: &Hello) -> Result<()> {
     seen.schema = CACHE_SCHEMA;
     seen.boards.insert(board.to_string(), rec);
     commands::write_json(&seen, &dir.join(CHANNELS_FILE)).map(|_| ())
+}
+
+/// The connections whose HELLO showed no channel ([`crate::channel::Probe::Stock`]),
+/// so that `status` in a polling loop (a waybar module, say) does not send
+/// vendor requests again to a real Xbox 360 pad, or to any other device
+/// that uses one of GP2040-CE's ids. A replug or a reboot makes a new
+/// connection, which is asked again.
+/// `$XDG_CACHE_HOME/gamepadii/no-channel.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoChannel {
+    pub schema: u32,
+    /// The newest last.
+    pub connections: Vec<Enumeration>,
+}
+
+pub const NO_CHANNEL_FILE: &str = "no-channel.json";
+
+/// How many connections [`NoChannel`] keeps.
+const NO_CHANNEL_MAX: usize = 32;
+
+fn no_channel(dir: &Path) -> NoChannel {
+    fs::read(dir.join(NO_CHANNEL_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<NoChannel>(&b).ok())
+        .filter(|c| c.schema == CACHE_SCHEMA)
+        .unwrap_or_default()
+}
+
+/// Whether `d`'s connection showed no channel before.
+pub fn no_channel_seen(dir: &Path, d: &Device) -> bool {
+    Enumeration::of(d).is_some_and(|at| no_channel(dir).connections.contains(&at))
+}
+
+/// Records that `d`'s connection showed no channel.
+pub fn record_no_channel(dir: &Path, d: &Device) -> Result<()> {
+    let Some(at) = Enumeration::of(d) else {
+        return Ok(());
+    };
+    let mut seen = no_channel(dir);
+    if seen.connections.contains(&at) {
+        return Ok(());
+    }
+    seen.schema = CACHE_SCHEMA;
+    // A new connection on a port replaces the old one there.
+    seen.connections
+        .retain(|c| !(c.bus == at.bus && c.port == at.port));
+    seen.connections.push(at);
+    let extra = seen.connections.len().saturating_sub(NO_CHANNEL_MAX);
+    seen.connections.drain(..extra);
+    let _ = fs::create_dir_all(dir);
+    commands::write_json(&seen, &dir.join(NO_CHANNEL_FILE)).map(|_| ())
 }

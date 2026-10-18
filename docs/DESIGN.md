@@ -177,13 +177,14 @@ GitHub issues (#1). The words that we use are in
   XInput and Xbox One build theirs from the RP2040's unique id. XInput sends
   `"0"` plus bytes 5–7 of the id in hex (`0C0FFEE`; `usbDescOverride`
   replaces it with the user's `usbDescVersion`), Xbox One a letter per
-  byte (`'A' + b % 25`) and then `8ABCDEFGH`. Web-config always says
+  byte (`'A' + b % 25` on v0.7.12) and then `8ABCDEFGH`. Web-config always says
   `123456`, Switch Pro `000000000001`; SInput and Switch 2 Pro send fixed
   strings, and Keyboard, HID, Switch, PS3, PS4/PS5 and the rest have no
-  serial. The two unique serials are different strings for the same pad,
-  so neither can be derived from the other. The control channel (v1)
-  exposes no id either: the HELLO token mixes the unique id in, but it is
-  random per boot.
+  serial. Main takes `'A' + b % 26` for Xbox One. The two unique serials
+  are different strings for the same pad, so neither can be derived from
+  the other. From protocol 1.3, the control channel gives the unique id
+  itself (STRING 0x05, the board ID), and both serials can be made from it
+  (`cache::PadId::serials_in`).
 - **BOOTSEL / PICOBOOT:** the config lives at 0x101F8000 (32 KB, nanopb
   `Config`, followed by a 12-byte footer of `{size, crc32, magic 0xD2F1E365}`).
   This allows an offline backup and a mode change with no network.
@@ -439,9 +440,17 @@ Host side (`gamepadii-core/src/channel/`):
   (written only on a change), and a reboot gamepadii causes clears it. The
   guide's key hints take the live STATUS profile, else that record, else
   the saved one. Decided in #2 (follow-up 2).
-- The device cache is kept per pad, keyed by the serial the pad has in a
+- The device cache is kept per pad. From control channel 1.3, the key is
+  the board config and the board ID, in every mode and in web-config:
+  `~/.cache/gamepadii/<board>-<board ID>.json`. The board ID is stable,
+  but not always unique: a flash chip can give a fixed value (the S16 gives
+  `C008856.` in ASCII). When two connected pads give the same one, `status`
+  adds the USB port to the key and shows a warning. Without the board ID,
+  the key is the serial the pad has in a
   gamepad mode that has a unique one (XInput, Xbox One; `cache::PadId`,
-  #11): `~/.cache/gamepadii/<board>-<serial>.json`. Web-config can't say
+  #11): `~/.cache/gamepadii/<board>-<serial>.json`. A board ID and a
+  serial compare: the firmware makes the serial from the ID, so the first
+  read with the ID replaces the file by serial. Web-config can't say
   which pad it is, so whenever gamepadii sees a pad with such a serial go
   into web-config (the trip, `webconfig`, `reboot webconfig`, the guided
   `mode`), it records that serial against the web-config enumeration
@@ -455,9 +464,12 @@ Host side (`gamepadii-core/src/channel/`):
   `reboot gamepad`, `mode` from web-config). Lookups prefer the pad's own
   file, however old, then the newest that can be this pad, never another
   pad's (same mode, another serial). Board files from before still load,
-  and the first read attributed to a pad of that board replaces them. A
-  STRING with the unique id on the control channel would make this exact
-  in every mode; that needs a firmware change (a later protocol minor).
+  and the first read attributed to a pad of that board replaces them.
+- A HELLO that shows no channel is recorded for that connection (bus, port,
+  device number, `no-channel.json`), and that connection is not asked
+  again: `status` in a waybar module must not send vendor requests to a
+  real Xbox 360 pad every few seconds. The other rules for devices that
+  are not ours are in `docs/design/control-channel.md` §5.4.
 - LEDs (#19, protocol v1.1, capability bit 8: LED_STATUS and SET_LED,
   `control-channel.md` §3.7). `gamepadii leds` (`flow::leds`,
   `leds.rs`) takes the best route there is:
@@ -534,7 +546,7 @@ crates/gamepadii-core/src/
                  write.rs (the setters, per-line key sets)
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
-  cache.rs       last web-config read per pad (~/.cache/gamepadii/<board>-<serial>.json,
+  cache.rs       last web-config read per pad (~/.cache/gamepadii/<board>-<board ID or serial>.json,
                  else <board>.json), the profile the channel last reported
                  running, and which pad went into which web-config session
   flow.rs        mode / webconfig / reboot / profile switch / leds over

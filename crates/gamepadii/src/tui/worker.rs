@@ -181,7 +181,7 @@ fn status(env: &Env) -> Reply {
             .as_ref()
             .map(|c| c.firmware.clone())
             .unwrap_or_default();
-        Some(cache::Key::new(&fw, cache::identify(cache_dir, &d.device)))
+        Some(cache::Key::new(&fw, d.pad.clone()))
     });
     let cache = cache_dir
         .and_then(|dir| cache::load_for(dir, &key.unwrap_or_default()))

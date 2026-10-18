@@ -1,5 +1,6 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
-//! §3, and the v1.1 LED commands of §3.7): vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
+//! §3, the v1.1 LED commands of §3.7, and the v1.3 board ID of §3.9):
+//! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
 
@@ -21,9 +22,12 @@ pub const MAX_LEN: u16 = 64;
 pub const HELLO_MAGIC: [u8; 4] = *b"GPii";
 /// The protocol major this host speaks; it refuses any other.
 pub const MAJOR: u8 = 1;
-/// The newest protocol minor this host knows (v1.1: the LED commands). A
-/// pad's minor is informational: what it can do is in its capabilities.
-pub const MINOR: u8 = 1;
+/// The newest protocol minor this host knows (v1.3: the board ID). A pad's
+/// minor tells which STRING ids it has; what else it can do is in its
+/// capabilities.
+pub const MINOR: u8 = 3;
+/// The first minor with STRING [`string::BOARD_ID`].
+pub const BOARD_ID_MINOR: u8 = 3;
 pub const HELLO_LEN: usize = 20;
 pub const STATUS_LEN: usize = 16;
 pub const LED_STATUS_LEN: usize = 12;
@@ -154,6 +158,9 @@ pub mod string {
     pub const BOARD_LABEL: u16 = 3;
     /// `GP2040CONFIG`: the build type.
     pub const BUILD_TYPE: u16 = 4;
+    /// v1.3: the unique ID of the flash chip, 16 upper-case hex digits
+    /// (`pico_get_unique_board_id_string`). Older firmware STALLs it.
+    pub const BOARD_ID: u16 = 5;
 
     /// The label of profile `n` (1–6): `0x11`–`0x16`.
     pub fn profile_label(n: u8) -> u16 {
@@ -286,6 +293,12 @@ impl Hello {
         mode.proto_value()
             .filter(|v| *v < 32)
             .is_some_and(|v| self.modes & (1 << v) != 0)
+    }
+
+    /// Whether the pad has STRING [`string::BOARD_ID`]: protocol 1.3 or
+    /// later, with the STRING capability. Never ask an older pad.
+    pub fn has_board_id(&self) -> bool {
+        self.major == MAJOR && self.minor >= BOARD_ID_MINOR && self.caps.has(Caps::STRING)
     }
 
     /// The modes in the bitmap that gamepadii knows.
@@ -707,6 +720,23 @@ mod tests {
         assert_eq!(string::profile_label(6), 0x16);
         assert_eq!(string::effect_name(0), 0x20);
         assert_eq!(string::effect_name(4), 0x24);
+        assert_eq!(string::BOARD_ID, 5);
+    }
+
+    #[test]
+    fn only_1_3_has_the_board_id() {
+        let h = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 1,
+        };
+        assert!(h(3, Caps::STRING).has_board_id());
+        assert!(h(4, Caps::STRING | Caps::STATUS).has_board_id());
+        assert!(!h(2, Caps::STRING).has_board_id());
+        assert!(!h(0, Caps::STRING).has_board_id());
+        assert!(!h(3, Caps::STATUS).has_board_id());
     }
 
     #[test]

@@ -10,6 +10,8 @@
 //! takes the stock path. [`SimChannel::with_leds`] makes it a v1.1 build
 //! with the LED commands (LED_STATUS, SET_LED: RAM and saved LED state,
 //! range checks); without that, they are unknown commands, as on v1.0.
+//! [`SimChannel::with_board_id`] makes it a v1.3 build with STRING 0x05;
+//! before that, the id STALLs.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -121,7 +123,8 @@ const EFFECT_NAMES: [&str; 5] = [
 pub struct SimChannel {
     /// The channel is built into this firmware.
     pub enabled: bool,
-    /// The protocol minor in HELLO: 0, or 1 with the LED commands.
+    /// The protocol minor in HELLO: 0, 1 with the LED commands, 3 with the
+    /// board ID.
     pub minor: u8,
     pub caps: Caps,
     pub modes: u32,
@@ -198,6 +201,13 @@ impl SimChannel {
         if self.led_limits.running {
             self.caps = Caps(self.caps.0 | Caps::LEDS);
         }
+        self
+    }
+
+    /// A v1.3 build: protocol minor 3, with the board ID as STRING 0x05.
+    pub fn with_board_id(mut self, id: &str) -> Self {
+        self.minor = self.minor.max(proto::BOARD_ID_MINOR);
+        self.strings.insert(proto::string::BOARD_ID, id.into());
         self
     }
 

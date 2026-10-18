@@ -166,6 +166,21 @@ impl SimPad {
         self
     }
 
+    /// Control channel v1.3: STRING 0x05 gives the unique id (set with
+    /// [`SimPad::unique_id`] first) as 16 hex digits.
+    pub fn with_board_id(self) -> Self {
+        let id = self.lock().unique_id.expect("unique_id first");
+        let hex: String = id.iter().map(|b| format!("{b:02X}")).collect();
+        self.channel(|c| *c = c.clone().with_board_id(&hex))
+    }
+
+    /// On USB with device number `n` (7 by default): a replug gets a new
+    /// one.
+    pub fn with_devnum(self, n: u16) -> Self {
+        self.lock().devnum = n;
+        self
+    }
+
     /// The device node can't be opened (no udev rule).
     pub fn no_access(self) -> Self {
         self.lock().no_access = true;

@@ -214,11 +214,13 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x01` | IN | HELLO | host nonce (u16) | reply: 20 bytes (§3.3) | v1 |
 | `0x02` | IN | STATUS | 0 | reply: 16 bytes (§3.3) | v1 |
 | `0x03` | IN | STRING | string id | reply: raw string, ≤ 63 bytes | v1 |
-| `0x04` | IN | LED_STATUS | 0 | reply: 12 bytes (§3.7) | v1.1 |
+| `0x04` | IN | LED_STATUS | 0 | reply: 12 bytes (§3.7); v0.7.12 line only | v1.1 |
+| `0x05` | IN | LIGHTS_STATUS | 0 | reply: 16 bytes (§3.8); main line | v1.2 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
-| `0x13` | OUT | SET_LED | 0 | header + 8 bytes: mask, values, persist (§3.7) | v1.1 |
+| `0x13` | OUT | SET_LED | 0 | header + 8 bytes: mask, values, persist (§3.7); v0.7.12 line only | v1.1 |
+| `0x14` | OUT | SET_LIGHTS | 0 | header + 4 bytes: mask, profile, brightness, persist (§3.8); main line | v1.2 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -240,8 +242,10 @@ STRING ids:
 | 2 | `GP2040_BOARDCONFIG` (`Haute42COSMOX`) |
 | 3 | `BOARD_CONFIG_LABEL` (`Haute42 COSMOX`) |
 | 4 | `GP2040CONFIG` (the build type) |
+| 5 | v1.3: the unique ID of the flash chip, 16 upper-case hex digits (§3.9). Older firmware STALLs it |
 | `0x11–0x16` | label of profile 1–6 |
 | `0x20 + n` | v1.1: the firmware's name for animation effect `n` (`EFFECT_STATIC_COLOR`, ...); `n` ≥ the effect count STALLs |
+| `0x30 + n` | v1.2: reserved for the name of lights profile `n`. Main has no name for a lights profile, so these STALL |
 
 ### 3.3 Replies
 
@@ -277,9 +281,10 @@ Capability bits:
 | 5 | SET_INPUT_MODE |
 | 6 | CFG_READ |
 | 7 | CFG_WRITE |
-| 8 | LEDS: LED_STATUS and SET_LED (v1.1, §3.7) |
+| 8 | LEDS: LED_STATUS and SET_LED (v1.1, §3.7; the v0.7.12 line only) |
+| 9 | LIGHTS: LIGHTS_STATUS and SET_LIGHTS (v1.2, §3.8; the main line) |
 
-Bits 9–31 are reserved.
+Bits 10–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -531,6 +536,114 @@ brightness`). `channel/sim.rs` models the checks, the RAM and saved state,
 the effect count and the names (`SimChannel::with_leds`); it applies a
 SET_LED at once, so there is nothing to merge.
 
+### 3.8 v1.2: lights on main
+
+Issue #21. Additive. The fork's main line (`gamepadii/main`) has the
+protocol minor **2**. Main replaced the AnimationStation settings of
+v0.7.12 (§3.7) with lights profiles. Thus, bit 8, LED_STATUS and SET_LED
+are **not on main**: bit 8 is never set, LED_STATUS STALLs, and SET_LED is
+an unknown OUT command (UNSUPPORTED, `last_seq` 0). A host checks bit 9
+for main, and keeps the v1.1 commands for pads that set bit 8.
+
+On main, the HELLO mode bitmap is `0x000BFFFF`: `InputMode` 0 to 17, and
+19 (P5General 16, SInput 17, Switch 2 Pro 19; 18 does not exist). Tests
+must not use a fixed mode as "not in this build": they take one that is
+not in the bitmap.
+
+- **Capability bit 9, LIGHTS:** set only after `NeoPicoLEDAddon` has run
+  its setup (`ledOptions.dataPin` is a valid pin on this board). The S16 on
+  main gives `0x0000022F`.
+- **Without bit 9**, LIGHTS_STATUS STALLs and does not change the
+  last-command fields of STATUS (§3.6 item 7). SET_LIGHTS fails with
+  UNSUPPORTED after the token, BUSY and length checks.
+
+**LIGHTS_STATUS** (`0x05`, IN, `wValue` 0), a 16-byte reply:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | flags: bit 0 the lights run (always set in a reply), bit 1 unsaved (below), bit 2 a web-config preview runs; bits 3–7 are 0 |
+| 1 | i8 | lights profile: -1 off, or 0–3 (`AnimationStation::GetSavedMode()`) |
+| 2 | u8 | enabled profiles: bit `n` is `animationOptions.profiles[n].bEnabled` |
+| 3 | u8 | profile count: 4 |
+| 4 | u8 | brightness level (`animationOptions.brightness`) |
+| 5 | u8 | brightness steps (10 on main) |
+| 6 | u8 | brightness maximum (`ledOptions.brightnessMaximum`, 0–255) |
+| 7 | u8 | effect when not pressed, of the profile in byte 1 (`AnimationNonPressedEffects`); 255 when off |
+| 8 | u8 | effect when pressed (`AnimationPressedEffects`); 255 when off |
+| 9 | u8 | case effect (`AnimationNonPressedEffects`); 255 when off |
+| 10 | u8 | cycle time when not pressed (0–9); 255 when off |
+| 11 | u8 | cycle time when pressed; 255 when off |
+| 12 | u8 | case cycle time; 255 when off |
+| 13 | u8 | reserved, 0 |
+| 14 | u16 | idle timeout in seconds (0: never) |
+
+Bytes 1 and 4 show the last accepted SET_LIGHTS, also before core 1
+applies it (about 10 ms). Flag bit 1 is set when the profile or the
+brightness is different from a snapshot. The firmware takes the snapshot
+at LED setup and at each save of the settings. The effects and the cycle
+times are for the profile in byte 1, and v1.2 cannot change them.
+
+**SET_LIGHTS** (`0x14`, OUT): the 8-byte header, then 4 bytes.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | mask: bit 0 profile, bit 1 brightness; bits 2–7 must be 0 |
+| 1 | i8 | profile: -1 off, or 0–3 |
+| 2 | u8 | brightness level |
+| 3 | u8 | persist: 0 RAM only, 1 save to flash |
+
+- **Length:** the arguments are 4 bytes (12 with the header), else
+  BAD_LENGTH. The firmware ignores more bytes.
+- **Checks, in this order:** token (BAD_TOKEN), pending reboot (BUSY),
+  length (BAD_LENGTH), capability (UNSUPPORTED), mask bits 2–7 or persist
+  above 1 (BAD_ARG), a web-config preview that runs (BUSY), values
+  (BAD_ARG). A profile must be -1 or an **enabled** 0–3. A brightness must
+  be at most the steps.
+- **All or nothing:** a refused SET_LIGHTS changes nothing. Fields that are
+  not in the mask do not change.
+- **Mask 0:** with persist 1 it saves the current state; with persist 0 it
+  does nothing (OK). The firmware merges requests that come before core 1
+  applies the first one.
+- **RAM only (persist 0):** the change is lost at a restart, unless
+  something else saves the settings first. Flag bit 1 tells the host.
+- **Persist 1:** a normal save, with no reboot. As in §3.7, the firmware
+  does not save in PS4/PS5 mode while the dongle authentication uses the
+  flash.
+- **Not in v1.2:** a change to the effects, colours or cycle times of a
+  profile, or to the light layout. These need the v2 config transfer
+  (§3.5). Until then, web-config `getAnimationProtoOptions` and
+  `setAnimationProtoOptions` do it. They are not on the allowlist of
+  gamepadii yet.
+
+Host side: not done yet. gamepadii knows bit 9 by number only.
+
+### 3.9 v1.3: the board ID
+
+Additive. The protocol minor is **3**. STRING id **5** gives the unique ID
+of the flash chip as 16 upper-case hex digits
+(`pico_get_unique_board_id_string`). It does not change when the firmware
+or the settings change. The firmware has it in every mode, and in
+web-config.
+
+- **Older firmware STALLs STRING 5.** The host sends it only when HELLO
+  gives major 1, minor 3 or higher, and the STRING capability.
+- **It is stable, but not always unique.** The S16 gives `433030383835362E`,
+  which is the ASCII text `C008856.`. This flash chip gives a fixed value,
+  so other pads with the same chip can give the same ID. picotool reads the
+  same value (`flash id: 0x433030383835362E`).
+- **The USB serials come from it.** XInput sends `0` and bytes 5 to 7 in
+  hex (the S16: `035362E`). Xbox One sends `'A' + byte % 26` for each of
+  the 8 bytes, then `8ABCDEFGH`. Web-config sends `123456` on all pads, so
+  it is not a key.
+
+Host side: `Channel::board_id`. gamepadii keys the device cache by the
+board config and the board ID (`Haute42COSMOX-433030383835362E.json`). A
+cache by serial from an older firmware still matches, because gamepadii
+makes the serial from the ID (`cache::PadId::same`), and the first read
+with the ID replaces that file. When two connected pads give the same ID,
+`status` tells them apart by USB port, and shows a warning. Before 1.3,
+the key stays the USB serial.
+
 ## 4. Firmware implementation
 
 The footprint is deliberately small:
@@ -624,7 +737,7 @@ tests run without hardware and without real sleeps, as they do now. Revisit
    - `EACCES`; when the pad is *known* to support the channel (from the
      cache), gamepadii also prints the udev hint
 3. The device cache records `control_channel: {major, minor, caps}` per board
-   serial. `status --json` shows it, `null` when unknown.
+   config (`control-channel.json`). `status --json` shows it, `null` when unknown.
 4. Each flow uses the channel when it can and falls back otherwise:
    - `mode X`: SET_INPUT_MODE, then wait for re-enumeration (the devnum
      changes), then verify with STATUS
@@ -669,6 +782,41 @@ but the docs should say so.
 `usbOverrideID` lets users set custom IDs, so the rule file carries a comment
 on how to add a line. Matching on the manufacturer string ("Open Stick
 Community") doesn't work: `usbDesc*` overrides it and vendor builds change it.
+
+### 5.4 Safety with other devices
+
+GP2040-CE uses the USB ids of real controllers. A real Xbox 360 pad, and an
+8BitDo pad in XInput mode, are also `045e:028e`. Thus, a device that has
+one of our ids can be any device. These rules keep gamepadii away from
+them:
+
+1. **No OUT request without a valid HELLO.** A `Channel` exists only after
+   a HELLO reply with the magic `GPii`, the echo of our nonce, and a major
+   that we know. A STALL, an empty reply, garbage, a wrong nonce, a wrong
+   magic, a newer major, or no reply: no command follows. The tests in
+   `crates/gamepadii-core/tests/safety.rs` run every command on such a
+   device, and check that it gets only HELLO.
+2. **One HELLO for each connection.** When a device answers HELLO, and the
+   answer is not the channel (`Probe::Stock`), gamepadii records that
+   connection (bus, port and device number) in
+   `$XDG_CACHE_HOME/gamepadii/no-channel.json`. It does not send HELLO
+   again to that connection, for example from a waybar module that runs
+   `status` every few seconds. A replug or a reboot makes a new
+   connection, and gamepadii asks again. No reply (a timeout), or no
+   permission, is not recorded: the pad can be still starting.
+3. **A narrow udev rule (§5.3).** Each line names the exact VID:PID that
+   the firmware uses. Only TinyUSB's example vendor (`cafe`) is a full
+   vendor. The rule never matches a full vendor such as Sony (`054c`).
+   A test checks this.
+4. **Not as root.** As root, gamepadii does not use the channel: root
+   gets past the limit of the udev rule, to every pad. `Usbfs::open`
+   refuses, and the commands use web-config or button presses.
+5. **A late ACL.** Right after a pad connects, udev can apply the
+   `uaccess` ACL a moment after it makes the node. Then the first open
+   gives `EACCES`. When the node is less than 5 s old and the udev rule is
+   installed, gamepadii tries again for up to 1 s
+   (`Usbfs::open_new`, `channel::wait_for_acl`). Then it shows the udev
+   hint.
 
 ## 6. Windows and macOS (later, notes only)
 

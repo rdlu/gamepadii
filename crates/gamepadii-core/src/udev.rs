@@ -171,6 +171,27 @@ mod tests {
         assert_eq!(g[0].modes, [InputMode::Keyboard, InputMode::Webconfig]);
     }
 
+    /// Only TinyUSB's example vendor id is matched as a whole vendor: every
+    /// other line names the exact VID:PID that the firmware uses, never a
+    /// vendor such as Sony (054c) or Microsoft (045e).
+    #[test]
+    fn never_matches_a_whole_vendor_but_tinyusb() {
+        for g in grants() {
+            assert!(
+                g.pid.is_some() || g.vid == TINYUSB_VID,
+                "{} matches a whole vendor",
+                g.usb_id
+            );
+        }
+        let whole: Vec<_> = rule()
+            .lines()
+            .filter(|l| l.starts_with("SUBSYSTEM") && !l.contains("idProduct"))
+            .map(String::from)
+            .collect();
+        assert_eq!(whole.len(), 1, "{whole:?}");
+        assert!(whole[0].contains(r#"ATTR{idVendor}=="cafe""#));
+    }
+
     /// The dev rule on the author's machine (045e:028e, cafe:*, 2e8a:0003)
     /// is a subset of this one, under the same file name.
     #[test]
