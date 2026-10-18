@@ -43,15 +43,13 @@ use crate::transport::{ApiPath, Method, Transport};
 /// 20/20 rounds ok) on the S16. The first seven hex digits, as `git
 /// describe` prints them.
 pub const FIXED_BUILDS: &[&str] = &[
-    // freeze-fix-rc: the fixes alone (v0.7.12-5-g85ca0f6).
-    "85ca0f6",
-    // The fixes, test boot into web-config (v0.7.12-5-g8419a38-testboot).
-    "8419a38",
-    // The fixes and the 503 guard, test boot (v0.7.12-6-gf19c11b-testboot).
-    "f19c11b", // cc: the control channel (v0.7.12-6-gf507f0b).
-    "f507f0b", // cc-off: the same with the channel compiled out.
-    "5eea8a6", // cc-testboot (v0.7.12-7-g1008647-testboot).
-    "1008647",
+    "85ca0f6", // freeze-fix-rc: the fixes alone (v0.7.12-5-g85ca0f6)
+    "8419a38", // the fixes, test boot into web-config (-testboot)
+    "f19c11b", // the fixes and the 503 guard, test boot (-testboot)
+    "f507f0b", // cc: the control channel (v0.7.12-6-gf507f0b)
+    "5eea8a6", // cc-off: the same with the channel compiled out
+    "1008647", // cc-testboot (v0.7.12-7-g1008647-testboot)
+    "0a23ea3", // cc-led: control channel v1.1 with the LED commands
 ];
 
 /// Why gamepadii believes the build has the fixes.
