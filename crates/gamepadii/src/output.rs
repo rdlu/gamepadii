@@ -1,6 +1,6 @@
 //! Rendering of command results: text for people, the versioned JSON
 //! contract (`"schema": 1`, snake_case keys, explicit `null`s), or one line
-//! of waybar custom-module JSON for `status`.
+//! of waybar custom-module JSON for `status` and `leds`.
 //!
 //! Human output is a bold headline, then `label  value` rows with the
 //! labels dimmed and padded to 14 columns; a row with several values
@@ -19,6 +19,7 @@ use gamepadii_core::flow::{
     ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via, WebconfigReport,
     WebconfigVia,
 };
+use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Named};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use gamepadii_core::udev;
 use serde::Serialize;
@@ -34,7 +35,7 @@ pub const WEBCONFIG_URL: &str = "http://192.168.7.1/";
 pub enum Format {
     Human,
     Json,
-    /// waybar `custom` module JSON (one line); only `status` supports it.
+    /// waybar `custom` module JSON (one line); `status` and `leds`.
     Waybar,
 }
 
@@ -932,4 +933,210 @@ pub fn udev(style: Style, r: &udev::Report) -> String {
     }
     rows(style, &mut out, &rw);
     out
+}
+
+// ---- leds -------------------------------------------------------------------------
+
+/// A level, or `-`.
+fn level(n: Option<u8>) -> String {
+    n.map_or_else(|| "-".into(), |n| n.to_string())
+}
+
+/// What a field shows when the route can't read it.
+fn unknown(r: Route) -> String {
+    match r {
+        Route::WebConfig => "unknown on stock firmware".into(),
+        Route::Control => "-".into(),
+    }
+}
+
+fn named(n: &Option<Named>, via: Route) -> String {
+    n.as_ref().map_or_else(|| unknown(via), Named::display)
+}
+
+/// `1 of 5 (maximum 100/255)`, or what is known of the limits.
+fn brightness(s: &LedState, via: Route) -> String {
+    let max = s.brightness_maximum.map(|m| format!("maximum {m}/255"));
+    let (level, limits) = match (s.brightness, s.brightness_steps) {
+        (Some(b), Some(st)) => (format!("{b} of {st}"), max.into_iter().collect()),
+        (Some(b), None) => (b.to_string(), max.into_iter().collect()),
+        (None, st) => (
+            unknown(via),
+            st.map(|st| format!("{st} steps"))
+                .into_iter()
+                .chain(max)
+                .collect::<Vec<_>>(),
+        ),
+    };
+    if limits.is_empty() {
+        level
+    } else {
+        format!("{level} ({})", limits.join(", "))
+    }
+}
+
+fn on_off(b: Option<bool>) -> String {
+    match b {
+        Some(true) => "on".into(),
+        Some(false) => "off".into(),
+        None => "-".into(),
+    }
+}
+
+/// The rows of an LED state.
+fn led_rows(s: &LedState, via: Route) -> Vec<(&'static str, String)> {
+    let mut rw = vec![
+        ("animation", named(&s.animation, via)),
+        ("brightness", brightness(s, via)),
+        ("static color", named(&s.static_color, via)),
+        ("button color", named(&s.button_color, via)),
+        ("theme", named(&s.theme, via)),
+        ("custom theme", on_off(s.custom_theme)),
+    ];
+    if s.unsaved == Some(true) {
+        rw.push(("saved", "no: changed since the last save (RAM only)".into()));
+    }
+    rw
+}
+
+fn via_text(via: Route, host: &str) -> String {
+    match via {
+        Route::Control => format!("the control channel ({host})"),
+        Route::WebConfig => format!("web-config ({host})"),
+    }
+}
+
+/// The custom theme's colours, three buttons a line.
+fn theme_colors(c: &[ButtonColor]) -> String {
+    let cell = |b: &ButtonColor| {
+        format!(
+            "{:<6}{}/{}",
+            b.button,
+            b.normal.as_deref().unwrap_or("-"),
+            b.pressed.as_deref().unwrap_or("-")
+        )
+    };
+    c.chunks(3)
+        .map(|row| row.iter().map(cell).collect::<Vec<_>>().join("  "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn leds(style: Style, r: &LedReport, trip: Option<&Trip>) -> String {
+    if style.format != Format::Human {
+        return json(&WithTrip { data: r, trip });
+    }
+    let head = match r.state.running {
+        Some(false) => "LEDs off (not set up)",
+        _ => "LEDs",
+    };
+    let mut out = format!("{}\n", style.bold(head));
+    let mut rw = led_rows(&r.state, r.via);
+    if let Some(c) = &r.custom_theme_colors {
+        rw.push(("colours", theme_colors(c)));
+    }
+    if trip.is_none() {
+        rw.push(("via", via_text(r.via, &r.host)));
+    }
+    rw.extend(trip.map(trip_rows).unwrap_or_default());
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn leds_set(style: Style, r: &LedSetReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let headline = match (r.changed.is_empty(), r.saved) {
+        (false, true) => "LEDs changed and saved",
+        (false, false) => "LEDs changed",
+        (true, true) => "LEDs saved",
+        (true, false) => "LEDs unchanged",
+    };
+    let mut out = format!("{}\n", style.bold(headline));
+    let mut rw = Vec::new();
+    for field in &r.changed {
+        let (label, was, now) = match *field {
+            "animation" => (
+                "animation",
+                named(&r.before.animation, r.via),
+                named(&r.leds.animation, r.via),
+            ),
+            "brightness" => (
+                "brightness",
+                level(r.before.brightness),
+                format!(
+                    "{} of {}",
+                    level(r.leds.brightness),
+                    level(r.leds.brightness_steps)
+                ),
+            ),
+            "static_color" => (
+                "static color",
+                named(&r.before.static_color, r.via),
+                named(&r.leds.static_color, r.via),
+            ),
+            "button_color" => (
+                "button color",
+                named(&r.before.button_color, r.via),
+                named(&r.leds.button_color, r.via),
+            ),
+            _ => (
+                "theme",
+                named(&r.before.theme, r.via),
+                named(&r.leds.theme, r.via),
+            ),
+        };
+        rw.push((label, format!("{now}, was {was}")));
+    }
+    if r.changed.is_empty() {
+        rw.extend(led_rows(&r.leds, r.via));
+    } else {
+        rw.push((
+            "saved",
+            if r.saved {
+                "yes, in flash".into()
+            } else {
+                "no (RAM only)".into()
+            },
+        ));
+    }
+    rw.push(("via", via_text(r.via, &r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// Nerd Font nf-md-lightbulb (U+F0335), the waybar `text` glyph for `leds`.
+pub const LED_GLYPH: &str = "\u{f0335}";
+
+/// `leds --format waybar`: the brightness in the bar, the rest in the
+/// tooltip; the class is the animation's name (`custom-theme`, ...).
+pub fn waybar_leds(r: &LedReport) -> Waybar {
+    let s = &r.state;
+    let text = match (s.brightness, s.brightness_steps) {
+        (Some(b), Some(st)) => format!("{LED_GLYPH} {b}/{st}"),
+        (Some(b), None) => format!("{LED_GLYPH} {b}"),
+        _ => LED_GLYPH.to_string(),
+    };
+    let class = s
+        .animation
+        .as_ref()
+        .and_then(|a| a.name.clone())
+        .unwrap_or_else(|| "leds".into());
+    let mut tooltip = "LEDs".to_string();
+    for (label, value) in led_rows(s, r.via) {
+        tooltip.push_str(&format!("\n{label}: {value}"));
+    }
+    Waybar {
+        text,
+        tooltip,
+        alt: class.clone(),
+        class,
+    }
 }

@@ -1,0 +1,97 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\", output::leds_set(human(), &ram),\noutput::leds_set(human(), &saved), output::leds_set(human(), &top),\noutput::leds_set(human(), &already), output::leds_set(json(), &ram),)"
+---
+LEDs changed
+animation     static-theme (3), was custom-theme (4)
+brightness    2 of 5, was 1
+theme         tekken (13), was static-rainbow (0)
+saved         no (RAM only)
+via           the control channel (/dev/bus/usb/003/007)
+note          not saved: the pad goes back to its saved LED settings when it restarts, unless something saves its settings first (any hotkey, turbo or saved profile change does); --save keeps it
+
+LEDs saved
+animation     static-theme (3)
+brightness    2 of 5 (maximum 100/255)
+static color  red (2)
+button color  white (1)
+theme         tekken (13)
+custom theme  on
+via           the control channel (/dev/bus/usb/003/007)
+
+LEDs changed and saved
+brightness    5 of 5, was 2
+saved         yes, in flash
+via           the control channel (/dev/bus/usb/003/007)
+
+LEDs unchanged
+animation     static-theme (3)
+brightness    5 of 5 (maximum 100/255)
+static color  red (2)
+button color  white (1)
+theme         tekken (13)
+custom theme  on
+via           the control channel (/dev/bus/usb/003/007)
+note          already at the brightest level (5)
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "before": {
+    "running": true,
+    "animation": {
+      "index": 4,
+      "name": "custom-theme"
+    },
+    "brightness": 1,
+    "brightness_steps": 5,
+    "brightness_maximum": 100,
+    "static_color": {
+      "index": 2,
+      "name": "red"
+    },
+    "button_color": {
+      "index": 1,
+      "name": "white"
+    },
+    "theme": {
+      "index": 0,
+      "name": "static-rainbow"
+    },
+    "custom_theme": true,
+    "unsaved": false
+  },
+  "leds": {
+    "running": true,
+    "animation": {
+      "index": 3,
+      "name": "static-theme"
+    },
+    "brightness": 2,
+    "brightness_steps": 5,
+    "brightness_maximum": 100,
+    "static_color": {
+      "index": 2,
+      "name": "red"
+    },
+    "button_color": {
+      "index": 1,
+      "name": "white"
+    },
+    "theme": {
+      "index": 13,
+      "name": "tekken"
+    },
+    "custom_theme": true,
+    "unsaved": true
+  },
+  "changed": [
+    "animation",
+    "brightness",
+    "theme"
+  ],
+  "saved": false,
+  "verified": true,
+  "note": "not saved: the pad goes back to its saved LED settings when it restarts, unless something saves its settings first (any hotkey, turbo or saved profile change does); --save keeps it"
+}

@@ -2144,13 +2144,30 @@ pub fn profile_switch(
 
 // ---- leds -----------------------------------------------------------------------
 
-/// Why LED changes can't work on `pad`.
-fn no_led_channel(pad: &Device, why: Option<String>) -> Error {
+/// What an LED flow needs the channel for, for its error.
+#[derive(Debug, Clone, Copy)]
+enum LedUse {
+    Change,
+    ReadLive,
+}
+
+/// Why the LED commands aren't there on `pad`.
+fn no_led_channel(pad: &Device, use_: LedUse, why: Option<String>) -> Error {
+    let (what, otherwise) = match use_ {
+        LedUse::Change => (
+            "change its LEDs",
+            "Otherwise use the pad's LED hotkeys (animation and brightness up or down), \
+             which also save the change",
+        ),
+        LedUse::ReadLive => (
+            "read its LEDs live",
+            "Without it, `gamepadii leds` (not for a status bar) reads them through web-config",
+        ),
+    };
     let mut msg = format!(
         "the pad (in {} mode) has no control channel with LED commands, so gamepadii can't \
-         change its LEDs; that needs the gamepadii build of GP2040-CE with control channel \
-         v1.1. Otherwise use the pad's LED hotkeys (animation and brightness up or down), \
-         which also save the change",
+         {what}; that needs the gamepadii build of GP2040-CE with control channel v1.1. \
+         {otherwise}",
         Seen::from(pad).label()
     );
     if let Some(w) = why {
@@ -2161,7 +2178,7 @@ fn no_led_channel(pad: &Device, why: Option<String>) -> Error {
 
 /// The pad's control channel, when it has the LED commands (v1.1); else
 /// why not, as an error.
-fn led_channel(env: &Env, pad: &Device) -> Result<Channel> {
+fn led_channel(env: &Env, pad: &Device, use_: LedUse) -> Result<Channel> {
     if pad.mode == Some(InputMode::Bootsel) {
         return Err(Error::NeedsUser(
             "the pad is in BOOTSEL (the boot ROM, for flashing); replug it first".into(),
@@ -2170,6 +2187,7 @@ fn led_channel(env: &Env, pad: &Device) -> Result<Channel> {
     let Some(open) = env.control else {
         return Err(no_led_channel(
             pad,
+            use_,
             Some("the control channel is off: --no-channel".into()),
         ));
     };
@@ -2179,6 +2197,7 @@ fn led_channel(env: &Env, pad: &Device) -> Result<Channel> {
             let h = ch.hello();
             Err(no_led_channel(
                 pad,
+                use_,
                 Some(format!(
                     "this build's channel speaks v{}.{} without the LED commands",
                     h.major, h.minor
@@ -2190,7 +2209,7 @@ fn led_channel(env: &Env, pad: &Device) -> Result<Channel> {
             channel::udev_hint(&node)
         ))),
         Probe::Newer { major, .. } => Err(Error::Usage(commands::newer_protocol(major))),
-        Probe::Absent(_) => Err(no_led_channel(pad, None)),
+        Probe::Absent(_) => Err(no_led_channel(pad, use_, None)),
     }
 }
 
@@ -2226,7 +2245,7 @@ pub fn leds(
 /// never reboot the pad).
 pub fn leds_now(env: &Env) -> Result<LedReport> {
     let pad = pick(env.scan.scan())?;
-    leds::over_channel(&led_channel(env, &pad)?)
+    leds::over_channel(&led_channel(env, &pad, LedUse::ReadLive)?)
 }
 
 /// `gamepadii leds set` and `leds brightness`: SET_LED on the control
@@ -2234,7 +2253,7 @@ pub fn leds_now(env: &Env) -> Result<LedReport> {
 /// LED_STATUS.
 pub fn leds_set(env: &Env, change: &LedChange) -> Result<LedSetReport> {
     let pad = pick(env.scan.scan())?;
-    let ch = led_channel(env, &pad)?;
+    let ch = led_channel(env, &pad, LedUse::Change)?;
     let before = ch.led_status()?;
     let extra = leds::extra_effects(&ch, before.animations);
     let (set, changed) = leds::plan(change, &before, &extra)?;

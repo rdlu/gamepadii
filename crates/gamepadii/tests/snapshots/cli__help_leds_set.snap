@@ -1,0 +1,48 @@
+---
+source: crates/gamepadii/tests/cli.rs
+expression: "help(&[\"leds\", \"set\"])"
+---
+Change the LEDs live, with no reboot (needs control channel v1.1 of the gamepadii firmware). RAM only unless --save: the pad goes back to its saved LED settings when it restarts
+
+Usage: gamepadii leds set [OPTIONS]
+
+Options:
+      --animation <NAME|N>
+          The animation: static-color, rainbow, chase, static-theme, custom-theme, or its number
+
+      --format <FORMAT>
+          Output format
+
+          Possible values:
+          - human:  Text for people
+          - json:   The versioned JSON contract ("schema": 1)
+          - waybar: One line of waybar custom-module JSON; `status` and `leds` only
+          
+          [default: human]
+
+      --brightness <N|up|down>
+          The brightness level (0 to the pad's steps), up or down
+
+      --json
+          Same as `--format json`
+
+      --static-color <NAME|N>
+          The static-color animation's colour: black, white, red, orange, yellow, limegreen, green, seafoam, aqua, skyblue, blue, purple, pink, magenta, indigo, violet, or its number
+
+      --button-color <NAME|N>
+          The colour of a pressed button (same names)
+
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
+      --theme <NAME|N>
+          The static-theme animation's theme: static-rainbow, xbox, playstation, neogeo, street-fighter-2, tekken, ..., or its number
+
+      --no-channel
+          Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses
+
+      --save
+          Also save it to flash, as the LED hotkeys do (alone: save what runs now). In PS4/PS5 mode the firmware skips saves while the controller authentication needs the flash
+
+  -h, --help
+          Print help (see a summary with '-h')
