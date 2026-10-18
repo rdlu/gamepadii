@@ -13,22 +13,27 @@
 //! [`SimChannel::with_lights`] makes it a main-line v1.2 build with the
 //! lights commands (LIGHTS_STATUS, SET_LIGHTS) in place of the LED ones.
 //! [`SimChannel::with_board_id`] makes it a v1.3 build with STRING 0x05;
-//! before that, the id STALLs.
+//! before that, the id STALLs. [`SimChannel::with_slots`] makes it a v1.4
+//! build with READ_SLOT and WRITE_SLOT: the pin mappings of each profile,
+//! in RAM and saved, from the mock's `getPinMappings` and
+//! `getProfileOptions`.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
 //! [`Standalone`] wraps it for the CLI's hidden `--mock-channel`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Status,
+    self, Caps, Command, Hello, LedStatus, LightsStatus, Outcome, SetLed, SetLights, Setup, Slot,
+    SlotPin, Status,
 };
 use super::{ControlTransport, UsbError};
+use crate::api::{PinMappings, ProfileOptions};
 use crate::mode::{BootMode, InputMode};
 use crate::transport::mock::Mock;
 
@@ -158,6 +163,9 @@ pub struct SimLightsLimits {
     pub idle_timeout_s: u16,
     /// A web-config preview runs: SET_LIGHTS is BUSY.
     pub preview: bool,
+    /// v1.5: how many LIGHTS_STATUS reads after a SET_LIGHTS show it
+    /// PENDING (core 1 applies it on its next frame); 0 on older builds.
+    pub pending_reads: u8,
 }
 
 impl Default for SimLightsLimits {
@@ -173,6 +181,38 @@ impl Default for SimLightsLimits {
             }; 4],
             idle_timeout_s: 0,
             preview: false,
+            pending_reads: 0,
+        }
+    }
+}
+
+/// The pins of an RP2040 (`NUM_BANK0_GPIOS`).
+pub const RP2040_PINS: u8 = 30;
+
+/// One profile's pin mappings, as `GpioMappings` holds them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimSlot {
+    pub label: String,
+    pub enabled: bool,
+    pub pins: Vec<SlotPin>,
+}
+
+impl SimSlot {
+    /// The slot of a `getPinMappings` or `getProfileOptions` entry.
+    fn from_api(p: &PinMappings, count: u8) -> Self {
+        let pins = p.pins();
+        SimSlot {
+            label: p.profile_label.clone().unwrap_or_default(),
+            enabled: p.enabled.unwrap_or(true),
+            pins: (0..count)
+                .map(|gpio| {
+                    pins.get(&gpio).map_or(SlotPin::default(), |m| SlotPin {
+                        action: i16::try_from(m.action).unwrap_or(-10),
+                        button_mask: u32::try_from(m.custom_button_mask).unwrap_or(0),
+                        dpad_mask: u32::try_from(m.custom_dpad_mask).unwrap_or(0),
+                    })
+                })
+                .collect(),
         }
     }
 }
@@ -232,6 +272,16 @@ pub struct SimChannel {
     /// Main's lights in flash.
     pub saved_lights: SimLights,
     pub lights_limits: SimLightsLimits,
+    /// LIGHTS_STATUS reads left that show PENDING.
+    pub lights_pending: u8,
+    /// `NUM_BANK0_GPIOS`.
+    pub pin_count: u8,
+    /// The profiles the config has, by number (1 is `getPinMappings`), in
+    /// RAM. A number that isn't here was never written: READ_SLOT gives
+    /// zeros.
+    pub slots: BTreeMap<u8, SimSlot>,
+    /// The same in flash.
+    pub saved_slots: BTreeMap<u8, SimSlot>,
     pub log: Vec<Seen>,
 }
 
@@ -269,6 +319,10 @@ impl SimChannel {
             lights: SimLights::default(),
             saved_lights: SimLights::default(),
             lights_limits: SimLightsLimits::default(),
+            lights_pending: 0,
+            pin_count: RP2040_PINS,
+            slots: default_slots(),
+            saved_slots: default_slots(),
             log: Vec::new(),
         }
     }
@@ -296,6 +350,13 @@ impl SimChannel {
             0
         };
         self.caps = Caps(self.caps.0 & !Caps::LEDS | lights);
+        self
+    }
+
+    /// A v1.4 build: protocol minor 4, with READ_SLOT and WRITE_SLOT.
+    pub fn with_slots(mut self) -> Self {
+        self.minor = self.minor.max(proto::SLOTS_MINOR);
+        self.caps = Caps(self.caps.0 | Caps::SLOTS);
         self
     }
 
@@ -364,7 +425,64 @@ impl SimChannel {
         s.active = s.saved_profile;
         s.leds_from(mock);
         s.lights_from(mock);
+        s.slots_from(base.as_ref(), &alts);
         s
+    }
+
+    /// The pin mappings from the mock's `getPinMappings` (profile 1) and
+    /// `getProfileOptions` (the profiles after it, at most 5).
+    fn slots_from(&mut self, base: Option<&Value>, alts: &[Value]) {
+        let parse = |v: &Value| serde_json::from_value::<PinMappings>(v.clone()).ok();
+        if let Some(b) = base.and_then(parse) {
+            let mut slot = SimSlot::from_api(&b, self.pin_count);
+            slot.enabled = true;
+            self.slots.insert(1, slot);
+        }
+        let options = ProfileOptions {
+            alternative_pin_mappings: alts.iter().filter_map(parse).collect(),
+            ..ProfileOptions::default()
+        };
+        for (p, n) in options.alternative_pin_mappings.iter().take(5).zip(2u8..) {
+            self.slots.insert(n, SimSlot::from_api(p, self.pin_count));
+        }
+        self.saved_slots = self.slots.clone();
+    }
+
+    /// READ_SLOT `n` as the firmware answers it (`buildSlot`).
+    pub fn slot(&self, n: u8) -> Slot {
+        let count = usize::from(self.pin_count);
+        let found = self.slots.get(&n);
+        let enabled = found.is_some_and(|s| n == 1 || s.enabled);
+        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+        Slot {
+            profile: n,
+            flags: flag(enabled, Slot::ENABLED) | flag(self.active == n, Slot::ACTIVE),
+            label: found.map(|s| s.label.clone()).unwrap_or_default(),
+            pins: found.map_or_else(|| vec![SlotPin::default(); count], |s| s.pins.clone()),
+        }
+    }
+
+    /// The enabled bitmap and the label strings, after a change of the
+    /// slots `numbers`.
+    fn sync_slots(&mut self, numbers: impl IntoIterator<Item = u8>) {
+        for n in numbers.into_iter().filter(|n| (2..=6).contains(n)) {
+            let bit = 1 << (n - 1);
+            match self.slots.get(&n) {
+                Some(s) => {
+                    if s.enabled {
+                        self.enabled_profiles |= bit;
+                    } else {
+                        self.enabled_profiles &= !bit;
+                    }
+                    self.strings
+                        .insert(proto::string::profile_label(n), s.label.clone());
+                }
+                None => {
+                    self.enabled_profiles &= !bit;
+                    self.strings.remove(&proto::string::profile_label(n));
+                }
+            }
+        }
     }
 
     /// Main's lights from the mock: `getAnimationProtoOptions` and
@@ -426,7 +544,8 @@ impl SimChannel {
         LightsStatus {
             flags: LightsStatus::RUNNING
                 | flag(self.lights != self.saved_lights, LightsStatus::UNSAVED)
-                | flag(k.preview, LightsStatus::PREVIEW),
+                | flag(k.preview, LightsStatus::PREVIEW)
+                | flag(self.lights_pending > 0, LightsStatus::PENDING),
             profile: self.lights.profile,
             enabled_profiles: k
                 .profiles
@@ -448,11 +567,12 @@ impl SimChannel {
         }
     }
 
-    /// Any save writes the whole config: the LEDs' and lights' RAM state
-    /// too.
+    /// Any save writes the whole config: the LEDs', lights' and slots' RAM
+    /// state too.
     fn save_all(&mut self) {
         self.saved_leds = self.leds;
         self.saved_lights = self.lights;
+        self.saved_slots = self.slots.clone();
     }
 
     /// The LED state from the mock: `animationOptions` from its `getConfig`
@@ -547,6 +667,16 @@ impl SimChannel {
         self.active = self.saved_profile;
         self.leds = self.saved_leds;
         self.lights = self.saved_lights;
+        // Only the slots a RAM-only write changed go back.
+        let numbers: BTreeSet<u8> = self
+            .slots
+            .keys()
+            .chain(self.saved_slots.keys())
+            .copied()
+            .filter(|n| self.slots.get(n) != self.saved_slots.get(n))
+            .collect();
+        self.slots = self.saved_slots.clone();
+        self.sync_slots(numbers);
         self.pending = false;
         self.reboot_pending = false;
         self.last = (0, 0, 0);
@@ -568,6 +698,10 @@ impl SimChannel {
             // LIGHTS_STATUS STALLs and SET_LIGHTS is UNSUPPORTED (§3.8).
             Some(Command::LightsStatus | Command::SetLights) if !self.main => Some(None),
             Some(Command::LightsStatus) if !self.caps.has(Caps::LIGHTS) => Some(None),
+            // Before 1.4 there are no slot commands.
+            Some(Command::ReadSlot | Command::WriteSlot) if !self.caps.has(Caps::SLOTS) => {
+                Some(None)
+            }
             known => Some(known),
         }
     }
@@ -603,7 +737,7 @@ impl SimChannel {
         let Some(cmd) = self.matched(&setup) else {
             return self.stock_in(len);
         };
-        let Some(cmd) = cmd.filter(|_| len <= proto::MAX_LEN) else {
+        let Some(cmd) = cmd.filter(|c| len <= c.max_len()) else {
             return Err(UsbError::Stall);
         };
         let reply = match cmd {
@@ -636,7 +770,15 @@ impl SimChannel {
                 None => return Err(UsbError::Stall),
             },
             Command::LedStatus => self.led_status().encode().to_vec(),
-            Command::LightsStatus => self.lights_status().encode().to_vec(),
+            Command::LightsStatus => {
+                let l = self.lights_status();
+                self.lights_pending = self.lights_pending.saturating_sub(1);
+                l.encode().to_vec()
+            }
+            Command::ReadSlot => match u8::try_from(setup.value) {
+                Ok(n @ 1..=6) => self.slot(n).encode(),
+                _ => return Err(UsbError::Stall),
+            },
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -680,7 +822,7 @@ impl SimChannel {
             self.last = (0, byte, Outcome::Unsupported.byte());
             return Err(UsbError::Stall);
         };
-        if data.len() < proto::HEADER_LEN || data.len() > usize::from(proto::MAX_LEN) {
+        if data.len() < proto::HEADER_LEN || data.len() > usize::from(cmd.max_len()) {
             self.last = (0, byte, Outcome::BadLength.byte());
             return Err(UsbError::Stall);
         }
@@ -704,6 +846,9 @@ impl SimChannel {
     }
 
     fn apply(&mut self, cmd: Command, args: &[u8]) -> Result<Option<Effect>, Outcome> {
+        if cmd == Command::WriteSlot {
+            return self.write_slot(args).map(|()| None);
+        }
         // Bytes past the arguments are ignored, for later minors.
         if args.len() < cmd.payload_len().unwrap_or(usize::MAX) {
             return Err(Outcome::BadLength);
@@ -808,6 +953,7 @@ impl SimChannel {
                 if let Some(b) = set.brightness {
                     self.lights.brightness = b;
                 }
+                self.lights_pending = k.pending_reads;
                 if set.persist {
                     self.save_all();
                     self.saved_profile = self.active;
@@ -817,6 +963,100 @@ impl SimChannel {
             _ => Err(Outcome::BadArg),
         }
     }
+}
+
+impl SimChannel {
+    /// WRITE_SLOT, as `doWriteSlot` does it: every check before any change.
+    fn write_slot(&mut self, args: &[u8]) -> Result<(), Outcome> {
+        let count = usize::from(self.pin_count);
+        if args.len() != Slot::len(count) {
+            return Err(Outcome::BadLength);
+        }
+        let (profile, flags) = (args[0], args[1]);
+        if !(2..=6).contains(&profile)
+            || flags & !Slot::FLAGS != 0
+            || args[2] != self.pin_count
+            || usize::from(args[3]) != proto::SLOT_PIN_LEN
+        {
+            return Err(Outcome::BadArg);
+        }
+        let slot = Slot::parse(args).ok_or(Outcome::BadArg)?;
+        if slot
+            .pins
+            .iter()
+            .any(|p| !(proto::ACTION_MIN..=proto::ACTION_MAX).contains(&p.action))
+        {
+            return Err(Outcome::BadArg);
+        }
+        let (enable, select) = (slot.enabled(), slot.active());
+        if !enable && (select || self.active == profile) {
+            return Err(Outcome::ProfileDisabled);
+        }
+        // Configs from before profile 6 have only 4 slots: add the missing
+        // ones, empty and disabled.
+        for n in 2..profile {
+            self.slots.entry(n).or_insert_with(|| SimSlot {
+                pins: vec![SlotPin::default(); count],
+                ..SimSlot::default()
+            });
+        }
+        // Pins that profile 1 reserves or gives to an add-on keep its action.
+        let base = self
+            .slots
+            .get(&1)
+            .map(|s| s.pins.clone())
+            .unwrap_or_default();
+        let pins = slot
+            .pins
+            .iter()
+            .enumerate()
+            .map(|(gpio, p)| match base.get(gpio) {
+                Some(b) if matches!(b.action, -5 | 0) => SlotPin {
+                    action: b.action,
+                    ..SlotPin::default()
+                },
+                _ => *p,
+            })
+            .collect();
+        self.slots.insert(
+            profile,
+            SimSlot {
+                label: slot.label.clone(),
+                enabled: enable,
+                pins,
+            },
+        );
+        self.sync_slots([profile]);
+        // The reinit runs on the next pass of the main loop.
+        if select || self.active == profile {
+            self.active = profile;
+            self.pending = self.running != Some(255);
+        }
+        if flags & Slot::SAVE != 0 {
+            self.save_all();
+            self.saved_profile = self.active;
+        }
+        Ok(())
+    }
+}
+
+/// A pad with only profile 1, every pin NONE.
+fn default_slots() -> BTreeMap<u8, SimSlot> {
+    let pins = vec![
+        SlotPin {
+            action: -10,
+            ..SlotPin::default()
+        };
+        usize::from(RP2040_PINS)
+    ];
+    BTreeMap::from([(
+        1,
+        SimSlot {
+            label: "Default".into(),
+            enabled: true,
+            pins,
+        },
+    )])
 }
 
 fn proto_byte(m: InputMode) -> u8 {

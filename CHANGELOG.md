@@ -170,6 +170,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cycle times of each profile (additive). `leds` on main web-config no
   longer shows lights profile 0 when the lights are off.
   `--mock-channel lights` simulates it.
+- Control channel 1.4, the profile slots: `gamepadii profile show
+  [N|LABEL]` reads the pin mappings and the label of a profile live
+  (READ_SLOT), in any mode. `gamepadii profile write FILE --slot N
+  [--select] [--save] [--label TEXT]` writes them to profile 2 to 6
+  (WRITE_SLOT), with no reboot, and RAM only unless `--save`. The JSON of
+  `profile show` is a slot file. A slot file can leave out pins, and those
+  pins follow profile 1. Actions can be numbers or names (`B1`, `none`,
+  `turbo`). gamepadii checks the file before it sends a command. It backs
+  up the profile first (`--no-backup` to skip). It waits for the pad to
+  apply an active profile, and reads the profile back. A saved write also
+  updates the device cache. `--mock-channel slots` simulates it.
+- Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
+  shows a change that waits for core 1 (flag bit 3). The builds cb01f70
+  and 77620cd count as main.
 - Control channel 1.3: the board ID. STRING 0x05 gives the unique ID of the
   flash chip (16 hex digits). gamepadii asks for it only when HELLO gives
   1.3 or higher. `status` shows it (`board_id` in JSON, `null` before 1.3,

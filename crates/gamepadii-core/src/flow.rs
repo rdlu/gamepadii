@@ -1,5 +1,7 @@
 //! The guided flows: `mode`, `webconfig`, `reboot` with a wait, `profile
-//! switch`, `leds` (and `leds set`, over the channel only), and the trip through web-config that `info` and `backup` take
+//! switch`, `profile show` and `profile write` (over the channel only),
+//! `leds` (and `leds set`, over the channel only), and the trip through
+//! web-config that `info` and `backup` take
 //! from a gamepad mode ([`through_webconfig`]). They poll USB through a
 //! [`Scan`] and time through a [`Clock`], open the web-config client and
 //! the control channel through closures, and report progress through a
@@ -31,6 +33,8 @@ use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
 use crate::mode::{BootMode, Confidence, InputMode};
+use crate::slots::{self, SlotFile, SlotReport, SlotWrite, SlotWriteReport};
+use crate::timestamp::Utc;
 use crate::wait::{Clock, Poll, wait_for};
 
 /// How long each wait lasts.
@@ -2147,6 +2151,234 @@ pub fn profile_switch(
     Ok(report)
 }
 
+// ---- profile slots (control channel v1.4) ----------------------------------------
+
+/// Why READ_SLOT and WRITE_SLOT aren't there on `pad`.
+fn no_slot_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with the profile slot commands, so \
+         gamepadii can't read or write its pin mappings live; that needs the gamepadii \
+         build of GP2040-CE with control channel v1.4. `gamepadii backup` reads them \
+         through web-config",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// The pad and its control channel, when it has READ_SLOT and WRITE_SLOT.
+fn slot_channel(env: &Env) -> Result<(Device, Channel)> {
+    let pad = pick(env.scan.scan())?;
+    if pad.mode == Some(InputMode::Bootsel) {
+        return Err(Error::NeedsUser(
+            "the pad is in BOOTSEL (the boot ROM, for flashing); replug it first".into(),
+        ));
+    }
+    let Some(open) = env.control else {
+        return Err(no_slot_channel(
+            &pad,
+            Some("the control channel is off: --no-channel".into()),
+        ));
+    };
+    match commands::probe(open, &pad, env.cache_dir.as_deref()) {
+        Probe::Found(ch) if ch.hello().has_slots() => Ok((pad, ch)),
+        Probe::Found(ch) => {
+            let h = ch.hello();
+            let why = format!("this build's channel speaks v{}.{}", h.major, h.minor);
+            Err(no_slot_channel(&pad, Some(why)))
+        }
+        Probe::NoAccess { node } => Err(Error::NeedsUser(format!(
+            "{}; the profile slots need the control channel",
+            channel::udev_hint(&node)
+        ))),
+        Probe::Newer { major, .. } => Err(Error::Usage(commands::newer_protocol(major))),
+        Probe::Stock(_) | Probe::Absent(_) => Err(no_slot_channel(&pad, None)),
+    }
+}
+
+/// The profile `which` names: a number (any of 1–6), or the label of an
+/// enabled profile.
+fn slot_number(ch: &Channel, st: &channel::Status, which: &ProfileArg) -> Result<u8> {
+    match which {
+        ProfileArg::Number(n) => Ok(*n),
+        ProfileArg::Label(l) => {
+            for n in st.enabled() {
+                let label = ch.string(proto::string::profile_label(n))?;
+                if label.is_some_and(|v| v.eq_ignore_ascii_case(l)) {
+                    return Ok(n);
+                }
+            }
+            Err(Error::Usage(format!("no enabled profile is called {l:?}")))
+        }
+    }
+}
+
+/// `gamepadii profile show [PROFILE]`: one slot with READ_SLOT, live, in
+/// any mode; the active profile when `which` is `None`.
+pub fn profile_show(env: &Env, which: Option<&ProfileArg>) -> Result<SlotReport> {
+    let (_, ch) = slot_channel(env)?;
+    let st = ch.status()?;
+    let n = match which {
+        Some(w) => slot_number(&ch, &st, w)?,
+        None => st.profile,
+    };
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    let base = ch.read_slot(1)?;
+    let slot = if n == 1 {
+        base.clone()
+    } else {
+        ch.read_slot(n)?
+    };
+    Ok(SlotReport::new(ch.node(), board, &slot, &base))
+}
+
+/// `gamepadii profile write FILE --slot N`: WRITE_SLOT of `file` to
+/// profile `write.slot` (2–6), live; selected with `write.select`, saved
+/// with `write.save`. It backs up the slot first (into
+/// `env.backups_dir`, when set), waits for the pad to apply an active
+/// profile, and reads the slot back.
+pub fn profile_write(
+    env: &Env,
+    file: &SlotFile,
+    write: &SlotWrite,
+    progress: &mut dyn Progress,
+) -> Result<SlotWriteReport> {
+    let (pad, ch) = slot_channel(env)?;
+    let st = ch.status()?;
+    let firmware = Firmware {
+        board: ch.string(proto::string::BOARD).ok().flatten(),
+        ..Firmware::default()
+    };
+    let base = ch.read_slot(1)?;
+    let slot = slots::plan(
+        file,
+        write,
+        base.pins.len(),
+        st.profile,
+        firmware.board.as_deref(),
+    )?;
+    let before = ch.read_slot(write.slot)?;
+    let backup = match &env.backups_dir {
+        Some(dir) => {
+            let report = SlotReport::new(ch.node(), firmware.board.clone(), &before, &base);
+            let name = format!(
+                "{}-{}-profile{}.json",
+                Utc::from_system(env.clock.wall()).compact(),
+                commands::board_slug(&firmware),
+                write.slot
+            );
+            let path = dir.join(name);
+            commands::write_json(&report.file(), &path)?;
+            progress.step(Step::BackedUp(&path));
+            Some(path)
+        }
+        None => None,
+    };
+    ch.write_slot(&slot)?;
+    let active = write.select || st.profile == write.slot;
+    let board_id = ch.board_id().ok().flatten();
+    let pad_id = cache::identify(env.cache_dir.as_deref(), &pad);
+    let key = Key::new(&firmware, PadId::with_board_id(pad_id, board_id.as_deref()));
+    let dir = env.cache_dir.as_deref();
+    if active
+        && let Some(e) =
+            commands::remember_profile(dir, &key, write.slot, write.save, env.clock.wall())
+    {
+        progress.step(Step::CacheFailed(&e));
+    }
+    // The reinit of an active profile comes after the ACK: STATUS shows
+    // PROFILE_PENDING until it is done (9 to 12 ms on the S16).
+    let applied = active.then(|| {
+        wait_for(
+            env.clock,
+            Poll {
+                interval: Duration::from_millis(10),
+                timeout: Duration::from_secs(1),
+            },
+            || {
+                ch.status().ok().filter(|s| {
+                    !s.pending()
+                        && s.last_command == channel::Command::WriteSlot as u8
+                        && s.last_seq == ch.last_seq()
+                })
+            },
+            |_| {},
+        )
+        .is_some_and(|s| channel::Outcome::from_byte(s.last_result) == channel::Outcome::Ok)
+    });
+    let after = ch.read_slot(write.slot)?;
+    let expect = slots::expected(&slot, &base);
+    let wrong = slots::changed_pins(&after.pins, &expect);
+    if !wrong.is_empty() || after.label != slot.label || after.enabled() != slot.enabled() {
+        return Err(Error::CheckFailed(format!(
+            "the pad accepted the write of profile {}, but READ_SLOT gives other values{}",
+            write.slot,
+            if wrong.is_empty() {
+                String::new()
+            } else {
+                format!(" on GPIO {}", join(&wrong))
+            }
+        )));
+    }
+    if write.save
+        && let Some(dir) = dir
+        && let Err(e) = cache::record_slot(dir, &key, &after)
+    {
+        progress.step(Step::CacheFailed(&e));
+    }
+    let mut notes = Vec::new();
+    let kept = slots::changed_pins(&slot.pins, &expect);
+    if !kept.is_empty() {
+        let (verb, them) = if kept.len() == 1 {
+            ("keeps", "it")
+        } else {
+            ("keep", "them")
+        };
+        notes.push(format!(
+            "GPIO {} {verb} profile 1's action: profile 1 reserves {them} or gives {them} to \
+             an add-on",
+            join(&kept)
+        ));
+    }
+    if applied == Some(false) {
+        notes.push("the pad took the write but hasn't applied the new mapping after 1 s".into());
+    }
+    if !write.save {
+        notes.push(
+            "not saved: after a restart the pad has its saved profiles again, unless something \
+             saves the settings first; --save keeps it"
+                .into(),
+        );
+    }
+    Ok(SlotWriteReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        profile: write.slot,
+        before_label: before.label.clone(),
+        before_enabled: before.enabled(),
+        label: after.label.clone(),
+        enabled: after.enabled(),
+        changed_pins: slots::changed_pins(&before.pins, &after.pins),
+        active: after.active(),
+        saved: write.save,
+        applied,
+        verified: true,
+        backup,
+        note: (!notes.is_empty()).then(|| notes.join("; ")),
+    })
+}
+
+/// `3, 4, 7`.
+fn join(gpios: &[u8]) -> String {
+    gpios
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ---- leds -----------------------------------------------------------------------
 
 /// What an LED flow needs the channel for, for its error.
@@ -2383,9 +2615,9 @@ fn lights_set(env: &Env, ch: &Channel, change: &LedChange) -> Result<LedSetRepor
             timeout: Duration::from_secs(1),
         },
         || {
-            ch.lights_status()
-                .ok()
-                .filter(|l| leds::shows_lights(l, &set) && (!set.persist || !l.unsaved()))
+            ch.lights_status().ok().filter(|l| {
+                !l.pending() && leds::shows_lights(l, &set) && (!set.persist || !l.unsaved())
+            })
         },
         |_| {},
     );

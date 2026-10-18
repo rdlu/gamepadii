@@ -158,6 +158,14 @@ fn every_command(fake: &Fake, dir: &Path) {
             ..LedChange::default()
         };
         let _ = flow::leds_set(env, &change);
+        let _ = flow::profile_show(env, None);
+        let file = gamepadii_core::slots::SlotFile::parse(r#"{"pins": []}"#).unwrap();
+        let write = gamepadii_core::slots::SlotWrite {
+            slot: 6,
+            select: true,
+            ..Default::default()
+        };
+        let _ = flow::profile_write(env, &file, &write, &mut Silent);
     });
 }
 

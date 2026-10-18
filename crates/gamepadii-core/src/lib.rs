@@ -2,7 +2,7 @@
 //! client, and later profiles.
 //!
 //! Layering (each layer only depends on the ones before it):
-//! `discovery` → `transport` / `channel` → `client` → `commands` / `display` / `leds`
+//! `discovery` → `transport` / `channel` → `client` → `commands` / `display` / `leds` / `slots`
 //! / `flow`. `commands` returns
 //! plain serde data and nothing here prints; front ends own rendering.
 
@@ -19,6 +19,7 @@ pub mod flow;
 pub mod leds;
 pub mod mode;
 pub mod sim;
+pub mod slots;
 pub mod sysfs;
 pub mod timestamp;
 pub mod transport;

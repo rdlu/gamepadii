@@ -14,7 +14,8 @@ buttons. With our firmware fork, most changes do not need a button press.
 
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
-`profile switch`, `display layout`, `leds` and `setup udev`. The TUI
+`profile switch`, `profile show`, `profile write`, `display layout`,
+`leds` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
 the profile. The roadmap is in
 [GitHub issues](https://github.com/rdlu/gamepadii/issues/1). The design
@@ -77,6 +78,12 @@ gamepadii profile switch <N|LABEL> [--save]
                                   switch the active profile, live (needs
                                   the control channel); RAM only unless
                                   --save
+gamepadii profile show [N|LABEL]  the pin mappings of a profile, live
+                                  (needs control channel v1.4); --json
+                                  gives a slot file
+gamepadii profile write FILE --slot N [--select] [--save] [--label TEXT]
+                                  write a slot file to profile 2-6, live;
+                                  RAM only unless --save; backs up first
 gamepadii display layout          the OLED's button drawing, and the
                                   choices for this board
 gamepadii display layout <MODEL>  pick the drawing for a Haute42 model:
@@ -155,6 +162,13 @@ press:
   saved profile when it restarts (unless something else, such as a hotkey,
   saves the settings first). Either way the device cache (below) records
   which profile the pad runs, so the key hints follow;
+- `profile show` reads the pin mappings of a profile, and `profile write`
+  writes them to profile 2 to 6, with no reboot. This needs channel v1.4.
+  The JSON of `profile show` is a slot file, and a slot file can leave out
+  pins: they follow profile 1. For a per-game profile, write the game's
+  file to a free profile with `--select`. Before a write, gamepadii backs
+  up the profile in the same format, so a `profile write` of the backup
+  undoes it. Like `profile switch`, a write is RAM only unless `--save`;
 - `info`, `backup` and `display layout` reboot it into web-config, read
   (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes

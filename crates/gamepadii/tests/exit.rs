@@ -866,3 +866,105 @@ fn lights_exit_codes() {
     let (code, _, stderr) = run(&["leds", "set", "--lights-profile", "dim"]);
     assert_eq!(code, 3, "{stderr}");
 }
+
+#[test]
+fn slot_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-v0.7.12"
+    );
+    let run = |args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            "slots",
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, _) = run(&["profile", "show"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Profile 2 SilkSong\n"), "{stdout}");
+    // The JSON of `show` is a slot file for `write`.
+    let (code, stdout, _) = run(&["--json", "profile", "show", "celeste"]);
+    assert_eq!(code, 0);
+    let file = home.path().join("celeste.json");
+    std::fs::write(&file, &stdout).unwrap();
+    let path = file.to_str().unwrap();
+    let (code, stdout, stderr) = run(&[
+        "--json",
+        "profile",
+        "write",
+        path,
+        "--slot",
+        "6",
+        "--select",
+        "--label",
+        "Celeste 6",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(
+        (v["profile"].as_u64(), v["active"].as_bool()),
+        (Some(6), Some(true))
+    );
+    assert_eq!(v["label"], "Celeste 6");
+    let backup = v["backup"].as_str().unwrap();
+    assert!(
+        backup.starts_with(home.path().join("data").to_str().unwrap()),
+        "{backup}"
+    );
+    assert!(std::path::Path::new(backup).exists());
+    // --no-backup: no backup.
+    let (code, stdout, _) = run(&[
+        "--json",
+        "profile",
+        "write",
+        path,
+        "--slot",
+        "6",
+        "--no-backup",
+    ]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v["backup"].is_null());
+    // Usage errors: 3.
+    for args in [
+        &["profile", "write", path, "--slot", "1"][..],
+        &["profile", "write", path, "--slot", "7"],
+        &["profile", "write", path],
+        &["profile", "write", "-", "--slot", "6"],
+        &[
+            "profile",
+            "write",
+            path,
+            "--slot",
+            "6",
+            "--label",
+            "far too long for the pad",
+        ],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 3, "{args:?}: {stderr}");
+    }
+    let (code, _, stderr) = run(&["profile", "write", "/nonexistent.json", "--slot", "6"]);
+    assert_eq!(code, 4, "{stderr}");
+    // No v1.4 channel: 5.
+    let (code, _, stderr) = webconfig(&[
+        "--sysroot",
+        "@s16-xinput",
+        "--mock-channel",
+        "lights",
+        "--mock-api",
+        "%s16-main",
+        "profile",
+        "show",
+    ]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.4"), "{stderr}");
+}
