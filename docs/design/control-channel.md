@@ -559,13 +559,9 @@ How it's switched on:
    The fork adds **no** `.proto` fields. The config is persisted in flash, so
    a field number we picked could collide with one upstream assigns later,
    and the old data would then be read as something else.
-2. **Upstream:** the compile-time option plus a runtime
-   `optional bool controlChannelEnabled` in whatever message the maintainers
-   choose, default **off**, with a toggle in the web UI.
-   - With it off, `matches()` returns false and behaviour is identical to
-     today.
-   - Turning it on is a one-time web-config write, which gamepadii can do
-     through its existing guided flow (one button press, ever).
+2. **Runtime flag (not planned):** an upstream version would need a runtime
+   flag in `config.proto`, default off. We do not send the channel to
+   upstream now (§7), so the fork has the compile-time option only.
 
 Other rules for the implementation:
 
@@ -691,37 +687,25 @@ Community") doesn't work: `usbDesc*` overrides it and vendor builds change it.
   need `USBDeviceOpen`, which fails when a kernel driver holds the device.
   This is unverified, and it is part of why `nusb` gets evaluated later.
 
-## 7. Upstream strategy
+## 7. Compatibility with upstream
 
-1. File the freeze issues first (the I2C scan and the `getConfig` heap
-   exhaustion, with the fixes from our branch). That establishes credibility
-   and is useful to them on its own.
-2. Open a **GitHub Discussion** (Ideas) titled "RFC: optional USB vendor
-   control channel for host tools (no descriptor changes)". Its contents:
-   - Motivation: host-side profile managers, launcher integration, and
-     switching modes without the S2+B3+B4 dance.
-   - The safety case, point by point:
-     - off by default, both at compile time and at runtime
-     - no descriptor, interface or string changes, so console behaviour is
-       provably unchanged
-     - requests that aren't ours take the exact existing path
-     - a 16-bit magic, plus a per-boot token for anything that writes
-     - forced-setup locks are honoured
-     - flash writes go through the existing `GPStorageSaveEvent` path
-   - The request table from §3, and a diff-size estimate (one new file plus
-     three lines in `usbdriver.cpp`).
-   - Questions for the maintainers:
-     - Is `0x47`/`0x50` acceptable, or do they want to reserve a range?
-     - Where should the runtime flag live in `config.proto`?
-     - Should the channel exist at all in web-config mode?
-     - Should BOOTSEL be exposed?
-     - Would they rather have it as an addon?
-3. Port the patch to `main`, with the same hook and the `InputMode` bitmap
-   extended for P5General, SInput and Switch2Pro, and open a PR only after
-   the Discussion has some agreement. Keep the v0.7.12 fork branch
-   (`gamepadii/control-channel`) for the S16 until a release includes it.
-4. If upstream declines, carry the fork: the patch touches one hook and the
-   firmware moves slowly.
+We do not send the control channel to upstream (decided 2026-10-18). The
+first reports were closed, and upstream work is paused. These rules apply:
+
+1. gamepadii operates with stock GP2040-CE. The basic functions (status,
+   info, backup, mode change, restart) use web-config and button presses.
+2. The advanced functions use our fork: the control channel, `getConfig`,
+   and the LED commands. gamepadii finds the fork with a capability check
+   and does not use these functions on stock firmware.
+3. The fork stays close to upstream. The patch touches one hook in
+   `usbdriver.cpp` and adds one file, so we can move it to new upstream code
+   easily (#21).
+4. The fork adds no `.proto` fields (§4), so its saved settings stay
+   compatible with stock firmware. You can install stock firmware again
+   without a settings reset.
+
+The old plan (an upstream RFC, then a PR) is in the git history of this
+file.
 
 ## 8. Test plan (S16)
 
@@ -849,8 +833,9 @@ except for the version string (§3.6).
 
 ## 9. Decisions (issue #2, 2026-10-17)
 
-1. **Gate:** compile time only in our fork (`GP2040_CONTROL_CHANNEL`). The
-   upstream proposal gets a runtime flag as well, default off (§4).
+1. **Gate:** compile time only in our fork (`GP2040_CONTROL_CHANNEL`).
+   There is no runtime flag (§4). Updated 2026-10-18: no upstream proposal
+   (§7).
 2. **No REBOOT to BOOTSEL** over the channel. Flashing is occasional;
    gamepadii goes REBOOT(1) → web-config → `/api/reboot {"bootMode":2}`.
 3. **Honour `forcedSetupMode`** for REBOOT(web-config) and SET_INPUT_MODE
