@@ -221,7 +221,7 @@ fn parses_leds() {
     let change = |args: &[&str]| match parse(args).unwrap().command {
         Some(Command::Leds {
             command: Some(c), ..
-        }) => c.change(),
+        }) => c.change().expect("a change"),
         other => panic!("{other:?}"),
     };
     assert_eq!(

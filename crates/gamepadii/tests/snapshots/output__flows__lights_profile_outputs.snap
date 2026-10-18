@@ -1,0 +1,186 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::lights_show(human(), &show),\noutput::lights_show(human(), &shown),\noutput::lights_write(human(), &plain(&ram)),\noutput::lights_write(human(), &plain(&saved)),\noutput::lights_show(json(), &show),\noutput::lights_write(json(), &plain(&ram)),)"
+---
+Lights profile 0
+state         enabled, runs now
+board         Haute42COSMOX
+idle          rainbow-synced, cycle 0, colours red ×30, special #ff0000, special rainbow: no
+pressed       static-color, colours white ×30, hold 500 ms, fade 500 ms, special #0000ff, cycle 0, special rainbow: no
+case          rainbow-synced, colours black ×32, in pressed animations: no, cycle 0, special rainbow: no, special #00ff00
+effects       param 0x0
+via           the control channel (/dev/bus/usb/003/007)
+
+Lights profile 2
+state         enabled, runs now
+board         Haute42COSMOX
+idle          rain, cycle 0, colours yellow ×30, special #ff0000, special rainbow: no
+pressed       static-color, colours red ×2, orange ×3, magenta ×1, hold 500 ms, fade 500 ms, special #0000ff, cycle 0, special rainbow: no
+case          rainbow-rotate, colours black ×32, in pressed animations: yes, cycle 0, special rainbow: no, special #00ff00
+effects       param 0x0
+via           the control channel (/dev/bus/usb/003/007)
+
+Lights profile 2 written, runs now
+was           enabled
+changed       idle_effect, pressed_colors, case_in_pressed
+applied       yes
+saved         no (RAM only)
+backup        20261017-165703-Haute42COSMOX-lights2.json
+via           the control channel (/dev/bus/usb/003/007)
+note          not saved: after a restart the pad has its saved lights profiles again, unless something saves the settings first; --save keeps it
+
+Lights profile 3 written and saved
+was           enabled
+changed       idle_effect, pressed_colors, case_in_pressed
+applied       yes
+saved         yes, in flash
+backup        20261017-165703-Haute42COSMOX-lights3.json
+via           the control channel (/dev/bus/usb/003/007)
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "board": "Haute42COSMOX",
+  "profile": 0,
+  "enabled": true,
+  "active": true,
+  "idle_effect": 1,
+  "idle_effect_name": "rainbow-synced",
+  "pressed_effect": 0,
+  "pressed_effect_name": "static-color",
+  "idle_cycle_time": 0,
+  "idle_colors": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "pressed_colors": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "press_hold_ms": 500,
+  "press_fade_ms": 500,
+  "idle_special_color": "#ff0000",
+  "case_effect": 1,
+  "case_effect_name": "rainbow-synced",
+  "case_colors": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "pressed_special_color": "#0000ff",
+  "case_in_special_moves": null,
+  "pressed_cycle_time": 0,
+  "case_in_pressed": false,
+  "case_cycle_time": 0,
+  "idle_special_rainbow": false,
+  "pressed_special_rainbow": false,
+  "case_special_rainbow": false,
+  "case_special_color": "#00ff00",
+  "effect_param": 0,
+  "other_fields": []
+}
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "profile": 2,
+  "before_enabled": true,
+  "enabled": true,
+  "changed": [
+    "idle_effect",
+    "pressed_colors",
+    "case_in_pressed"
+  ],
+  "active": true,
+  "saved": false,
+  "applied": true,
+  "verified": true,
+  "backup": "20261017-165703-Haute42COSMOX-lights2.json",
+  "note": "not saved: after a restart the pad has its saved lights profiles again, unless something saves the settings first; --save keeps it"
+}

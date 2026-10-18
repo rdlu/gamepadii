@@ -6,7 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use clap::{CommandFactory, Parser};
 use gamepadii::cli::{
-    self, Cli, Command, DisplayCommand, MockChannel, ProfileCommand, SetupCommand, TripArgs,
+    self, Cli, Command, DisplayCommand, LedsCommand, LightsProfileCommand, MockChannel,
+    ProfileCommand, SetupCommand, TripArgs,
 };
 use gamepadii::output::{self, Format, Style};
 use gamepadii::progress::Reporter;
@@ -18,6 +19,7 @@ use gamepadii_core::client::{self, Client};
 use gamepadii_core::discovery::Device;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Env, Timeouts};
+use gamepadii_core::lights::{LightsFile, LightsWrite};
 use gamepadii_core::mode::BootMode;
 use gamepadii_core::slots::{SlotFile, SlotWrite};
 use gamepadii_core::sysfs::Root;
@@ -290,6 +292,65 @@ fn main() -> ExitCode {
             finish(format, result)
         }
         Some(Command::Leds {
+            command:
+                Some(LedsCommand::Profile {
+                    command: LightsProfileCommand::Show { profile },
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result = flow::lights_show(&env, profile).map(|r| output::lights_show(style, &r));
+            finish(format, result)
+        }
+        Some(Command::Leds {
+            command:
+                Some(LedsCommand::Profile {
+                    command:
+                        LightsProfileCommand::Write {
+                            file,
+                            profile,
+                            select,
+                            save,
+                            no_backup,
+                        },
+                }),
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let write = LightsWrite {
+                profile,
+                select,
+                save,
+            };
+            let mut progress = reporter(format);
+            let result = read_file(&file)
+                .and_then(|t| LightsFile::parse(&t))
+                .and_then(|f| flow::lights_write(&env, &f, &write, &mut progress))
+                .map(|r| output::lights_write(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Leds {
             command: Some(command),
             ..
         }) => {
@@ -304,8 +365,8 @@ fn main() -> ExitCode {
                 Timeouts::default(),
                 false,
             );
-            let result =
-                flow::leds_set(&env, &command.change()).map(|r| output::leds_set(style, &r));
+            let change = command.change().unwrap_or_default();
+            let result = flow::leds_set(&env, &change).map(|r| output::leds_set(style, &r));
             finish(format, result)
         }
         Some(Command::Display { command }) => {
@@ -505,7 +566,12 @@ fn control_opener<'a>(cli: &Cli, root: &'a Root) -> Option<Box<OpenControl<'a>>>
 
 /// A slot file for `profile write`: a path, or `-` for standard input.
 fn read_slot_file(path: &std::path::Path) -> Result<SlotFile, Error> {
-    let text = if path == std::path::Path::new("-") {
+    SlotFile::parse(&read_file(path)?)
+}
+
+/// A file, or standard input for `-`.
+fn read_file(path: &std::path::Path) -> Result<String, Error> {
+    Ok(if path == std::path::Path::new("-") {
         let mut s = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)
             .map_err(|e| Error::io("reading standard input", e))?;
@@ -513,8 +579,7 @@ fn read_slot_file(path: &std::path::Path) -> Result<SlotFile, Error> {
     } else {
         std::fs::read_to_string(path)
             .map_err(|e| Error::io(format!("reading {}", path.display()), e))?
-    };
-    SlotFile::parse(&text)
+    })
 }
 
 /// `--mock-channel`: the firmware for `d`, in the mode its ids say.
@@ -547,6 +612,12 @@ fn mock_control(
         }
         .with_lights()
         .with_slots(),
+        MockChannel::LightsProfiles => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        }
+        .with_slots()
+        .with_lights_profiles(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the

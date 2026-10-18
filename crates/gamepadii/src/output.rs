@@ -20,6 +20,7 @@ use gamepadii_core::flow::{
     WebconfigVia,
 };
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
+use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use gamepadii_core::slots::{PinView, SlotReport, SlotWriteReport};
 use gamepadii_core::udev;
@@ -980,6 +981,175 @@ pub fn profile_write(style: Style, r: &SlotWriteReport) -> String {
     if let Some(a) = r.applied {
         rw.push(("applied", if a { "yes" } else { "not yet" }.into()));
     }
+    rw.push((
+        "saved",
+        if r.saved {
+            "yes, in flash".into()
+        } else {
+            "no (RAM only)".into()
+        },
+    ));
+    if let Some(b) = &r.backup {
+        rw.push(("backup", b.display().to_string()));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// A list of colour indexes: `red ×30`, the runs in order.
+fn color_runs(b: &[u8]) -> String {
+    let name = |c: u8| match gamepadii_core::leds::COLORS.get(usize::from(c)) {
+        Some(n) if usize::from(c) < lights::BASE_COLORS => (*n).to_string(),
+        _ => format!(
+            "custom {}",
+            usize::from(c).saturating_sub(lights::BASE_COLORS)
+        ),
+    };
+    let mut runs: Vec<(u8, usize)> = Vec::new();
+    for c in b {
+        match runs.last_mut() {
+            Some((last, n)) if last == c => *n += 1,
+            _ => runs.push((*c, 1)),
+        }
+    }
+    let mut parts: Vec<String> = runs
+        .iter()
+        .take(4)
+        .map(|(c, n)| format!("{} ×{n}", name(*c)))
+        .collect();
+    if runs.len() > 4 {
+        parts.push("...".into());
+    }
+    if parts.is_empty() {
+        "none".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// The word for a flag or number field in `leds profile show`.
+fn lights_label(key: &str) -> &'static str {
+    match key {
+        "case_in_special_moves" => "in special moves",
+        "case_in_pressed" => "in pressed animations",
+        "press_hold_ms" => "hold",
+        "press_fade_ms" => "fade",
+        "effect_param" => "param",
+        k if k.ends_with("special_rainbow") => "special rainbow",
+        _ => "",
+    }
+}
+
+/// The parts of one row of `leds profile show`: the fields whose keys
+/// start with one of `prefixes`, as text, in table order.
+fn lights_group(file: &lights::LightsFile, prefixes: &[&str]) -> String {
+    let mut parts = Vec::new();
+    for def in lights::FIELDS
+        .iter()
+        .filter(|f| prefixes.iter().any(|p| f.key.starts_with(p)))
+    {
+        let Some(v) = file.values.get(&def.number) else {
+            continue;
+        };
+        let what = lights_label(def.key);
+        let n = v.as_u32().unwrap_or_default();
+        let text = match def.kind {
+            Kind::Effect(table) => table
+                .get(n as usize)
+                .map_or_else(|| format!("effect {n}"), |e| (*e).to_string()),
+            Kind::Cycle => format!("cycle {}", v.as_i32().unwrap_or_default()),
+            Kind::Color => format!("special #{n:06x}"),
+            Kind::Flag => format!("{what}: {}", if n != 0 { "yes" } else { "no" }),
+            Kind::Colors(_) => match v {
+                gamepadii_core::pb::Value::Bytes(b) => format!("colours {}", color_runs(b)),
+                _ => continue,
+            },
+            Kind::Number if def.key.ends_with("_ms") => format!("{what} {n} ms"),
+            Kind::Number => format!("{what} {n:#x}"),
+        };
+        parts.push(text);
+    }
+    if parts.is_empty() {
+        "-".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+pub fn lights_show(style: Style, r: &LightsReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let f = &r.file;
+    let n = f.profile.unwrap_or_default();
+    let mut out = format!("{}\n", style.bold(&format!("Lights profile {n}")));
+    let state = match (f.enabled == Some(true), r.active) {
+        (true, true) => "enabled, runs now",
+        (true, false) => "enabled",
+        (false, true) => "disabled, runs now",
+        (false, false) => "disabled",
+    };
+    let mut rw = vec![
+        ("state", state.to_string()),
+        ("board", f.board.clone().unwrap_or_else(|| "-".into())),
+        ("idle", lights_group(f, &["idle_"])),
+        ("pressed", lights_group(f, &["pressed_", "press_"])),
+        ("case", lights_group(f, &["case_"])),
+        ("effects", lights_group(f, &["effect_"])),
+    ];
+    if !f.other.is_empty() {
+        rw.push((
+            "other fields",
+            format!(
+                "{} that gamepadii doesn't know (kept in the JSON)",
+                f.other.len()
+            ),
+        ));
+    }
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    rows(style, &mut out, &rw);
+    out
+}
+
+pub fn lights_write(style: Style, r: &LightsWriteReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let what = match (r.active, r.saved) {
+        (true, true) => "written, runs now, and saved",
+        (true, false) => "written, runs now",
+        (false, true) => "written and saved",
+        (false, false) => "written",
+    };
+    let name = format!("Lights profile {}", r.profile);
+    let mut out = format!("{} {what}\n", style.bold(&name));
+    let mut rw = vec![
+        (
+            "was",
+            if r.before_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+            .to_string(),
+        ),
+        (
+            "changed",
+            if r.changed.is_empty() {
+                "nothing".into()
+            } else {
+                r.changed.join(", ")
+            },
+        ),
+    ];
+    if !r.enabled {
+        rw.push(("enabled", "no".into()));
+    }
+    rw.push(("applied", if r.applied { "yes" } else { "not yet" }.into()));
     rw.push((
         "saved",
         if r.saved {

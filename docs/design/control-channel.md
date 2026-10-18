@@ -218,14 +218,14 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x04` | IN | LED_STATUS | 0 | reply: 12 bytes (§3.7); v0.7.12 line only | v1.1 |
 | `0x05` | IN | LIGHTS_STATUS | 0 | reply: 16 bytes (§3.8); main line | v1.2 |
 | `0x06` | IN | READ_SLOT | profile (1–6) | reply: one slot, 20 + 10 × pin count bytes (§3.10); `wLength` 512 | v1.4 |
-| `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: a lights profile; host side not done | v1.5 |
+| `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: 4-byte head + `AnimationProfile` protobuf (§3.11); `wLength` 512 | v1.5 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
 | `0x11` | OUT | REBOOT | 0 | header + `u8 boot_mode` (0 gamepad, 1 web-config; the `/api/reboot` numbering, but 2 = BOOTSEL is refused with UNSUPPORTED) | v1 |
 | `0x12` | OUT | SET_INPUT_MODE | 0 | header + `u8 input_mode` (the `InputMode` enum), `u8 reserved` | v1 |
 | `0x13` | OUT | SET_LED | 0 | header + 8 bytes: mask, values, persist (§3.7); v0.7.12 line only | v1.1 |
 | `0x14` | OUT | SET_LIGHTS | 0 | header + 4 bytes: mask, profile, brightness, persist (§3.8); main line | v1.2 |
 | `0x15` | OUT | WRITE_SLOT | 0 | header + one slot (§3.10) | v1.4 |
-| `0x16` | OUT | WRITE_LIGHTS | 0 | header + a lights profile; host side not done | v1.5 |
+| `0x16` | OUT | WRITE_LIGHTS | 0 | header + 4-byte head + the fields to change, as protobuf (§3.11) | v1.5 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
 | `0x22` | OUT | CFG_WRITE | byte offset | header + chunk | v2 |
@@ -289,7 +289,7 @@ Capability bits:
 | 8 | LEDS: LED_STATUS and SET_LED (v1.1, §3.7; the v0.7.12 line only) |
 | 9 | LIGHTS: LIGHTS_STATUS and SET_LIGHTS (v1.2, §3.8; the main line) |
 | 10 | SLOTS: READ_SLOT and WRITE_SLOT (v1.4, §3.10) |
-| 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5; set only when the LEDs run) |
+| 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5, §3.11; set only when the LEDs run) |
 
 Bits 12–31 are reserved.
 
@@ -722,6 +722,66 @@ backs up the slot in the slot file format
 change. After the write, it waits for STATUS and reads the slot back. A
 saved write also updates the device cache. `channel/sim.rs` models the
 slots with `SimChannel::with_slots`.
+
+### 3.11 v1.5: lights profiles
+
+Additive. The protocol minor is **5**, and capability **bit 11,
+LIGHTS_PROFILES**, covers READ_LIGHTS and WRITE_LIGHTS. The fork's commit
+is 77620cdf. The firmware sets bit 11 only when the LEDs run. A host sends
+the commands only when HELLO gives major 1, minor 5 or higher, and bit 11.
+They let a host read and change the effects and colours of one of main's
+4 lights profiles with no reboot.
+
+The profile goes as an `AnimationProfile` protobuf (`proto/config.proto`),
+because upstream changes this message frequently. After the 8-byte header
+of WRITE_LIGHTS, and in the READ_LIGHTS reply:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | lights profile, 0–3 |
+| 1 | u8 | flags: bit 0 enabled, bit 1 active (selected), bit 2 save to flash (WRITE_LIGHTS only) |
+| 2 | u16 | READ_LIGHTS: the protobuf length. WRITE_LIGHTS: 0 |
+| 4 | bytes | `AnimationProfile`, protobuf encoded: at most 227 bytes |
+
+**READ_LIGHTS** (`0x07`, IN, `wValue` the profile). A host asks for 512
+bytes. Profile 4 or more, or a pad without LEDs, STALLs. The active bit is
+set for the lights profile that runs now.
+
+**WRITE_LIGHTS** (`0x16`, OUT). The transfer is at most 8 + 4 + 227 bytes.
+
+- **Only the fields that the host sends change.** The firmware decodes them
+  on top of the profile in RAM. A colour list goes complete. The enabled
+  flag replaces `bEnabled`.
+- **Checks, in this order:** fewer than 4 bytes is BAD_LENGTH; no LEDs is
+  UNSUPPORTED; then BAD_ARG for profile 4 or more, an unknown flag bit, or a
+  `u16` that is not 0; BUSY during a web-config preview, or while an
+  earlier WRITE_LIGHTS waits; PROFILE_DISABLED for a profile without
+  "enabled" that has "active" or runs now; then BAD_ARG for data that is not
+  protobuf, an effect out of its enum, a cycle time that is not 0–9, or a
+  colour index that is not below 14 plus the number of custom colours.
+- **Not checked:** the stored fields. Stored profiles can have colour
+  indexes out of range.
+- **Apply:** core 1 applies the change on its next frame. LIGHTS_STATUS
+  flag bit 3 (PENDING) is set until then. If the profile is active after
+  the write, the LED add-on builds the effects again.
+- **RAM only** without bit 2. With bit 2, the normal storage save, which
+  writes all the settings, other RAM-only changes too.
+
+Host side: `Channel::read_lights` / `write_lights`, the modules `pb` (a
+small protobuf codec, with no schema) and `lights` (the field table, the
+lights file, `plan`, `expected`), and `flow::lights_show` /
+`lights_write` (`gamepadii leds profile show [N]`, `leds profile write
+FILE --profile N [--select] [--save]`). The JSON of `leds profile show` is
+a lights file: one key for each field, with the values that the firmware
+keeps (the cycle times are 0–9; web-config shows 1–10), and `null` for a
+field that is not set. A lights file can leave out fields: gamepadii sends
+only the others. Fields that gamepadii doesn't know go in `other_fields`,
+encoded in hex, so that a backup keeps them. Before a write, gamepadii does
+the checks of the firmware that it can do. It can't check the colour
+indexes against the custom colours: it doesn't know their number. It backs
+up the profile (`<time>-<board>-lights<N>.json`), waits until PENDING is
+clear and STATUS gives the result, and reads the profile back.
+`channel/sim.rs` models it with `SimChannel::with_lights_profiles`.
 
 ## 4. Firmware implementation
 
