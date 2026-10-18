@@ -9,7 +9,7 @@ via           the control channel (/dev/bus/usb/003/007)
     2  boot 1      0.003 s  BOOT     flags 3 (kept, watchdog) mode default version v0.7.12-119-g8013b41
     3  boot 1      1.013 s  PROFILE  profile 254 to 2
     4  boot 1      1.013 s  COMMAND  SET_PROFILE PROFILE_DISABLED seq 46477
-    5  boot 1      1.013 s  COMMAND  cmd 0x17 result 9 seq 0
+    5  boot 1      1.013 s  COMMAND  cmd 0x30 result 9 seq 0
     6  boot 1      1.013 s  SAVE     force yes, restart no
     7  boot 1      1.013 s  RESTART  mode webconfig
     8  boot 1      1.013 s  ERROR    'no flash'
@@ -119,12 +119,12 @@ warning       the firmware panicked in boot 0 at 1.000 s: 'test 1 22 333 4444 ab
       "code_name": "COMMAND",
       "data": {
         "command": null,
-        "command_byte": 23,
+        "command_byte": 48,
         "result": null,
         "result_byte": 9,
         "seq": 0
       },
-      "raw": "17090000"
+      "raw": "30090000"
     },
     {
       "seq": 6,

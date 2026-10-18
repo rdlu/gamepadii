@@ -13,7 +13,7 @@ buttons. With our firmware fork, most changes do not need a button press.
 ![The TUI: the pad, its input modes and profiles, a profile switch, and the help](docs/media/tui.gif)
 
 **Status: pre-release, in development.** These commands operate now:
-`status`, `info`, `backup`, `reboot`, `mode`, `webconfig`,
+`status`, `info`, `backup`, `restore`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `display layout`,
 `leds`, `leds profile show`, `leds profile write`, `input`,
 `input find-pin`, `log` and `setup udev`. The TUI
@@ -65,7 +65,14 @@ gamepadii info                    firmware, board, memory, input mode,
 gamepadii backup [-o FILE]        every readable setting in one JSON file
                                   (both from a gamepad mode too, with the
                                   control channel; --stay stays in
-                                  web-config)
+                                  web-config); with channel v1.6, the
+                                  saved config as one blob too
+gamepadii backup --channel-only   only the config blob, over the control
+                                  channel (v1.6), with no web-config
+gamepadii restore FILE [--no-backup]
+                                  write the config blob of a backup back
+                                  to the pad (channel v1.6), then check it
+                                  after the restart
 gamepadii reboot <gamepad|webconfig|bootsel>
                                   restart, wait for the pad on USB, and
                                   check what came back
@@ -212,6 +219,13 @@ press:
   shows the new records as the pad writes them. When the boot before this
   one ended with a firmware panic, `status` shows a warning with the
   message (`last_panic` in the JSON);
+- `backup --channel-only` and `restore` move the saved config as one
+  blob, with no web-config. This needs channel v1.6. `restore` writes all
+  the settings to flash, and the pad restarts. Before it writes, gamepadii
+  checks the file, the board and the free space, and backs up the config
+  that the pad has. A failure before the end of the upload changes
+  nothing. A file from a pad without v1.6 has no blob: restore it in
+  web-config;
 - `info`, `backup` and `display layout` reboot it into web-config, read
   (or write, for `display layout <MODEL>`), then reboot it back
   (`/api/reboot`) and check it returns in the mode it was in, which takes

@@ -25,7 +25,10 @@
 //! [`SimChannel::with_log`] makes it a v1.8
 //! build with READ_LOG: a ring of the last 64 events that the simulator
 //! writes (BOOT, COMMAND, PROFILE, SAVE, RESTART), and a PANIC or a
-//! power-on when a test asks for one.
+//! power-on when a test asks for one. [`SimChannel::with_config`] makes it
+//! a v1.6 build with READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG: the saved
+//! config as one protobuf blob, the free space for an upload, and the
+//! restart after COMMIT_CONFIG.
 //!
 //! [`SimChannel`] is only the protocol engine. `crate::sim::SimPad` wraps it
 //! with USB re-enumeration (a REBOOT drops the pad off the bus), and
@@ -38,8 +41,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::proto::{
-    self, Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogPage,
-    LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status, log_code,
+    self, Caps, Command, ConfigHead, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus,
+    LogPage, LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status, log_code,
 };
 use super::{ControlTransport, UsbError};
 use crate::api::{PinMappings, ProfileOptions};
@@ -328,6 +331,92 @@ impl SimLog {
     }
 }
 
+/// The FlashPROM block (`EEPROM_SIZE_BYTES`): the free space, then the
+/// saved config, then its 12-byte footer.
+pub const CONFIG_FLASH: usize = 32 * 1024;
+/// The footer after the saved config: size, CRC-32, magic.
+const CONFIG_FOOTER_LEN: usize = 12;
+
+/// v1.6: the saved config, as the FlashPROM cache holds it (§3.14).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimConfig {
+    /// The saved blob: a `Config` message, protobuf encoded. Empty: no
+    /// config is saved.
+    pub saved: Vec<u8>,
+    /// The free start of the cache, where WRITE_CONFIG puts the chunks.
+    /// Bytes after its end are 0.
+    pub upload: Vec<u8>,
+    /// After this many READ_CONFIG replies, a save changes the saved
+    /// config (a hotkey during a read).
+    pub save_after_reads: Option<usize>,
+    /// After each this many READ_CONFIG replies, a save (a pad that saves
+    /// all the time).
+    pub save_every_reads: Option<usize>,
+    /// The READ_CONFIG replies that the pad gave.
+    pub reads: usize,
+    /// After this many WRITE_CONFIGs, a save writes over the upload (a
+    /// hotkey during the upload).
+    pub save_after_chunks: Option<usize>,
+    /// The WRITE_CONFIGs that the pad took.
+    pub chunks: usize,
+    /// The COMMIT_CONFIGs that the pad took.
+    pub commits: usize,
+}
+
+impl SimConfig {
+    pub fn new(saved: Vec<u8>) -> Self {
+        Self {
+            saved,
+            ..Self::default()
+        }
+    }
+
+    /// The largest blob that WRITE_CONFIG and COMMIT_CONFIG take now
+    /// (`configStageMax`).
+    pub fn free(&self) -> usize {
+        CONFIG_FLASH - CONFIG_FOOTER_LEN - self.saved.len()
+    }
+
+    pub fn head(&self) -> ConfigHead {
+        ConfigHead {
+            size: self.saved.len() as u32,
+            crc: if self.saved.is_empty() {
+                0
+            } else {
+                proto::crc32(&self.saved)
+            },
+            free: self.free() as u32,
+        }
+    }
+
+    /// The READ_CONFIG image: the head, then the saved config.
+    pub fn image(&self) -> Vec<u8> {
+        let mut b = self.head().encode().to_vec();
+        b.extend_from_slice(&self.saved);
+        b
+    }
+
+    /// The first `n` bytes of the upload.
+    fn uploaded(&self, n: usize) -> Vec<u8> {
+        let mut b: Vec<u8> = self.upload.iter().copied().take(n).collect();
+        b.resize(n, 0);
+        b
+    }
+
+    /// A save: `ConfigUtils::save` encodes the config into the start of
+    /// the cache, over the upload. The sim puts a field at the start of
+    /// the saved blob: all the bytes after it move, and the CRC-32 changes.
+    fn save(&mut self) {
+        self.upload.clear();
+        if !self.saved.is_empty() {
+            let mut b = Vec::new();
+            pb::encode_field(&mut b, 100, &pb::Value::Varint(1));
+            b.append(&mut self.saved);
+            self.saved = b;
+        }
+    }
+}
+
 /// The firmware's names for the effects (STRING `0x20 + n`).
 const EFFECT_NAMES: [&str; 5] = [
     "EFFECT_STATIC_COLOR",
@@ -406,6 +495,8 @@ pub struct SimChannel {
     pub input: SimInput,
     /// v1.8: the pad's log; `None` before 1.8.
     pub events: Option<SimLog>,
+    /// v1.6: the saved config as one blob; `None` before 1.6.
+    pub config: Option<SimConfig>,
     pub log: Vec<Seen>,
 }
 
@@ -452,6 +543,7 @@ impl SimChannel {
             custom_colors: 0,
             input: SimInput::default(),
             events: None,
+            config: None,
             log: Vec::new(),
         }
     }
@@ -708,6 +800,124 @@ impl SimChannel {
     pub fn idle(&mut self, d: Duration) {
         let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX);
         self.uptime_ms = self.uptime_ms.saturating_add(ms);
+    }
+
+    /// A v1.6 build: protocol minor 6, with READ_CONFIG, WRITE_CONFIG and
+    /// COMMIT_CONFIG. The saved blob comes from [`SimChannel::config_blob`].
+    pub fn with_config(mut self) -> Self {
+        self.minor = self.minor.max(proto::CONFIG_MINOR);
+        self.caps = Caps(self.caps.0 | Caps::CONFIG);
+        self.config = Some(SimConfig::new(self.config_blob()));
+        self
+    }
+
+    /// A `Config` message as the firmware saves it, from the strings, the
+    /// saved mode and profile, and the saved slots: `boardVersion` (1),
+    /// `gamepadOptions` (2), `boardConfig` (12) and `gpioMappings` (13),
+    /// then `profileOptions` (11) with the other slots.
+    pub fn config_blob(&self) -> Vec<u8> {
+        let text = |id| {
+            pb::Value::Bytes(
+                self.strings
+                    .get(&id)
+                    .map(|s| s.as_bytes().to_vec())
+                    .unwrap_or_default(),
+            )
+        };
+        let mapping = |s: &SimSlot| {
+            let mut fields: Vec<pb::Field> = s
+                .pins
+                .iter()
+                .map(|p| {
+                    let pin = pb::encode(&[
+                        (1, pb::Value::int32(p.action.into())),
+                        (2, pb::Value::Varint(p.button_mask.into())),
+                        (3, pb::Value::Varint(p.dpad_mask.into())),
+                    ]);
+                    (1, pb::Value::Bytes(pin))
+                })
+                .collect();
+            fields.push((2, pb::Value::Bytes(s.label.as_bytes().to_vec())));
+            fields.push((3, pb::Value::Varint(u64::from(s.enabled))));
+            pb::Value::Bytes(pb::encode(&fields))
+        };
+        let gamepad = pb::encode(&[
+            (1, pb::Value::Varint(self.saved_mode.into())),
+            (9, pb::Value::Varint(self.saved_profile.into())),
+        ]);
+        let mut fields = vec![
+            (1, text(proto::string::VERSION)),
+            (2, pb::Value::Bytes(gamepad)),
+            (12, text(proto::string::BOARD)),
+        ];
+        if let Some(s) = self.saved_slots.get(&1) {
+            fields.push((13, mapping(s)));
+        }
+        let alts: Vec<pb::Field> = (2..=6)
+            .filter_map(|n| self.saved_slots.get(&n))
+            .map(|s| (2, mapping(s)))
+            .collect();
+        fields.push((11, pb::Value::Bytes(pb::encode(&alts))));
+        pb::encode(&fields)
+    }
+
+    /// WRITE_CONFIG, with the firmware's checks in its order (§3.14).
+    fn write_config(&mut self, args: &[u8]) -> Result<(), Outcome> {
+        if args.len() <= proto::CONFIG_CHUNK_HEAD_LEN {
+            return Err(Outcome::BadLength);
+        }
+        if matches!(self.forced_setup, 2 | 3) {
+            return Err(Outcome::Locked);
+        }
+        let c = self.config.as_mut().ok_or(Outcome::Unsupported)?;
+        let offset = usize::from(u16::from_le_bytes([args[0], args[1]]));
+        let data = &args[proto::CONFIG_CHUNK_HEAD_LEN..];
+        if args[2..4] != [0, 0] || offset + data.len() > c.free() {
+            return Err(Outcome::BadArg);
+        }
+        if c.upload.len() < offset + data.len() {
+            c.upload.resize(offset + data.len(), 0);
+        }
+        c.upload[offset..offset + data.len()].copy_from_slice(data);
+        c.chunks += 1;
+        let save = match &mut c.save_after_chunks {
+            Some(0) | None => false,
+            Some(n) => {
+                *n -= 1;
+                *n == 0
+            }
+        };
+        if save {
+            c.save_after_chunks = None;
+            self.save_all(false);
+        }
+        Ok(())
+    }
+
+    /// COMMIT_CONFIG, with the firmware's checks in its order (§3.14). On
+    /// OK the blob is the saved config, and the pad restarts into gamepad
+    /// mode.
+    fn commit_config(&mut self, args: &[u8]) -> Result<Option<Effect>, Outcome> {
+        if args.len() < proto::CONFIG_COMMIT_LEN {
+            return Err(Outcome::BadLength);
+        }
+        if matches!(self.forced_setup, 2 | 3) {
+            return Err(Outcome::Locked);
+        }
+        let c = self.config.as_mut().ok_or(Outcome::Unsupported)?;
+        let size = u32::from_le_bytes([args[0], args[1], args[2], args[3]]) as usize;
+        let crc = u32::from_le_bytes([args[4], args[5], args[6], args[7]]);
+        if size == 0 || size > c.free() {
+            return Err(Outcome::BadArg);
+        }
+        let blob = c.uploaded(size);
+        if proto::crc32(&blob) != crc || pb::decode(&blob).is_none() {
+            return Err(Outcome::BadArg);
+        }
+        c.saved = blob;
+        c.upload.clear();
+        c.commits += 1;
+        Ok(Some(Effect::Reboot(BootMode::Gamepad)))
     }
 
     /// A v1.8 build: protocol minor 8, with READ_LOG. The log starts at
@@ -971,6 +1181,9 @@ impl SimChannel {
     /// state too. `force` goes into the SAVE record.
     fn save_all(&mut self, force: bool) {
         self.add_log(log_code::SAVE, &[u8::from(force), 0]);
+        if let Some(c) = &mut self.config {
+            c.save();
+        }
         self.saved_leds = self.leds;
         self.saved_lights = self.lights;
         self.saved_slots = self.slots.clone();
@@ -1086,6 +1299,10 @@ impl SimChannel {
         self.pending = false;
         self.reboot_pending = false;
         self.stop_scan();
+        // The cache comes from flash again: the upload is gone.
+        if let Some(c) = &mut self.config {
+            c.upload.clear();
+        }
         self.last = (0, 0, 0);
         self.uptime_ms = 1000;
         // The boot ROM writes no record; the firmware does at its next boot.
@@ -1132,6 +1349,12 @@ impl SimChannel {
             }
             // Before 1.8 there is no READ_LOG.
             Some(Command::ReadLog) if !self.caps.has(Caps::LOG) => Some(None),
+            // Before 1.6 there are no config commands.
+            Some(Command::ReadConfig | Command::WriteConfig | Command::CommitConfig)
+                if !self.caps.has(Caps::CONFIG) || self.config.is_none() =>
+            {
+                Some(None)
+            }
             known => Some(known),
         }
     }
@@ -1228,6 +1451,34 @@ impl SimChannel {
                 }
                 _ => return Err(UsbError::Stall),
             },
+            // buildConfig: an offset after the end STALLs; one at the end
+            // gives 0 bytes. A reply is at most the buffer.
+            Command::ReadConfig => {
+                let Some(c) = &mut self.config else {
+                    return Err(UsbError::Stall);
+                };
+                let image = c.image();
+                let offset = usize::from(setup.value);
+                if offset > image.len() {
+                    return Err(UsbError::Stall);
+                }
+                let n = usize::from(len).min(BUFFER_LEN).min(image.len() - offset);
+                let reply = image[offset..offset + n].to_vec();
+                c.reads += 1;
+                if c.save_every_reads
+                    .is_some_and(|k| c.reads.is_multiple_of(k))
+                {
+                    c.save();
+                }
+                if let Some(left) = &mut c.save_after_reads {
+                    *left = left.saturating_sub(1);
+                    if *left == 0 {
+                        c.save_after_reads = None;
+                        c.save();
+                    }
+                }
+                reply
+            }
             _ => return Err(UsbError::Stall),
         };
         Ok(reply.into_iter().take(usize::from(len)).collect())
@@ -1309,6 +1560,12 @@ impl SimChannel {
         }
         if cmd == Command::WriteLights {
             return self.write_lights(args).map(|()| None);
+        }
+        if cmd == Command::WriteConfig {
+            return self.write_config(args).map(|()| None);
+        }
+        if cmd == Command::CommitConfig {
+            return self.commit_config(args);
         }
         // Bytes past the arguments are ignored, for later minors.
         if args.len() < cmd.payload_len().unwrap_or(usize::MAX) {

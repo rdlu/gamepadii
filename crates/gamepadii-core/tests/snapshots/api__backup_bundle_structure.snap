@@ -42,5 +42,6 @@ expression: v
     "getUsedPins": "object, 1 keys",
     "getWiiControls": "object, 66 keys"
   },
-  "full_config": null
+  "full_config": null,
+  "config_blob": null
 }

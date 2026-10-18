@@ -1,5 +1,6 @@
 //! Command line: `gamepadii status [--format human|json|waybar] [--json]`,
-//! `info`, `backup [-o FILE]`, `reboot <gamepad|webconfig|bootsel>`,
+//! `info`, `backup [-o FILE] [--channel-only]`, `restore FILE`,
+//! `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
 //! [--save]`, `display layout [LAYOUT | --left N --right N]`, `leds [set
 //! ... | brightness up|down|N]`, `input [--watch | find-pin [--scan]]`,
@@ -102,6 +103,9 @@ pub enum MockChannel {
     /// snapshot (no press) and the log, with a firmware panic in the last
     /// boot.
     Log,
+    /// The S16's build a51474c: control channel v1.8, with the config blob
+    /// of v1.6 too.
+    Config,
     /// A node this user can't open (no udev rule).
     NoAccess,
 }
@@ -128,14 +132,37 @@ pub enum Command {
         trip: TripArgs,
     },
     /// Save every readable setting to one JSON file. Needs web-config; in a
-    /// gamepad mode the control channel takes the pad there and back.
+    /// gamepad mode the control channel takes the pad there and back. With
+    /// control channel v1.6, the file also has the saved config as one
+    /// blob, for `restore`.
     Backup {
         /// Where to write it [default:
         /// ~/.local/share/gamepadii/backups/<time>-<board>.json].
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+        /// Save only the config blob, over the control channel (v1.6), in
+        /// any mode: no web-config, no restart.
+        #[arg(long, conflicts_with = "stay")]
+        channel_only: bool,
         #[command(flatten)]
         trip: TripArgs,
+    },
+    /// Write the config blob of a backup file back to the pad, over the
+    /// control channel (needs v1.6). This writes all the settings to flash.
+    ///
+    /// gamepadii checks the file and the pad first: the same board, and
+    /// enough free space. It backs up the config of the pad, sends the
+    /// blob, and the pad restarts with it. Then gamepadii reads the saved
+    /// config again and compares its CRC-32.
+    Restore {
+        /// The backup file (from `backup`), or - for standard input.
+        file: PathBuf,
+        /// Don't back up the config of the pad first.
+        #[arg(long)]
+        no_backup: bool,
+        /// How long to wait for the pad on USB after the restart.
+        #[arg(long, value_name = "SECS", default_value_t = 10)]
+        timeout: u64,
     },
     /// Restart the pad into gamepad mode, web-config or BOOTSEL, then wait
     /// for it on USB and check what came back. Needs web-config, or the

@@ -219,6 +219,7 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x05` | IN | LIGHTS_STATUS | 0 | reply: 16 bytes (§3.8); main line | v1.2 |
 | `0x06` | IN | READ_SLOT | profile (1–6) | reply: one slot, 20 + 10 × pin count bytes (§3.10); `wLength` 512 | v1.4 |
 | `0x07` | IN | READ_LIGHTS | lights profile (0–3) | reply: 4-byte head + `AnimationProfile` protobuf (§3.11); `wLength` 512 | v1.5 |
+| `0x08` | IN | READ_CONFIG | byte offset in the image | reply: from the image, the 12-byte head + the saved config (§3.14); at most 328 bytes; the host asks for 512 | v1.6 |
 | `0x09` | IN | READ_INPUT | 0 | reply: 36 bytes, the pins and the gamepad state (§3.12) | v1.7 |
 | `0x0A` | IN | READ_LOG | the low 16 bits of the first sequence number | reply: 12-byte head + up to 9 records of 32 bytes (§3.13); `wLength` 12 or more, the host asks for 1024 | v1.8 |
 | `0x10` | OUT | SET_PROFILE | 0 | header + `u8 profile (1–6)`, `u8 persist (0/1)` | v1 |
@@ -228,6 +229,8 @@ Multi-byte fields are little-endian. Strings are UTF-8 with no NUL.
 | `0x14` | OUT | SET_LIGHTS | 0 | header + 4 bytes: mask, profile, brightness, persist (§3.8); main line | v1.2 |
 | `0x15` | OUT | WRITE_SLOT | 0 | header + one slot (§3.10) | v1.4 |
 | `0x16` | OUT | WRITE_LIGHTS | 0 | header + 4-byte head + the fields to change, as protobuf (§3.11) | v1.5 |
+| `0x17` | OUT | WRITE_CONFIG | 0 | header + `u16 offset`, `u16 reserved` (0) + 1–316 bytes of the new config (§3.14) | v1.6 |
+| `0x18` | OUT | COMMIT_CONFIG | 0 | header + `u32 size`, `u32 crc32` of the new config (§3.14) | v1.6 |
 | `0x19` | OUT | PIN_SCAN | 0 | header + `u8` (1 on, 0 off) (§3.12) | v1.7 |
 | `0x20` | OUT | CFG_SELECT | 0 | header + `u8 section`, `u8 op (read/write)` | v2 |
 | `0x21` | IN | CFG_READ | byte offset | reply: up to 64 bytes of the encoded section | v2 |
@@ -293,10 +296,11 @@ Capability bits:
 | 9 | LIGHTS: LIGHTS_STATUS and SET_LIGHTS (v1.2, §3.8; the main line) |
 | 10 | SLOTS: READ_SLOT and WRITE_SLOT (v1.4, §3.10) |
 | 11 | LIGHTS_PROFILES: READ_LIGHTS and WRITE_LIGHTS (v1.5, §3.11; set only when the LEDs run) |
+| 12 | CONFIG: READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG (v1.6, §3.14) |
 | 13 | INPUT: READ_INPUT and PIN_SCAN (v1.7, §3.12) |
 | 14 | LOG: READ_LOG (v1.8, §3.13) |
 
-Bit 12 and bits 15–31 are reserved.
+Bits 15–31 are reserved.
 
 **STATUS** (16 bytes):
 
@@ -950,6 +954,92 @@ not change. After 8 more records in this boot, the panic is not in the
 newest 9 records, and the warning goes away. A read error gives `null`.
 `channel/sim.rs` models the log with `SimChannel::with_log`, and a test
 can add a PANIC (`panic`) or a power-on (`power_on`).
+
+### 3.14 v1.6: the config blob
+
+Additive. The protocol minor is **6**, and capability **bit 12, CONFIG**,
+covers READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG. A host sends them only
+when HELLO gives major 1, minor 6 or higher, and bit 12. A build without
+them STALLs READ_CONFIG and refuses the two OUTs with UNSUPPORTED. The S16
+build a51474c8 has them.
+
+The firmware keeps its settings in one 32 KiB FlashPROM block. The saved
+config is a `Config` message, protobuf encoded (nanopb), at the end of the
+block. A 12-byte footer follows it: size, CRC-32 and a magic number. These
+commands move the saved config as one **config blob**: the same bytes, in
+any mode, with no web-config. The host does not decode the blob.
+
+**READ_CONFIG** (`0x08`, IN). `wValue` is a byte offset in the image. The
+image is a 12-byte head, then the saved config:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | `size`: the bytes of the saved config |
+| 4 | u32 | `crc32`: its CRC-32 (zlib's); 0 when `size` is 0 |
+| 8 | u32 | `free`: the largest new config that the pad takes now: 32768 − 12 − `size` |
+
+A reply has `min(wLength, 328, image length − offset)` bytes: the
+firmware's buffer is 328 bytes on the RP2040, 508 on the RP2350. An offset
+at the end gives 0 bytes. An offset after the end STALLs. A save on the
+pad between two reads changes the image. Thus the host reads all of it,
+then compares the CRC-32 with the head. When they differ, it reads all of
+it again, at most 3 times.
+
+**WRITE_CONFIG** (`0x17`, OUT). The arguments are `u16 offset`, `u16
+reserved` (0), then 1–316 bytes. The pad puts the bytes at that offset in
+the free start of the block (the upload). It changes no setting. The
+checks, in the firmware's order:
+
+1. 4 bytes of arguments or fewer: BAD_LENGTH.
+2. A forced setup mode that locks web-config (2 or 3): LOCKED.
+3. `reserved` is not 0, or `offset` + length is more than `free`: BAD_ARG.
+
+**COMMIT_CONFIG** (`0x18`, OUT). The arguments are `u32 size` and `u32
+crc32` of the new config. The checks, in order:
+
+1. Fewer than 8 bytes of arguments: BAD_LENGTH.
+2. Forced setup mode 2 or 3: LOCKED.
+3. `size` is 0 or more than `free`, the CRC-32 of the first `size` bytes
+   of the upload is not `crc32`, or those bytes are not protobuf: BAD_ARG.
+   The protobuf check walks the top-level fields: each tag has a field
+   number above 0, and a wire type that nanopb knows (0, 1, 2 or 5).
+
+On OK the pad moves the upload to the end of the block, writes the
+footer, and writes the block to flash. Then it restarts into gamepad mode,
+and the next boot reads the new config. Like REBOOT, a STALL or no answer
+after the data stage can be the restart (§3.6).
+
+- **A save writes over the upload.** Each save (a hotkey, web-config,
+  SET_PROFILE with persist) encodes the config at the start of the block.
+  A COMMIT_CONFIG after it gives BAD_ARG, because the CRC-32 is wrong. The
+  host then sends all the chunks again, one time.
+- **A restart removes the upload.** Until COMMIT_CONFIG gives OK, the saved
+  config does not change.
+- **The firmware updates an older config when it starts.** A blob from an
+  older firmware version can thus get new fields at the next boot.
+
+Host side: `Channel::config_head`, `read_config_image`,
+`write_config_chunk` and `commit_config` (`Commit::BadArg` is a value, so
+that the flow can send again). The module `blob` keeps the blob in a
+backup file: `config_blob`, with `size`, `crc32`, the `firmware`, `board`
+and `board_id` of the pad, and `hex`. On a 1.6 pad, `gamepadii backup`
+reads the blob too, over the channel, in web-config. A read error goes in
+`config_blob_error`, and the rest of the backup is kept. `gamepadii backup
+--channel-only` keeps only the blob: no web-config and no restart.
+
+`gamepadii restore FILE [--no-backup]` (`flow::restore`) does all its
+checks before the first WRITE_CONFIG: the file has a blob, its size and
+CRC-32 agree, it is protobuf, the pad has channel 1.6, it is the same
+board (STRING 2), forced setup mode does not lock web-config, and the blob
+fits in `free`. Another firmware version or another board ID is only a
+note. When the pad has the same size and CRC-32 already, it writes
+nothing. Else it backs up the pad's blob (not with `--no-backup`), sends
+the chunks and COMMIT_CONFIG, waits for the pad on USB, and reads the head
+again. The CRC-32 must be the blob's, else exit 1. A failure before an OK
+from COMMIT_CONFIG says that nothing was saved. `channel/sim.rs` models it
+with `SimChannel::with_config`: a saved blob from the sim's strings and
+slots, the upload, every result in the firmware's order, a save that
+writes over the upload, and the restart after COMMIT_CONFIG.
 
 ## 4. Firmware implementation
 

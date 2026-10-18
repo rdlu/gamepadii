@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"backup\"])"
 ---
-Save every readable setting to one JSON file. Needs web-config; in a gamepad mode the control channel takes the pad there and back
+Save every readable setting to one JSON file. Needs web-config; in a gamepad mode the control channel takes the pad there and back. With control channel v1.6, the file also has the saved config as one blob, for `restore`
 
 Usage: gamepadii backup [OPTIONS]
 
@@ -20,19 +20,22 @@ Options:
   -o, --output <FILE>
           Where to write it [default: ~/.local/share/gamepadii/backups/<time>-<board>.json]
 
+      --channel-only
+          Save only the config blob, over the control channel (v1.6), in any mode: no web-config, no restart
+
       --json
           Same as `--format json`
 
       --stay
           Leave the pad in web-config afterwards instead of rebooting it back into its gamepad mode
 
+      --host <HOST>
+          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
+
       --timeout <SECS>
           How long to wait for the pad on USB after each reboot
           
           [default: 10]
-
-      --host <HOST>
-          Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 
       --no-channel
           Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses

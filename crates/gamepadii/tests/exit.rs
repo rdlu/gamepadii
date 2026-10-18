@@ -1223,3 +1223,68 @@ fn log_follow_prints_the_log_then_waits() {
     assert_eq!(v["schema"], 1);
     assert_eq!(v["records"].as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn backup_channel_only_and_restore_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let run = |kind: &str, args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            kind,
+            "--mock-api",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/api/s16-main"
+            ),
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let (code, stdout, stderr) = run("config", &["--json", "backup", "--channel-only"]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["endpoints"], serde_json::json!([]));
+    assert!(v["config_blob"]["size"].as_u64().unwrap() > 1000, "{v}");
+    let file = v["path"].as_str().unwrap().to_string();
+    assert!(file.starts_with(home.path().join("data").to_str().unwrap()));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["config_blob"]["board"], "Haute42COSMOX");
+    // The pad has it already: nothing to write.
+    let (code, stdout, stderr) = run("config", &["restore", &file]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.starts_with("No change to the config of Haute42COSMOX\n"),
+        "{stdout}"
+    );
+    // A backup with no blob: 3, and web-config is the way.
+    let old = home.path().join("old.json");
+    let mut v = saved.clone();
+    v["config_blob"] = serde_json::Value::Null;
+    std::fs::write(&old, v.to_string()).unwrap();
+    let old = old.to_str().unwrap();
+    let (code, stdout, stderr) = run("config", &["--json", "restore", old]);
+    assert_eq!(code, 3);
+    assert!(stderr.contains("in web-config instead"), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["error"]["exit_code"], 3);
+    // Not a backup file: 3. No file: 4.
+    let (code, _, _) = run("config", &["restore", "/dev/null"]);
+    assert_eq!(code, 3);
+    let (code, _, _) = run("config", &["restore", "/no/such/file.json"]);
+    assert_eq!(code, 4);
+    // No v1.6 channel: 5, for both.
+    let (code, _, stderr) = run("lights-profiles", &["backup", "--channel-only"]);
+    assert_eq!(code, 5);
+    assert!(stderr.contains("control channel v1.6"), "{stderr}");
+    let (code, _, _) = run("lights-profiles", &["restore", &file]);
+    assert_eq!(code, 5);
+    // Usage: 3.
+    let (code, _, _) = run("config", &["backup", "--channel-only", "--stay"]);
+    assert_eq!(code, 3);
+    let (code, _, _) = run("config", &["restore"]);
+    assert_eq!(code, 3);
+}

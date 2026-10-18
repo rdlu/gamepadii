@@ -5,7 +5,7 @@
 //!
 //! - [`proto`]: the v1 wire format, v1.1's LED commands, v1.2's lights
 //!   commands, v1.3's board ID, v1.4's profile slots, v1.5's lights
-//!   profiles, v1.7's input snapshot, v1.8's log.
+//!   profiles, v1.6's config blob, v1.7's input snapshot, v1.8's log.
 //! - [`ControlTransport`]: one vendor control IN or OUT on EP0. On Linux,
 //!   [`usbfs::Usbfs`] (an `ioctl` on `/dev/bus/usb/BBB/DDD`); in tests,
 //!   [`sim::SimChannel`] behind `crate::sim::SimPad`.
@@ -34,9 +34,33 @@ use crate::mode::{BootMode, InputMode};
 use crate::wait::Clock;
 
 pub use proto::{
-    Caps, Command, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogEvent, LogPage,
-    LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status,
+    Caps, Command, ConfigHead, Hello, InputSnapshot, LedStatus, LightsData, LightsStatus, LogEvent,
+    LogPage, LogRecord, Outcome, SetLed, SetLights, Setup, Slot, SlotPin, Status,
 };
+
+/// How many times [`Channel::read_config_image`] reads the image when a
+/// save changes the config during the read.
+pub const CONFIG_READS: usize = 3;
+
+/// The saved config, from READ_CONFIG: the head, and the blob that it
+/// describes. The CRC-32 of `data` is `head.crc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigImage {
+    pub head: ConfigHead,
+    pub data: Vec<u8>,
+}
+
+/// What the pad did with a COMMIT_CONFIG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Commit {
+    /// OK: the pad writes the blob to flash and restarts.
+    Accepted(RebootAck),
+    /// BAD_ARG: the blob that the pad has is not the one in the command
+    /// (another CRC-32, or a size that is not correct), or it is not
+    /// protobuf. After a save during the upload, the pad has another CRC:
+    /// upload again.
+    BadArg,
+}
 
 /// The most READ_LOG replies that [`Channel::read_log_all`] asks for: the
 /// 64 records take 8, and a pad can write more while the host reads.
@@ -716,6 +740,136 @@ impl Channel {
             at = end;
         }
         Ok(read)
+    }
+
+    /// READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG need protocol 1.6 and
+    /// [`Caps::CONFIG`]: a 1.5 pad never gets them.
+    fn need_config(&self, cmd: Command) -> Result<()> {
+        if self.hello.has_config() {
+            Ok(())
+        } else {
+            Err(Error::Usage(format!(
+                "this firmware's control channel has no {} (it needs protocol 1.6)",
+                cmd.name()
+            )))
+        }
+    }
+
+    /// The head of the config image (READ_CONFIG at offset 0, v1.6): the
+    /// size and CRC-32 of the saved config, and the free space.
+    pub fn config_head(&self) -> Result<ConfigHead> {
+        self.need_config(Command::ReadConfig)?;
+        let reply = self
+            .read_len(Command::ReadConfig, 0, proto::CONFIG_HEAD_LEN as u16)
+            .map_err(|e| self.fail(e, Command::ReadConfig))?;
+        ConfigHead::parse(&reply).ok_or_else(|| {
+            Error::Protocol(format!(
+                "READ_CONFIG on {}: {} bytes, expected {}",
+                self.node(),
+                reply.len(),
+                proto::CONFIG_HEAD_LEN
+            ))
+        })
+    }
+
+    /// The saved config (READ_CONFIG, v1.6), in steps of one reply each,
+    /// until it has the size that the head gives. When the CRC-32 is not
+    /// correct, a save changed the config during the read: it reads again,
+    /// at most [`CONFIG_READS`] times. RAM-only changes are not in it.
+    pub fn read_config_image(&self) -> Result<ConfigImage> {
+        self.need_config(Command::ReadConfig)?;
+        for _ in 0..CONFIG_READS {
+            if let Some(image) = self.read_config_once()? {
+                return Ok(image);
+            }
+        }
+        Err(Error::Protocol(format!(
+            "READ_CONFIG on {}: the saved config changed during each of {CONFIG_READS} reads; \
+             try again",
+            self.node()
+        )))
+    }
+
+    /// One read of the image; `None` when it changed during the read.
+    fn read_config_once(&self) -> Result<Option<ConfigImage>> {
+        let mut image = Vec::new();
+        let mut head: Option<ConfigHead> = None;
+        loop {
+            let offset = u16::try_from(image.len()).map_err(|_| {
+                Error::Protocol(format!(
+                    "READ_CONFIG on {}: the image is longer than 64 KiB",
+                    self.node()
+                ))
+            })?;
+            let reply = match self.read_len(Command::ReadConfig, offset, proto::READ_CONFIG_LEN) {
+                Ok(r) => r,
+                // An offset after the end STALLs: the config got shorter.
+                Err(UsbError::Stall) if head.is_some() => return Ok(None),
+                Err(e) => return Err(self.fail(e, Command::ReadConfig)),
+            };
+            if reply.is_empty() {
+                if head.is_some() {
+                    return Ok(None);
+                }
+                return Err(Error::Protocol(format!(
+                    "READ_CONFIG on {}: an empty reply at offset 0",
+                    self.node()
+                )));
+            }
+            image.extend_from_slice(&reply);
+            if head.is_none() {
+                head = ConfigHead::parse(&image);
+            }
+            if let Some(h) = head
+                && image.len() >= h.image_len()
+            {
+                image.truncate(h.image_len());
+                let data = image.split_off(proto::CONFIG_HEAD_LEN);
+                return Ok((proto::crc32(&data) == h.crc).then_some(ConfigImage { head: h, data }));
+            }
+        }
+    }
+
+    /// WRITE_CONFIG (v1.6): `data` (1 to [`proto::CONFIG_CHUNK_MAX`] bytes)
+    /// at `offset` of the new blob, in the free space of the pad. It
+    /// changes nothing that the pad uses.
+    pub fn write_config_chunk(&self, offset: u16, data: &[u8]) -> Result<()> {
+        self.need_config(Command::WriteConfig)?;
+        if data.is_empty() || data.len() > proto::CONFIG_CHUNK_MAX {
+            return Err(Error::Usage(format!(
+                "a config chunk is 1 to {} bytes, not {}",
+                proto::CONFIG_CHUNK_MAX,
+                data.len()
+            )));
+        }
+        self.command(
+            Command::WriteConfig,
+            &proto::config_chunk(offset, data),
+            &format!("the config chunk at offset {offset}"),
+        )
+    }
+
+    /// COMMIT_CONFIG (v1.6): the blob that WRITE_CONFIG sent, `size` bytes
+    /// with CRC-32 `crc`, becomes the saved config. On OK the pad writes
+    /// it to flash and restarts into gamepad mode, about 300 ms later.
+    pub fn commit_config(&self, size: u32, crc: u32) -> Result<Commit> {
+        self.need_config(Command::CommitConfig)?;
+        let cmd = Command::CommitConfig;
+        match self.send(cmd, &proto::config_commit(size, crc)) {
+            Ok(()) => Ok(Commit::Accepted(RebootAck::Confirmed)),
+            Err(UsbError::Gone | UsbError::Timeout) => Ok(Commit::Accepted(RebootAck::Probable)),
+            Err(UsbError::Stall) => match self.status() {
+                Ok(st)
+                    if st.last_seq == self.last_seq()
+                        && st.last_command == cmd as u8
+                        && Outcome::from_byte(st.last_result) == Outcome::BadArg =>
+                {
+                    Ok(Commit::BadArg)
+                }
+                _ => Err(self.refusal(cmd, "the new config")),
+            },
+            Err(e) => Err(self.fail(e, cmd)),
+        }
     }
 
     /// The sequence number of the last OUT command, as STATUS echoes it.

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::{self, Endpoint, Evidence, FirmwareVersion, ForkFixes, Line, MemoryReport};
+use crate::blob::{BlobInfo, ConfigBlob};
 use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
@@ -559,7 +560,9 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
 pub const BACKUP_SCHEMA: u32 = 1;
 
 /// A backup file: every allowlisted endpoint's JSON, as the pad sent it,
-/// and on fork firmware the whole `getConfig` too.
+/// and on fork firmware the whole `getConfig` too. With control channel
+/// v1.6, the saved config as one blob too (`backup --channel-only` keeps
+/// only the blob).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bundle {
     pub schema: u32,
@@ -579,6 +582,11 @@ pub struct Bundle {
     /// Older backups don't have the key.
     #[serde(default)]
     pub full_config: Option<FullConfig>,
+    /// The saved config as one blob, from READ_CONFIG (control channel
+    /// v1.6): what `gamepadii restore` writes back. `null` without the
+    /// channel 1.6. Older backups don't have the key.
+    #[serde(default)]
+    pub config_blob: Option<ConfigBlob>,
 }
 
 /// `getConfig` in a backup.
@@ -633,6 +641,7 @@ pub fn backup_bundle(client: &Client, now: SystemTime) -> Result<Bundle> {
         firmware_line: Some(line),
         endpoints,
         full_config,
+        config_blob: None,
     })
 }
 
@@ -656,13 +665,49 @@ pub struct BackupReport {
     /// Why `getConfig` isn't in the file although the firmware has the
     /// fixes; `null` otherwise.
     pub full_config_error: Option<String>,
+    /// The saved config as one blob (control channel v1.6): its size and
+    /// CRC-32; `null` when the file doesn't have it.
+    pub config_blob: Option<BlobInfo>,
+    /// Why the blob isn't in the file although the pad has channel 1.6;
+    /// `null` otherwise.
+    pub config_blob_error: Option<String>,
     pub bytes: u64,
 }
+
+impl BackupReport {
+    fn new(bundle: &Bundle, path: PathBuf, bytes: u64, blob_error: Option<String>) -> Self {
+        let (endpoints, unavailable): (Vec<_>, Vec<_>) =
+            bundle.endpoints.iter().partition(|(_, v)| !v.is_null());
+        let names = |v: Vec<(&String, &Value)>| v.into_iter().map(|(k, _)| k.clone()).collect();
+        Self {
+            path,
+            captured_at: bundle.captured_at.clone(),
+            firmware: bundle.firmware.clone(),
+            firmware_line: bundle.firmware_line,
+            endpoints: names(endpoints),
+            unavailable: names(unavailable),
+            full_config: bundle
+                .full_config
+                .as_ref()
+                .is_some_and(|f| f.config.is_some()),
+            full_config_evidence: bundle.full_config.as_ref().map(|f| f.evidence),
+            full_config_error: bundle.full_config.as_ref().and_then(|f| f.error.clone()),
+            config_blob: bundle.config_blob.as_ref().map(ConfigBlob::info),
+            config_blob_error: blob_error,
+            bytes,
+        }
+    }
+}
+
+/// The blob for a backup: read over the channel (`Some`), or not asked for
+/// (`None`, a pad without control channel 1.6). A failed read goes into
+/// the report, and the rest of the backup is kept.
+pub type BlobRead = Option<Result<ConfigBlob>>;
 
 /// Reads a [`Bundle`] and writes it to `output`, or to
 /// [`default_backup_path`] when that is `None`.
 pub fn backup(client: &Client, output: Option<&Path>, now: SystemTime) -> Result<BackupReport> {
-    backup_with_cache(client, output, now).map(|(r, _)| r)
+    backup_with_cache(client, output, now, None).map(|(r, _)| r)
 }
 
 /// [`backup`], and the [`DeviceCache`] the bundle holds (no extra reads).
@@ -670,8 +715,9 @@ pub fn backup_with_cache(
     client: &Client,
     output: Option<&Path>,
     now: SystemTime,
+    blob: BlobRead,
 ) -> Result<(BackupReport, Option<DeviceCache>)> {
-    backup_to(client, now, |bundle| match output {
+    backup_to(client, now, blob, |bundle| match output {
         Some(p) => Ok(p.to_path_buf()),
         None => default_backup_path(bundle, now),
     })
@@ -683,8 +729,9 @@ pub fn backup_in_dir(
     client: &Client,
     dir: &Path,
     now: SystemTime,
+    blob: BlobRead,
 ) -> Result<(BackupReport, Option<DeviceCache>)> {
-    backup_to(client, now, |bundle| {
+    backup_to(client, now, blob, |bundle| {
         Ok(dir.join(backup_file_name(bundle, now)))
     })
 }
@@ -692,31 +739,76 @@ pub fn backup_in_dir(
 fn backup_to(
     client: &Client,
     now: SystemTime,
+    blob: BlobRead,
     path: impl FnOnce(&Bundle) -> Result<PathBuf>,
 ) -> Result<(BackupReport, Option<DeviceCache>)> {
-    let bundle = backup_bundle(client, now)?;
+    let mut bundle = backup_bundle(client, now)?;
+    let blob_error = match blob {
+        Some(Ok(b)) => {
+            bundle.config_blob = Some(b);
+            None
+        }
+        Some(Err(e)) => Some(e.to_string()),
+        None => None,
+    };
     let cache = DeviceCache::from_bundle(&bundle);
     let path = path(&bundle)?;
     let bytes = write_json(&bundle, &path)?;
-    let (endpoints, unavailable): (Vec<_>, Vec<_>) =
-        bundle.endpoints.iter().partition(|(_, v)| !v.is_null());
-    let names = |v: Vec<(&String, &Value)>| v.into_iter().map(|(k, _)| k.clone()).collect();
-    let report = BackupReport {
-        path,
-        captured_at: bundle.captured_at.clone(),
-        firmware: bundle.firmware.clone(),
-        firmware_line: bundle.firmware_line,
-        endpoints: names(endpoints),
-        unavailable: names(unavailable),
-        full_config: bundle
-            .full_config
-            .as_ref()
-            .is_some_and(|f| f.config.is_some()),
-        full_config_evidence: bundle.full_config.as_ref().map(|f| f.evidence),
-        full_config_error: bundle.full_config.as_ref().and_then(|f| f.error.clone()),
-        bytes,
+    Ok((BackupReport::new(&bundle, path, bytes, blob_error), cache))
+}
+
+/// `gamepadii backup --channel-only`: a backup file with only the config
+/// blob (READ_CONFIG, control channel v1.6), no web-config endpoints. It
+/// goes to `output`, else into `dir`, else to [`default_backup_path`].
+pub fn backup_blob(
+    ch: &Channel,
+    output: Option<&Path>,
+    dir: Option<&Path>,
+    now: SystemTime,
+) -> Result<BackupReport> {
+    let blob = ConfigBlob::read(ch)?;
+    let string = |id| ch.string(id).ok().flatten();
+    let bundle = Bundle {
+        schema: BACKUP_SCHEMA,
+        gamepadii_version: env!("CARGO_PKG_VERSION").to_string(),
+        captured_at: Utc::from_system(now).rfc3339(),
+        firmware: Firmware {
+            version: blob.firmware.clone(),
+            board: blob.board.clone(),
+            board_label: string(proto::string::BOARD_LABEL),
+            build_type: string(proto::string::BUILD_TYPE),
+            ..Firmware::default()
+        },
+        firmware_line: None,
+        endpoints: BTreeMap::new(),
+        full_config: None,
+        config_blob: Some(blob),
     };
-    Ok((report, cache))
+    let path = match (output, dir) {
+        (Some(p), _) => p.to_path_buf(),
+        (None, Some(d)) => d.join(backup_file_name(&bundle, now)),
+        (None, None) => default_backup_path(&bundle, now)?,
+    };
+    let bytes = write_json(&bundle, &path)?;
+    Ok(BackupReport::new(&bundle, path, bytes, None))
+}
+
+/// A backup file, for `gamepadii restore`.
+pub fn read_backup(path: &Path) -> Result<Bundle> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| Error::io(format!("reading {}", path.display()), e))?;
+    parse_backup(&text, path)
+}
+
+/// The text of a backup file (`path` names it in the error): a usage error
+/// when it is not one.
+pub fn parse_backup(text: &str, path: &Path) -> Result<Bundle> {
+    serde_json::from_str(text).map_err(|e| {
+        Error::Usage(format!(
+            "{} is not a gamepadii backup file: {e}",
+            path.display()
+        ))
+    })
 }
 
 /// `$XDG_DATA_HOME/gamepadii/backups` (`~/.local/share/gamepadii/backups`).

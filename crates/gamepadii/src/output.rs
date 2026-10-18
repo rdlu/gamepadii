@@ -18,8 +18,8 @@ use gamepadii_core::commands::{
 use gamepadii_core::discovery::Device;
 use gamepadii_core::display::{BoardLayout, Current, LayoutReport, LayoutStatus};
 use gamepadii_core::flow::{
-    self, ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via,
-    WebconfigReport, WebconfigVia,
+    self, ModeReport, ModeStatus, ProfileReport, RebootReport, RestoreReport, Route, Seen, Trip,
+    Via, WebconfigReport, WebconfigVia,
 };
 use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
@@ -638,10 +638,15 @@ pub fn backup(style: Style, b: &BackupReport, trip: Option<&Trip>) -> String {
         style.dim(&version)
     );
     let total = b.endpoints.len() + b.unavailable.len();
-    let mut r = vec![
-        ("file", b.path.display().to_string()),
-        ("endpoints", format!("{} of {total}", b.endpoints.len())),
-    ];
+    let mut r = vec![("file", b.path.display().to_string())];
+    if total > 0 {
+        r.push(("endpoints", format!("{} of {total}", b.endpoints.len())));
+    } else {
+        r.push((
+            "endpoints",
+            "none: only the config blob, over the control channel".into(),
+        ));
+    }
     if let Some(l) = &b.firmware_line {
         r.push(("line", line_text(l)));
     }
@@ -659,10 +664,83 @@ pub fn backup(style: Style, b: &BackupReport, trip: Option<&Trip>) -> String {
         };
         r.push(("full config", row));
     }
+    match (&b.config_blob, &b.config_blob_error) {
+        (Some(i), _) => r.push((
+            "config blob",
+            format!(
+                "{}, CRC-32 {:08x} (for `gamepadii restore`)",
+                bytes(u64::from(i.size)),
+                i.crc32
+            ),
+        )),
+        (None, Some(e)) => r.push(("config blob", format!("not saved: {e}"))),
+        (None, None) => {}
+    }
     r.push(("size", bytes(b.bytes)));
     r.push(("captured", b.captured_at.clone()));
     r.extend(trip.map(trip_rows).unwrap_or_default());
     rows(style, &mut out, &r);
+    out
+}
+
+pub fn restore(style: Style, r: &RestoreReport) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let board = r.board.as_deref().unwrap_or("the pad");
+    let head = if r.written {
+        format!("Restored the config of {board}")
+    } else {
+        format!("No change to the config of {board}")
+    };
+    let mut out = format!("{}\n", style.bold(&head));
+    let mut rw = vec![
+        ("file", r.file.display().to_string()),
+        (
+            "config blob",
+            format!("{}, CRC-32 {:08x}", bytes(u64::from(r.size)), r.crc32),
+        ),
+        (
+            "from",
+            r.blob_firmware
+                .clone()
+                .unwrap_or_else(|| "an unknown firmware".into()),
+        ),
+    ];
+    if r.written {
+        let mut sent = format!("{} chunks", r.chunks);
+        if r.uploads > 1 {
+            sent.push_str(&format!(
+                ", in {} uploads (a save on the pad stopped the first)",
+                r.uploads
+            ));
+        }
+        rw.push(("sent", sent));
+    }
+    if let Some(b) = &r.backup {
+        rw.push(("backup", b.display().to_string()));
+    }
+    rw.push(("was", seen(&r.before)));
+    if let Some(a) = &r.after {
+        rw.push(("now", seen(a)));
+    }
+    if let Some(a) = r.ack.filter(|a| *a == RebootAck::Probable) {
+        rw.push(("restart", ack(a).into()));
+    }
+    rw.push((
+        "verified",
+        if r.verified {
+            "yes: the saved config has the CRC-32 of the blob"
+        } else {
+            "no"
+        }
+        .into(),
+    ));
+    rw.push(("via", format!("the control channel ({})", r.host)));
+    if let Some(n) = &r.note {
+        rw.push(("note", n.clone()));
+    }
+    rows(style, &mut out, &rw);
     out
 }
 

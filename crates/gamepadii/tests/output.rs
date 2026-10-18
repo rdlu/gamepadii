@@ -995,7 +995,7 @@ mod flows {
         rig.pad.change_firmware(|ch| {
             ch.add_log(c::PROFILE, &[254, 2]);
             ch.add_log(c::COMMAND, &[0x10, 6, 0x8d, 0xb5]);
-            ch.add_log(c::COMMAND, &[0x17, 9, 0, 0]);
+            ch.add_log(c::COMMAND, &[0x30, 9, 0, 0]);
             ch.add_log(c::SAVE, &[1, 0]);
             ch.add_log(c::RESTART, &[2]);
             ch.add_log(c::ERROR, b"no flash");
@@ -1025,5 +1025,56 @@ mod flows {
             output::log(json(), &all),
             output::status(json(), &s),
         ));
+    }
+
+    #[test]
+    fn config_blob_outputs() {
+        use gamepadii_core::pb;
+        let rig = Rig::new(
+            SimPad::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main"),
+                InputMode::Xinput,
+            )
+            .with_lights()
+            .channel(|ch| {
+                *ch = ch
+                    .clone()
+                    .with_slots()
+                    .with_lights_profiles()
+                    .with_log()
+                    .with_config();
+            }),
+        );
+        let file = rig.dirs.path().join("s16.json");
+        let backup = rig
+            .run(|env| flow::backup_channel(env, Some(&file)))
+            .unwrap();
+        let other = pb::encode(&[(
+            2,
+            pb::Value::Bytes(pb::encode(&[(1, pb::Value::Varint(1))])),
+        )]);
+        rig.pad.change_firmware(|ch| {
+            let c = ch.config.as_mut().unwrap();
+            c.saved = other;
+            c.save_after_chunks = Some(3);
+        });
+        let bundle = commands::read_backup(&file).unwrap();
+        let restore = |rig: &Rig| {
+            rig.run(|env| flow::restore(env, &file, &bundle, &mut Silent))
+                .unwrap()
+        };
+        let written = restore(&rig);
+        let unchanged = restore(&rig);
+        let dir = rig.dirs.path().display().to_string();
+        let text = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            output::backup(human(), &backup, None),
+            output::backup(json(), &backup, None),
+            output::restore(human(), &written),
+            output::restore(human(), &unchanged),
+            output::restore(json(), &written),
+        )
+        .replace(&dir, "/tmp");
+        insta::assert_snapshot!(text);
     }
 }

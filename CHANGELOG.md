@@ -215,6 +215,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   panic, `status` shows a warning with the message (`last_panic` in the
   JSON, `null` when there is none; additive). `--mock-channel log`
   simulates it, with a panic in the last boot.
+- Control channel 1.6, the config blob: READ_CONFIG, WRITE_CONFIG and
+  COMMIT_CONFIG move the saved config as one protobuf blob, in any mode.
+  On a 1.6 pad, `gamepadii backup` keeps the blob too (`config_blob`, in
+  hex, with its size and CRC-32; `null` before 1.6; additive).
+  `gamepadii backup --channel-only` keeps only the blob, with no
+  web-config and no restart; without 1.6 it exits 5. `gamepadii restore
+  FILE [--no-backup]` writes the blob back. All its checks come before the
+  first write: the file, the board, forced setup mode and the free space.
+  It backs up the config of the pad first, sends the chunks, and the pad
+  restarts. Then gamepadii reads the head again and compares the CRC-32.
+  A save on the pad during the upload gets one more upload. A file with
+  no blob exits 3 and names web-config. `--mock-channel config` simulates
+  it.
 - Control channel 1.5 builds: `leds set` on main waits while LIGHTS_STATUS
   shows a change that waits for core 1 (flag bit 3). The builds cb01f70,
   77620cd and 61ab30f count as main.
