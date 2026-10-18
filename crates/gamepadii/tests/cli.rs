@@ -53,6 +53,7 @@ fn parses_web_config_commands() {
         parse(&["backup", "-o", "x.json"]).unwrap().command,
         Some(Command::Backup {
             output: Some("x.json".into()),
+            channel_only: false,
             trip: back.clone()
         })
     );
@@ -62,12 +63,32 @@ fn parses_web_config_commands() {
             .command,
         Some(Command::Backup {
             output: None,
+            channel_only: false,
             trip: TripArgs {
                 stay: true,
                 timeout: 30
             }
         })
     );
+    assert!(matches!(
+        parse(&["backup", "--channel-only"]).unwrap().command,
+        Some(Command::Backup {
+            channel_only: true,
+            ..
+        })
+    ));
+    assert!(parse(&["backup", "--channel-only", "--stay"]).is_err());
+    assert_eq!(
+        parse(&["restore", "b.json", "--no-backup"])
+            .unwrap()
+            .command,
+        Some(Command::Restore {
+            file: "b.json".into(),
+            no_backup: true,
+            timeout: 10
+        })
+    );
+    assert!(parse(&["restore"]).is_err());
     assert_eq!(
         parse(&["info", "--stay"]).unwrap().command,
         Some(Command::Info {
@@ -182,6 +203,11 @@ fn help_info() {
 #[test]
 fn help_backup() {
     insta::assert_snapshot!(help(&["backup"]));
+}
+
+#[test]
+fn help_restore() {
+    insta::assert_snapshot!(help(&["restore"]));
 }
 
 #[test]

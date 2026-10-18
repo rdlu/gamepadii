@@ -66,6 +66,11 @@ impl Client {
         self
     }
 
+    /// The HELLO of the pad's control channel, when the flows have one.
+    pub fn hello(&self) -> Option<&Hello> {
+        self.hello.as_ref()
+    }
+
     /// Whether this pad runs our fork with the web-config fixes, from the
     /// firmware version and the channel's HELLO (the rule is in
     /// [`api::fork`]). `None` for stock.

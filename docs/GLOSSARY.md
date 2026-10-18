@@ -32,10 +32,13 @@ it here in the same change.
 | cache | Files on the computer where gamepadii keeps data about each pad (for example, the profile names), so that it can show this data when the pad is in a gamepad mode. |
 | capability | A function that the firmware tells the host it has. The HELLO reply gives the capabilities as bits. |
 | channel | Short name for the control channel. |
+| chunk | One part of the config blob that gamepadii sends with one WRITE_CONFIG: at most 316 bytes. |
 | CLI | The command-line interface: you type a command, for example `gamepadii status`, and gamepadii writes the result. |
 | commit | One recorded change in git. A short hash (for example `0a23ea3`) identifies it. |
+| config blob | The saved config of the pad as one block of bytes: a `Config` message in protobuf, as the firmware keeps it in flash. Control channel 1.6 reads and writes it. A backup keeps it in hex. |
 | config, config sector | The settings of the pad. The firmware keeps them in a 32 KB area of flash memory at address `0x101F8000`. |
 | control channel | The USB connection that our firmware adds. gamepadii uses it to read the status of the pad and to change the profile, the input mode, and the LEDs, without a button press. |
+| CRC-32 | A 32-bit number that the pad and gamepadii calculate from a block of bytes (the zlib method). When one byte changes, the number changes. |
 | custom theme | The LED colors that the user sets for each button, one color when the button is released and one color when it is pressed. |
 | D-pad | The four direction buttons: up, down, left and right. |
 | debounce | A check that a button change stays for some reads, so that a short electrical change (a bounce) does not count as a press. |
@@ -49,6 +52,7 @@ it here in the same change.
 | GPIO, pin | A connection on the RP2040 chip. Each button connects to one pin. |
 | hash | A short code that identifies one commit. |
 | HELLO | The first request on the control channel. The reply tells the host that the firmware has the control channel, and which capabilities it has. |
+| hex | A number or data written with the digits 0–9 and the letters a–f, two for each byte. |
 | host | The computer that the pad is connected to. |
 | hotkey | A set of buttons that you push together to do an action on the pad, for example to change the LED brightness. |
 | input mode | The type of controller that the pad shows to the host: XInput, Switch, PS4, keyboard, and others. |
@@ -82,6 +86,7 @@ it here in the same change.
 | trigger | An analog control of a gamepad, L2 or R2, with a value from 0 to 255. |
 | TUI | The terminal user interface: a full-screen view in the terminal that you operate with keys. |
 | UF2 | The file format for firmware. You copy a UF2 file to the pad in BOOTSEL mode. |
+| upload | The chunks that gamepadii sent to the free space of the pad, before COMMIT_CONFIG. A save on the pad or a restart removes it. |
 | upstream | The GP2040-CE project and its maintainers. |
 | VID:PID | Two numbers that a USB device sends to identify itself (vendor and product). |
 | watchdog | A timer in the RP2040 chip that restarts it. The firmware uses it for a soft reboot. A watchdog reset keeps the RAM, thus the log stays. |
@@ -99,6 +104,7 @@ it here in the same change.
 | merge | To add the changes of one branch to another branch. |
 | push | To send commits from the computer to GitHub. |
 | reboot | To restart the pad. Use instead: restart (STE approved), when you can. |
+| restore | To put back a state from before: the settings of a backup (`gamepadii restore`), or the profile that a restart removed. |
 
 ## Words not to use
 

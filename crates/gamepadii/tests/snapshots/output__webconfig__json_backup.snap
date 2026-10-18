@@ -46,6 +46,8 @@ expression: "output::backup(Style::plain(Format::Json), &backup_report(), None)"
   "full_config": false,
   "full_config_evidence": null,
   "full_config_error": null,
-  "bytes": 63837,
+  "config_blob": null,
+  "config_blob_error": null,
+  "bytes": 63860,
   "trip": null
 }

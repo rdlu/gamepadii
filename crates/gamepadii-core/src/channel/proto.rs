@@ -1,8 +1,8 @@
 //! Wire format v1 of the control channel (`docs/design/control-channel.md`
 //! §3, the v1.1 LED commands of §3.7, the v1.2 lights commands of §3.8,
 //! the v1.3 board ID of §3.9, the v1.4 profile slots of §3.10, the v1.5
-//! lights profiles of §3.11, the v1.7 input snapshot of §3.12 and the
-//! v1.8 log of §3.13):
+//! lights profiles of §3.11, the v1.7 input snapshot of §3.12, the v1.8
+//! log of §3.13 and the v1.6 config blob of §3.14):
 //! vendor control requests on EP0, `bRequest` `0x47` (`'G'`), the
 //! command in `wIndex` behind the magic high byte `0x50` (`'P'`). Pure
 //! encoding and decoding, shared by the host client and the simulator.
@@ -37,6 +37,9 @@ pub const SLOTS_MINOR: u8 = 4;
 /// The first minor with READ_LIGHTS and WRITE_LIGHTS
 /// ([`Caps::LIGHTS_PROFILES`]).
 pub const LIGHTS_PROFILES_MINOR: u8 = 5;
+/// The first minor with READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG
+/// ([`Caps::CONFIG`]).
+pub const CONFIG_MINOR: u8 = 6;
 /// The first minor with READ_INPUT and PIN_SCAN ([`Caps::INPUT`]).
 pub const INPUT_MINOR: u8 = 7;
 /// The first minor with READ_LOG ([`Caps::LOG`]).
@@ -99,8 +102,8 @@ impl Setup {
 }
 
 /// The v1 commands, v1.1's LED ones, v1.2's lights ones, v1.4's slot
-/// ones, v1.5's lights profile ones, v1.7's input ones and v1.8's
-/// READ_LOG.
+/// ones, v1.5's lights profile ones, v1.6's config ones, v1.7's input
+/// ones and v1.8's READ_LOG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Command {
@@ -116,6 +119,9 @@ pub enum Command {
     /// v1.5, behind [`Caps::LIGHTS_PROFILES`]: `wValue` is the lights
     /// profile (0–3).
     ReadLights = 0x07,
+    /// v1.6, behind [`Caps::CONFIG`]: `wValue` is the offset in the config
+    /// image (§3.14).
+    ReadConfig = 0x08,
     /// v1.7, behind [`Caps::INPUT`]: a snapshot of the inputs, at once.
     ReadInput = 0x09,
     /// v1.8, behind [`Caps::LOG`]: `wValue` is the low 16 bits of the
@@ -132,12 +138,17 @@ pub enum Command {
     WriteSlot = 0x15,
     /// v1.5, behind [`Caps::LIGHTS_PROFILES`].
     WriteLights = 0x16,
+    /// v1.6, behind [`Caps::CONFIG`]: one chunk of a new config blob.
+    WriteConfig = 0x17,
+    /// v1.6, behind [`Caps::CONFIG`]: the size and CRC-32 of the blob. On
+    /// OK the pad writes it to flash and restarts.
+    CommitConfig = 0x18,
     /// v1.7, behind [`Caps::INPUT`]: 1 starts the pin scan, 0 stops it.
     PinScan = 0x19,
 }
 
 impl Command {
-    pub const ALL: [Command; 17] = [
+    pub const ALL: [Command; 20] = [
         Command::Hello,
         Command::Status,
         Command::String,
@@ -145,6 +156,7 @@ impl Command {
         Command::LightsStatus,
         Command::ReadSlot,
         Command::ReadLights,
+        Command::ReadConfig,
         Command::ReadInput,
         Command::ReadLog,
         Command::SetProfile,
@@ -154,6 +166,8 @@ impl Command {
         Command::SetLights,
         Command::WriteSlot,
         Command::WriteLights,
+        Command::WriteConfig,
+        Command::CommitConfig,
         Command::PinScan,
     ];
 
@@ -172,6 +186,7 @@ impl Command {
                 | Command::LightsStatus
                 | Command::ReadSlot
                 | Command::ReadLights
+                | Command::ReadConfig
                 | Command::ReadInput
                 | Command::ReadLog
         )
@@ -196,14 +211,18 @@ impl Command {
             Command::ReadInput => "READ_INPUT",
             Command::PinScan => "PIN_SCAN",
             Command::ReadLog => "READ_LOG",
+            Command::ReadConfig => "READ_CONFIG",
+            Command::WriteConfig => "WRITE_CONFIG",
+            Command::CommitConfig => "COMMIT_CONFIG",
         }
     }
 
-    /// The OUT payload length after the header. WRITE_SLOT and
-    /// WRITE_LIGHTS have none: the pin count or the protobuf gives it.
+    /// The OUT payload length after the header. WRITE_SLOT, WRITE_LIGHTS
+    /// and WRITE_CONFIG have none: the pin count or the data gives it.
     pub fn payload_len(self) -> Option<usize> {
         match self {
             Command::SetProfile | Command::SetInputMode => Some(2),
+            Command::CommitConfig => Some(CONFIG_COMMIT_LEN),
             Command::Reboot | Command::PinScan => Some(1),
             Command::SetLed => Some(SET_LED_LEN),
             Command::SetLights => Some(SET_LIGHTS_LEN),
@@ -217,16 +236,21 @@ impl Command {
             | Command::ReadLights
             | Command::WriteLights
             | Command::ReadInput
-            | Command::ReadLog => None,
+            | Command::ReadLog
+            | Command::ReadConfig
+            | Command::WriteConfig => None,
         }
     }
 
     /// The longest data stage the firmware takes in SETUP: one packet, but
-    /// a slot (§3.10), a lights profile (§3.11) and the log (§3.13) are
-    /// longer.
+    /// a slot (§3.10), a lights profile (§3.11), the log (§3.13) and the
+    /// config (§3.14) are longer.
     pub fn max_len(self) -> u16 {
         match self {
-            Command::ReadSlot | Command::ReadLights | Command::ReadLog => u16::MAX,
+            Command::ReadSlot | Command::ReadLights | Command::ReadLog | Command::ReadConfig => {
+                u16::MAX
+            }
+            Command::WriteConfig => WRITE_CONFIG_MAX as u16,
             Command::WriteLights => (HEADER_LEN + LIGHTS_HEAD_LEN + ANIMATION_PROFILE_MAX) as u16,
             Command::WriteSlot => (HEADER_LEN + Slot::len(SLOT_MAX_PINS)) as u16,
             _ => MAX_LEN,
@@ -287,12 +311,15 @@ impl Caps {
     /// v1.5: READ_LIGHTS and WRITE_LIGHTS, the effects and colours of a
     /// lights profile. Set only when the LEDs run.
     pub const LIGHTS_PROFILES: u32 = 1 << 11;
+    /// v1.6: READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG, the saved config
+    /// as one blob.
+    pub const CONFIG: u32 = 1 << 12;
     /// v1.7: READ_INPUT and PIN_SCAN, the input snapshot.
     pub const INPUT: u32 = 1 << 13;
     /// v1.8: READ_LOG, the log of the pad's last 64 events.
     pub const LOG: u32 = 1 << 14;
 
-    const NAMES: [(u32, &'static str); 14] = [
+    const NAMES: [(u32, &'static str); 15] = [
         (Self::STATUS, "status"),
         (Self::STRING, "string"),
         (Self::SET_PROFILE, "set_profile"),
@@ -305,6 +332,7 @@ impl Caps {
         (Self::LIGHTS, "lights"),
         (Self::SLOTS, "slots"),
         (Self::LIGHTS_PROFILES, "lights_profiles"),
+        (Self::CONFIG, "config"),
         (Self::INPUT, "input"),
         (Self::LOG, "log"),
     ];
@@ -417,6 +445,13 @@ impl Hello {
         self.major == MAJOR
             && self.minor >= LIGHTS_PROFILES_MINOR
             && self.caps.has(Caps::LIGHTS_PROFILES)
+    }
+
+    /// Whether the pad has READ_CONFIG, WRITE_CONFIG and COMMIT_CONFIG:
+    /// protocol 1.6 or later, with [`Caps::CONFIG`]. Never send them to an
+    /// older pad.
+    pub fn has_config(&self) -> bool {
+        self.major == MAJOR && self.minor >= CONFIG_MINOR && self.caps.has(Caps::CONFIG)
     }
 
     /// Whether the pad has READ_INPUT and PIN_SCAN: protocol 1.7 or later,
@@ -1465,6 +1500,100 @@ impl LogPage {
     }
 }
 
+/// The head of the READ_CONFIG image (§3.14).
+pub const CONFIG_HEAD_LEN: usize = 12;
+/// The `u16` offset and the `u16` 0 before the data of a WRITE_CONFIG.
+pub const CONFIG_CHUNK_HEAD_LEN: usize = 4;
+/// The longest WRITE_CONFIG: the firmware's buffer on RP2040 (328 bytes).
+pub const WRITE_CONFIG_MAX: usize = 328;
+/// The most data bytes in one WRITE_CONFIG.
+pub const CONFIG_CHUNK_MAX: usize = WRITE_CONFIG_MAX - HEADER_LEN - CONFIG_CHUNK_HEAD_LEN;
+/// COMMIT_CONFIG's arguments: `u32` size, `u32` CRC-32.
+pub const CONFIG_COMMIT_LEN: usize = 8;
+/// The `wLength` of a READ_CONFIG. A reply is at most the firmware's
+/// buffer (328 bytes on RP2040), thus the host reads in steps.
+pub const READ_CONFIG_LEN: u16 = 512;
+
+/// The head of the READ_CONFIG image (§3.14), at offset 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct ConfigHead {
+    /// The bytes of the saved config; 0 when no config is saved.
+    pub size: u32,
+    /// The CRC-32 of the saved config ([`crc32`]).
+    pub crc: u32,
+    /// The largest blob that WRITE_CONFIG and COMMIT_CONFIG take now.
+    pub free: u32,
+}
+
+impl ConfigHead {
+    pub fn parse(b: &[u8]) -> Option<Self> {
+        (b.len() >= CONFIG_HEAD_LEN).then(|| Self {
+            size: u32_at(b, 0),
+            crc: u32_at(b, 4),
+            free: u32_at(b, 8),
+        })
+    }
+
+    pub fn encode(&self) -> [u8; CONFIG_HEAD_LEN] {
+        let mut b = [0u8; CONFIG_HEAD_LEN];
+        b[0..4].copy_from_slice(&self.size.to_le_bytes());
+        b[4..8].copy_from_slice(&self.crc.to_le_bytes());
+        b[8..12].copy_from_slice(&self.free.to_le_bytes());
+        b
+    }
+
+    /// The bytes of the whole image: the head and the saved config.
+    pub fn image_len(&self) -> usize {
+        CONFIG_HEAD_LEN + self.size as usize
+    }
+}
+
+/// The WRITE_CONFIG argument: the offset, 0, then the data.
+pub fn config_chunk(offset: u16, data: &[u8]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(CONFIG_CHUNK_HEAD_LEN + data.len());
+    b.extend_from_slice(&offset.to_le_bytes());
+    b.extend_from_slice(&[0, 0]);
+    b.extend_from_slice(data);
+    b
+}
+
+/// The COMMIT_CONFIG argument.
+pub fn config_commit(size: u32, crc: u32) -> [u8; CONFIG_COMMIT_LEN] {
+    let mut b = [0u8; CONFIG_COMMIT_LEN];
+    b[0..4].copy_from_slice(&size.to_le_bytes());
+    b[4..8].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// The CRC-32 table of the reflected IEEE polynomial `0xEDB88320`.
+const CRC_TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+};
+
+/// The CRC-32 of `data`, as the firmware's `CRC32::calculate` and zlib's
+/// `crc32` give it.
+pub fn crc32(data: &[u8]) -> u32 {
+    !data.iter().fold(!0u32, |c, b| {
+        CRC_TABLE[usize::from((c as u8) ^ b)] ^ (c >> 8)
+    })
+}
+
 /// An OUT payload: the header, then `args`.
 pub fn payload(token: u32, seq: u16, args: &[u8]) -> Vec<u8> {
     let mut b = Vec::with_capacity(HEADER_LEN + args.len());
@@ -1711,6 +1840,70 @@ mod tests {
         let rest = InputSnapshot::default();
         assert!(!rest.scan_on() && rest.pressed_gpios().is_empty());
         assert_eq!(rest.lx, 32767);
+    }
+
+    #[test]
+    fn v1_6_config_commands() {
+        let s = Setup::read(Command::ReadConfig, 316);
+        assert_eq!((s.request_type, s.index, s.value), (TYPE_IN, 0x5008, 316));
+        assert!(Command::ReadConfig.is_in());
+        assert!(!Command::WriteConfig.is_in() && !Command::CommitConfig.is_in());
+        assert_eq!(Setup::command(Command::WriteConfig).index, 0x5017);
+        assert_eq!(Setup::command(Command::CommitConfig).index, 0x5018);
+        assert_eq!(Command::from_byte(0x08), Some(Command::ReadConfig));
+        assert_eq!(Command::from_byte(0x17), Some(Command::WriteConfig));
+        assert_eq!(Command::from_byte(0x18), Some(Command::CommitConfig));
+        assert_eq!(Command::ReadConfig.max_len(), u16::MAX);
+        assert_eq!(Command::WriteConfig.max_len(), 328);
+        assert_eq!(Command::CommitConfig.max_len(), 64);
+        assert_eq!(Command::CommitConfig.payload_len(), Some(8));
+        assert_eq!(CONFIG_CHUNK_MAX, 316);
+        assert_eq!(Caps(0x1e2f).names().last(), Some(&"config"));
+        assert_eq!(
+            Caps(0x7e2f).names()[7..],
+            ["lights_profiles", "config", "input", "log"]
+        );
+        let hello = |minor, caps| Hello {
+            major: 1,
+            minor,
+            caps: Caps(caps),
+            token: 1,
+            modes: 0,
+        };
+        assert!(hello(6, Caps::CONFIG).has_config());
+        assert!(hello(8, Caps::CONFIG | Caps::LOG).has_config());
+        assert!(!hello(5, Caps::CONFIG).has_config(), "1.5 never gets them");
+        assert!(!hello(8, Caps::LOG).has_config());
+    }
+
+    #[test]
+    fn the_config_head_and_arguments() {
+        // The S16: 8169 bytes saved, 24587 free.
+        let h = ConfigHead {
+            size: 8169,
+            crc: 0x1234_abcd,
+            free: 24587,
+        };
+        let b = h.encode();
+        assert_eq!(
+            b,
+            [0xe9, 0x1f, 0, 0, 0xcd, 0xab, 0x34, 0x12, 0x0b, 0x60, 0, 0]
+        );
+        assert_eq!(ConfigHead::parse(&b), Some(h));
+        assert_eq!(ConfigHead::parse(&b[..11]), None);
+        assert_eq!(h.image_len(), 8181);
+        assert_eq!(config_chunk(632, &[7, 8]), [0x78, 0x02, 0, 0, 7, 8]);
+        assert_eq!(config_commit(8169, 1), [0xe9, 0x1f, 0, 0, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn crc32_is_the_zlib_one() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        assert_eq!(crc32(b""), 0);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414f_a339
+        );
     }
 
     #[test]

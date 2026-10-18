@@ -1,0 +1,94 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: text
+---
+Backed up Haute42 COSMOX (GP2040-CE v0.7.12-119-g8013b41)
+file          /tmp/s16.json
+endpoints     none: only the config blob, over the control channel
+config blob   1.5 KiB, CRC-32 58750a8a (for `gamepadii restore`)
+size          3.4 KiB
+captured      2026-10-17T16:57:03Z
+
+{
+  "schema": 1,
+  "path": "/tmp/s16.json",
+  "captured_at": "2026-10-17T16:57:03Z",
+  "firmware": {
+    "version": "v0.7.12-119-g8013b41",
+    "board": "Haute42COSMOX",
+    "board_label": "Haute42 COSMOX",
+    "architecture": null,
+    "build": null,
+    "build_type": "Release",
+    "file_name": null
+  },
+  "firmware_line": null,
+  "endpoints": [],
+  "unavailable": [],
+  "full_config": false,
+  "full_config_evidence": null,
+  "full_config_error": null,
+  "config_blob": {
+    "size": 1489,
+    "crc32": 1484065418,
+    "firmware": "v0.7.12-119-g8013b41"
+  },
+  "config_blob_error": null,
+  "bytes": 3532,
+  "trip": null
+}
+Restored the config of Haute42COSMOX
+file          /tmp/s16.json
+config blob   1.5 KiB, CRC-32 58750a8a
+from          v0.7.12-119-g8013b41
+sent          10 chunks, in 2 uploads (a save on the pad stopped the first)
+backup        /tmp/backups/20261017-165703-Haute42COSMOX.json
+was           XInput (045e:028e, confirmed)
+now           XInput (045e:028e, confirmed)
+verified      yes: the saved config has the CRC-32 of the blob
+via           the control channel (/dev/bus/usb/003/007)
+note          the device cache can have the old profiles: `gamepadii info` reads them again
+
+No change to the config of Haute42COSMOX
+file          /tmp/s16.json
+config blob   1.5 KiB, CRC-32 58750a8a
+from          v0.7.12-119-g8013b41
+was           XInput (045e:028e, confirmed)
+verified      yes: the saved config has the CRC-32 of the blob
+via           the control channel (/dev/bus/usb/003/008)
+note          the pad has this config saved already, so gamepadii wrote nothing
+
+{
+  "schema": 1,
+  "via": "control",
+  "host": "/dev/bus/usb/003/007",
+  "file": "/tmp/s16.json",
+  "size": 1489,
+  "crc32": 1484065418,
+  "blob_firmware": "v0.7.12-119-g8013b41",
+  "firmware": "v0.7.12-119-g8013b41",
+  "board": "Haute42COSMOX",
+  "written": true,
+  "chunks": 10,
+  "uploads": 2,
+  "ack": "confirmed",
+  "backup": "/tmp/backups/20261017-165703-Haute42COSMOX.json",
+  "before": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "045e:028e"
+  },
+  "after": {
+    "mode": "xinput",
+    "candidates": [
+      "xinput"
+    ],
+    "confidence": "confirmed",
+    "usb_id": "045e:028e"
+  },
+  "verified": true,
+  "note": "the device cache can have the old profiles: `gamepadii info` reads them again"
+}

@@ -9,7 +9,7 @@ use std::time::Duration;
 use gamepadii_core::api::{PinMappings, ProfileOptions, RebootAck};
 use gamepadii_core::buttons::{self, Button, Combo, Profiles};
 use gamepadii_core::cache::{self, DeviceCache};
-use gamepadii_core::channel::sim::SimInput;
+use gamepadii_core::channel::sim::{SimChannel, SimInput};
 use gamepadii_core::commands::Firmware;
 use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
@@ -79,6 +79,9 @@ impl Progress for Log {
                 .other
                 .push(format!("profile {profile} not restored: {error}")),
             Step::PushButton { .. } => self.other.push("push a button".into()),
+            Step::WritingConfig { chunks, .. } => {
+                self.other.push(format!("writing {chunks} config chunks"))
+            }
         }
     }
 }
@@ -759,9 +762,13 @@ fn info_and_backup_produce_the_cache() {
     let (_, from_info) = gamepadii_core::commands::info_with_cache(&client, now).unwrap();
     assert_eq!(from_info, s16_cache());
     let dir = tempfile::tempdir().unwrap();
-    let (_, from_backup) =
-        gamepadii_core::commands::backup_with_cache(&client, Some(&dir.path().join("b.json")), now)
-            .unwrap();
+    let (_, from_backup) = gamepadii_core::commands::backup_with_cache(
+        &client,
+        Some(&dir.path().join("b.json")),
+        now,
+        None,
+    )
+    .unwrap();
     assert_eq!(from_backup, Some(s16_cache()));
 }
 
@@ -3378,4 +3385,371 @@ fn log_needs_control_channel_1_8() {
         assert!(e.to_string().contains(says), "{e}");
         assert!(reads(&rig).iter().all(|c| *c != 0x0a));
     }
+}
+
+// ---- the config blob (control channel v1.6) -----------------------------------
+
+/// The S16 on a main-line build with the config blob (v1.6, and 1.8).
+fn config_rig(mode: InputMode) -> Rig {
+    config_rig_with(mode, |_| {})
+}
+
+fn config_rig_with(mode: InputMode, f: impl FnOnce(&mut SimChannel)) -> Rig {
+    Rig::new(SimPad::new(main_dir(), mode).with_lights().channel(|c| {
+        *c = c
+            .clone()
+            .with_slots()
+            .with_lights_profiles()
+            .with_log()
+            .with_config();
+        f(c);
+    }))
+}
+
+fn saved_blob(rig: &Rig) -> Vec<u8> {
+    rig.pad.firmware().config.unwrap().saved
+}
+
+/// The config commands the pad got: WRITE_CONFIG (0x17), COMMIT_CONFIG
+/// (0x18).
+fn config_writes(rig: &Rig) -> Vec<u8> {
+    rig.channel_commands()
+        .into_iter()
+        .filter(|c| matches!(c, 0x17 | 0x18))
+        .collect()
+}
+
+fn backup_channel(rig: &Rig, out: Option<&Path>) -> gamepadii_core::commands::BackupReport {
+    rig.run(|env| flow::backup_channel(env, out)).unwrap()
+}
+
+fn restore(rig: &Rig, file: &Path, log: &mut Log) -> gamepadii_core::Result<flow::RestoreReport> {
+    let bundle = gamepadii_core::commands::read_backup(file)?;
+    rig.run(|env| flow::restore(env, file, &bundle, log))
+}
+
+/// A channel-only backup of the pad, outside the backups directory.
+fn blob_file(rig: &Rig) -> PathBuf {
+    backup_channel(rig, Some(&rig.dirs.path().join("b.json"))).path
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A valid `Config` blob, other than the one the sim saves.
+fn other_blob() -> Vec<u8> {
+    use gamepadii_core::pb;
+    pb::encode(&[
+        (1, pb::Value::Bytes(b"v0.7.12-119-g8013b41".to_vec())),
+        (
+            2,
+            pb::Value::Bytes(pb::encode(&[(1, pb::Value::Varint(1))])),
+        ),
+        (12, pb::Value::Bytes(b"Haute42COSMOX".to_vec())),
+    ])
+}
+
+#[test]
+fn backup_on_a_1_6_pad_has_the_config_blob() {
+    let rig = config_rig(InputMode::Xinput);
+    let saved = saved_blob(&rig);
+    let (report, trip) = backup(&rig);
+    assert!(trip.unwrap().verified);
+    let info = report.config_blob.unwrap();
+    assert_eq!(info.size as usize, saved.len());
+    assert_eq!(info.crc32, gamepadii_core::channel::proto::crc32(&saved));
+    assert_eq!(report.config_blob_error, None);
+    assert!(report.unavailable.is_empty() && !report.endpoints.is_empty());
+    let file = read_json(&report.path);
+    assert_eq!(
+        file["config_blob"]["hex"],
+        gamepadii_core::blob::hex(&saved)
+    );
+    assert_eq!(file["config_blob"]["board"], "Haute42COSMOX");
+    // Without channel 1.6 the key is null.
+    let rig = lights_profiles_rig(0);
+    let (report, _) = backup(&rig);
+    assert_eq!((report.config_blob, report.config_blob_error), (None, None));
+    assert!(read_json(&report.path)["config_blob"].is_null());
+}
+
+#[test]
+fn backup_channel_only_needs_no_web_config() {
+    let rig = config_rig(InputMode::Xinput);
+    let saved = saved_blob(&rig);
+    let report = backup_channel(&rig, None);
+    assert!(report.path.starts_with(rig.backups_dir()), "{report:?}");
+    assert!(report.endpoints.is_empty() && report.unavailable.is_empty());
+    assert_eq!(report.config_blob.unwrap().size as usize, saved.len());
+    assert_eq!(rig.pad.mode(), Some(InputMode::Xinput));
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
+    let file = read_json(&report.path);
+    assert_eq!(file["schema"], 1);
+    assert_eq!(file["firmware"]["board"], "Haute42COSMOX");
+    assert_eq!(file["endpoints"], serde_json::json!({}));
+    assert!(file["full_config"].is_null());
+    // -o FILE, in web-config too.
+    let rig = config_rig(InputMode::Webconfig);
+    let out = rig.dirs.path().join("blob.json");
+    assert_eq!(backup_channel(&rig, Some(&out)).path, out);
+    assert!(out.exists());
+}
+
+#[test]
+fn backup_channel_only_needs_control_channel_1_6() {
+    for (rig, says) in [
+        (Rig::s16(InputMode::Xinput), "control channel v1.6"),
+        (lights_profiles_rig(0), "v1.5"),
+    ] {
+        let e = rig.run(|env| flow::backup_channel(env, None)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(files(&rig.backups_dir()).is_empty());
+    }
+}
+
+#[test]
+fn restore_writes_the_blob_and_checks_it_after_the_restart() {
+    let rig = config_rig(InputMode::Xinput);
+    let saved = saved_blob(&rig);
+    let file = blob_file(&rig);
+    // Something else is saved now.
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let mut log = Log::default();
+    let r = restore(&rig, &file, &mut log).unwrap();
+    assert!(r.written && r.verified, "{r:?}");
+    assert_eq!(saved_blob(&rig), saved);
+    let chunks = saved.len().div_ceil(316);
+    assert_eq!((r.chunks, r.uploads), (chunks, 1));
+    assert_eq!(rig.pad.firmware().config.unwrap().commits, 1);
+    let writes = config_writes(&rig);
+    assert_eq!(writes.len(), chunks + 1);
+    assert_eq!(writes.last(), Some(&0x18));
+    // The backup of what the pad had before: the other blob.
+    let before = read_json(r.backup.as_ref().unwrap());
+    assert_eq!(
+        before["config_blob"]["hex"],
+        gamepadii_core::blob::hex(&other_blob())
+    );
+    assert_eq!(r.after.as_ref().unwrap().mode, Some(InputMode::Xinput));
+    assert!(r.note.as_deref().unwrap().contains("device cache"));
+    assert_eq!(
+        log.other,
+        ["backed up", &format!("writing {chunks} config chunks")]
+    );
+    assert!(rig.requests().is_empty(), "no web-config");
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["via"], "control");
+    assert_eq!(json["ack"], "confirmed");
+    // Again: the pad has it already, and nothing is written.
+    let n = config_writes(&rig).len();
+    let r = restore(&rig, &file, &mut Log::default()).unwrap();
+    assert!(!r.written && r.verified && r.backup.is_none());
+    assert!(r.note.unwrap().contains("wrote nothing"));
+    assert_eq!(config_writes(&rig).len(), n);
+}
+
+#[test]
+fn restore_in_web_config_comes_back_in_the_gamepad_mode() {
+    let rig = config_rig(InputMode::Webconfig);
+    let file = blob_file(&rig);
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let r = restore(&rig, &file, &mut Log::default()).unwrap();
+    assert!(r.verified);
+    assert_ne!(rig.pad.mode(), Some(InputMode::Webconfig));
+}
+
+/// Writes `file` again with `f` applied to its JSON.
+fn edit_json(file: &Path, f: impl FnOnce(&mut Value)) {
+    let mut v = read_json(file);
+    f(&mut v);
+    std::fs::write(file, serde_json::to_string(&v).unwrap()).unwrap();
+}
+
+#[test]
+fn every_restore_refusal_comes_before_a_write() {
+    let rig = config_rig(InputMode::Xinput);
+    let dir = rig.dirs.path().to_path_buf();
+    let good = backup_channel(&rig, Some(&dir.join("good.json"))).path;
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let copy = |name: &str, f: &dyn Fn(&mut Value)| {
+        let p = dir.join(name);
+        std::fs::copy(&good, &p).unwrap();
+        edit_json(&p, f);
+        p
+    };
+    let web_rig = lights_profiles_rig(0);
+    let web = backup(&web_rig).0.path;
+    let cases = [
+        (web, "Restore those settings in web-config"),
+        (
+            copy("crc.json", &|v| v["config_blob"]["crc32"] = 1.into()),
+            "the file is damaged",
+        ),
+        (
+            copy("size.json", &|v| v["config_blob"]["size"] = 3.into()),
+            "the file is damaged",
+        ),
+        (
+            copy("hex.json", &|v| v["config_blob"]["hex"] = "zz".into()),
+            "not hex",
+        ),
+        (
+            copy("board.json", &|v| v["config_blob"]["board"] = "Pico".into()),
+            "a Pico board",
+        ),
+        (dir.join("none.json"), "reading"),
+    ];
+    std::fs::write(dir.join("text.json"), "not json").unwrap();
+    for (file, says) in cases
+        .iter()
+        .chain(&[(dir.join("text.json"), "not a gamepadii backup")])
+    {
+        let e = restore(&rig, file, &mut Log::default()).unwrap_err();
+        let want = if says == &"reading" {
+            exit::TRANSPORT
+        } else {
+            exit::USAGE
+        };
+        assert_eq!(e.exit_code(), want, "{file:?}: {e}");
+        assert!(e.to_string().contains(says), "{file:?}: {e}");
+    }
+    // Forced setup mode locks web-config, and the restore.
+    rig.pad.change_firmware(|c| c.forced_setup = 3);
+    let e = restore(&rig, &good, &mut Log::default()).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(e.to_string().contains("forced setup mode"), "{e}");
+    rig.pad.change_firmware(|c| c.forced_setup = 0);
+    // Not enough free space.
+    rig.pad.change_firmware(|c| {
+        c.config.as_mut().unwrap().saved = vec![0x08; 32768 - 12 - 100];
+    });
+    let e = restore(&rig, &good, &mut Log::default()).unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    assert!(e.to_string().contains("at most 100 bytes"), "{e}");
+    // A pad without channel 1.6.
+    let old = lights_profiles_rig(0);
+    let e = restore(&old, &good, &mut Log::default()).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+    assert!(config_writes(&rig).is_empty() && config_writes(&old).is_empty());
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup either");
+}
+
+#[test]
+fn restore_notes_another_firmware_and_another_pad() {
+    let rig = config_rig_with(InputMode::Xinput, |c| {
+        *c = c.clone().with_board_id("E6614103E7A4392F");
+    });
+    let file = blob_file(&rig);
+    edit_json(&file, |v| {
+        v["config_blob"]["firmware"] = "v0.7.11".into();
+        v["config_blob"]["board_id"] = "0000000000000000".into();
+    });
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let r = restore(&rig, &file, &mut Log::default()).unwrap();
+    let note = r.note.unwrap();
+    assert!(note.contains("from firmware v0.7.11"), "{note}");
+    assert!(note.contains("another pad of the same board"), "{note}");
+    assert_eq!(r.blob_firmware.as_deref(), Some("v0.7.11"));
+}
+
+/// Changes the pad at each step of a flow.
+struct OnStep<'a, F: FnMut(&Step<'_>)>(&'a mut Log, F);
+
+impl<F: FnMut(&Step<'_>)> Progress for OnStep<'_, F> {
+    fn step(&mut self, step: Step<'_>) {
+        (self.1)(&step);
+        self.0.step(step);
+    }
+}
+
+#[test]
+fn a_failed_chunk_means_no_commit() {
+    let rig = config_rig(InputMode::Xinput);
+    let file = blob_file(&rig);
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let mut log = Log::default();
+    // A restart is pending when the upload starts: BUSY.
+    let pad = rig.pad.clone();
+    let mut p = OnStep(&mut log, move |s| {
+        if matches!(s, Step::WritingConfig { .. }) {
+            pad.change_firmware(|c| c.reboot_pending = true);
+        }
+    });
+    let bundle = gamepadii_core::commands::read_backup(&file).unwrap();
+    let e = rig
+        .run(|env| flow::restore(env, &file, &bundle, &mut p))
+        .unwrap_err();
+    assert!(e.to_string().contains("nothing was saved"), "{e}");
+    assert_eq!(config_writes(&rig), [0x17], "one refused chunk, no commit");
+    let c = rig.pad.firmware().config.unwrap();
+    assert_eq!((c.chunks, c.commits), (0, 0));
+    assert_eq!(c.saved, other_blob());
+}
+
+#[test]
+fn a_save_during_the_upload_gets_one_more_upload() {
+    let rig = config_rig(InputMode::Xinput);
+    let saved = saved_blob(&rig);
+    let file = blob_file(&rig);
+    rig.pad.change_firmware(|c| {
+        let cfg = c.config.as_mut().unwrap();
+        cfg.saved = other_blob();
+        cfg.save_after_chunks = Some(2);
+    });
+    let r = restore(&rig, &file, &mut Log::default()).unwrap();
+    let chunks = saved.len().div_ceil(316);
+    assert_eq!((r.uploads, r.chunks), (2, 2 * chunks));
+    assert!(r.verified);
+    assert_eq!(saved_blob(&rig), saved);
+    // A save during each upload: it stops after the second.
+    let rig = config_rig(InputMode::Xinput);
+    let file = blob_file(&rig);
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let mut log = Log::default();
+    let pad = rig.pad.clone();
+    let mut p = OnStep(&mut log, move |s| {
+        if matches!(s, Step::WritingConfig { .. }) {
+            pad.change_firmware(|c| c.config.as_mut().unwrap().save_after_chunks = Some(1));
+        }
+    });
+    let bundle = gamepadii_core::commands::read_backup(&file).unwrap();
+    let e = rig
+        .run(|env| flow::restore(env, &file, &bundle, &mut p))
+        .unwrap_err();
+    assert_eq!(e.exit_code(), exit::TRANSPORT, "{e}");
+    assert!(e.to_string().contains("two times"), "{e}");
+    assert!(e.to_string().contains("nothing was saved"), "{e}");
+    let writes = config_writes(&rig);
+    assert_eq!(writes.iter().filter(|c| **c == 0x18).count(), 2);
+    assert_eq!(rig.pad.firmware().config.unwrap().commits, 0);
+    assert_eq!(log.other.len(), 3, "a backup and two uploads");
+}
+
+#[test]
+fn a_pad_that_does_not_come_back_after_the_restore() {
+    let rig = config_rig(InputMode::Xinput);
+    let file = blob_file(&rig);
+    rig.pad
+        .change_firmware(|c| c.config.as_mut().unwrap().saved = other_blob());
+    let mut log = Log::default();
+    let pad = rig.pad.clone();
+    let mut p = OnStep(&mut log, move |s| {
+        if matches!(s, Step::Waiting { .. }) {
+            pad.unplug();
+        }
+    });
+    let bundle = gamepadii_core::commands::read_backup(&file).unwrap();
+    let e = rig
+        .run(|env| flow::restore(env, &file, &bundle, &mut p))
+        .unwrap_err();
+    assert!(e.to_string().contains("the pad took the new config"), "{e}");
 }

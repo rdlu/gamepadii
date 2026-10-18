@@ -76,6 +76,11 @@ pub fn push_button(scan: bool) -> Vec<String> {
     lines
 }
 
+/// What `restore` says before it sends the blob.
+pub fn writing_config(bytes: usize, chunks: usize) -> String {
+    format!("sending the config blob: {bytes} bytes in {chunks} chunks")
+}
+
 fn secs(d: Duration) -> u64 {
     d.as_secs_f64().ceil() as u64
 }
@@ -121,6 +126,7 @@ impl<W: Write> Progress for Reporter<W> {
             Step::RestoreFailed { profile, error } => self.line(&format!(
                 "warning: profile {profile} not restored after the restart: {error}"
             )),
+            Step::WritingConfig { bytes, chunks } => self.line(&writing_config(bytes, chunks)),
             Step::PushButton { scan } => {
                 for l in push_button(scan) {
                     self.line(&l);

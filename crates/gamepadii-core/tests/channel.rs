@@ -1728,3 +1728,213 @@ fn a_panic_is_in_the_log_of_the_next_boot() {
     let ch = connect(&pad);
     assert!(gamepadii_core::log::last_panic(&ch).is_none());
 }
+
+// ---- v1.6: the config blob (§3.14) -------------------------------------------
+
+/// The S16 on a v1.6 main-line build (the log too), in `mode`.
+fn s16_config(mode: InputMode, f: impl FnOnce(&mut SimChannel)) -> Arc<SimPad> {
+    Arc::new(SimPad::new(main_dir(), mode).with_lights().channel(|c| {
+        *c = c
+            .clone()
+            .with_slots()
+            .with_lights_profiles()
+            .with_log()
+            .with_config();
+        f(c);
+    }))
+}
+
+const BLOB: [u8; 6] = [0x08, 0x01, 0x12, 0x02, 0x08, 0x05];
+
+#[test]
+fn a_1_6_build_gives_the_saved_config_in_steps() {
+    let pad = s16_config(InputMode::Xinput, |_| {});
+    let ch = connect(&pad);
+    assert!(ch.hello().has_config());
+    assert!(ch.caps().names().contains(&"config"));
+    let saved = pad.firmware().config.unwrap().saved;
+    assert!(saved.len() > 3 * proto::CONFIG_CHUNK_MAX, "{}", saved.len());
+    assert!(pb::decode(&saved).is_some());
+    let head = ch.config_head().unwrap();
+    assert_eq!(head.size as usize, saved.len());
+    assert_eq!(head.crc, proto::crc32(&saved));
+    assert_eq!(head.free as usize, 32768 - 12 - saved.len());
+    let image = ch.read_config_image().unwrap();
+    assert_eq!((image.head, image.data), (head, saved));
+    // An offset past the end STALLs; one at the end gives 0 bytes.
+    let mut sim = pad.firmware();
+    let end = 12 + head.size as u16;
+    let at = |v| Setup::read(proto::Command::ReadConfig, v);
+    assert!(sim.control_in(at(end), 512).unwrap().is_empty());
+    assert!(matches!(
+        sim.control_in(at(end + 1), 512),
+        Err(UsbError::Stall)
+    ));
+    assert_eq!(
+        sim.control_in(at(0), 4096).unwrap().len(),
+        328,
+        "the buffer"
+    );
+}
+
+#[test]
+fn a_save_during_a_read_makes_the_host_read_again() {
+    let pad = s16_config(InputMode::Xinput, |c| {
+        c.config.as_mut().unwrap().save_after_reads = Some(2);
+    });
+    let ch = connect(&pad);
+    let image = ch.read_config_image().unwrap();
+    let now = pad.firmware().config.unwrap().saved;
+    assert_eq!(image.data, now, "the second read has the new config");
+    assert_eq!(image.head.crc, proto::crc32(&now));
+}
+
+#[test]
+fn a_save_during_each_read_stops_the_host_after_3_reads() {
+    let pad = s16_config(InputMode::Xinput, |c| {
+        c.config.as_mut().unwrap().save_every_reads = Some(2);
+    });
+    let ch = connect(&pad);
+    let e = ch.read_config_image().unwrap_err();
+    assert_eq!(e.exit_code(), exit::TRANSPORT, "{e}");
+    assert!(e.to_string().contains("each of 3 reads"), "{e}");
+    let reads = pad.firmware().config.unwrap().reads;
+    assert!((6..=40).contains(&reads), "{reads}");
+}
+
+#[test]
+fn a_1_5_build_never_gets_a_config_command() {
+    // Bit 12 on a 1.5 build: not the config.
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_config();
+    sim.minor = 5;
+    let pad = Arc::new(std::sync::Mutex::new(sim));
+    let t = Box::new(Standalone::shared(pad.clone(), "/dev/bus/usb/003/007"));
+    let ch = channel::hello(t, 7).found().unwrap();
+    assert!(!ch.hello().has_config());
+    for e in [
+        ch.config_head().unwrap_err(),
+        ch.read_config_image().unwrap_err(),
+        ch.write_config_chunk(0, &[1]).unwrap_err(),
+        ch.commit_config(1, 1).map(|_| ()).unwrap_err(),
+    ] {
+        assert_eq!(e.exit_code(), exit::USAGE);
+        assert!(e.to_string().contains("1.6"), "{e}");
+    }
+    let sim = pad.lock().unwrap();
+    for b in [0x08, 0x17, 0x18] {
+        assert!(sim.log.iter().all(|s| s.setup.command_byte() != b));
+    }
+    // A build without bit 12 STALLs an IN and refuses an OUT.
+    let mut old = SimChannel::gamepadii(Some(InputMode::Xinput)).with_lights_profiles();
+    let r = old.control_in(Setup::read(proto::Command::ReadConfig, 0), 512);
+    assert!(matches!(r, Err(UsbError::Stall)));
+    let token = old.token;
+    let r = old.control_out(
+        Setup::command(proto::Command::CommitConfig),
+        &proto::payload(token, 3, &[1, 0, 0, 0, 0, 0, 0, 0]),
+    );
+    assert!(r.is_err());
+    assert_eq!(
+        Outcome::from_byte(old.status().last_result),
+        Outcome::Unsupported
+    );
+}
+
+#[test]
+fn write_and_commit_config_check_in_the_firmware_order() {
+    let mut sim = SimChannel::gamepadii(Some(InputMode::Xinput))
+        .with_lights_profiles()
+        .with_config();
+    let token = sim.token;
+    let saved = sim.config.as_ref().unwrap().saved.clone();
+    let free = sim.config.as_ref().unwrap().free();
+    let out = |sim: &mut SimChannel, cmd, args: &[u8]| {
+        let r = sim.control_out(Setup::command(cmd), &proto::payload(token, 9, args));
+        (r.is_ok(), Outcome::from_byte(sim.status().last_result))
+    };
+    let chunk = |offset: usize, data: &[u8]| proto::config_chunk(offset as u16, data);
+    let w = proto::Command::WriteConfig;
+    let c = proto::Command::CommitConfig;
+    let commit = proto::config_commit(6, proto::crc32(&BLOB));
+    for (cmd, args, want) in [
+        (w, vec![0, 0, 0, 0], Outcome::BadLength),
+        (w, vec![0, 0, 1, 0, 7], Outcome::BadArg),
+        (w, chunk(free, &[1]), Outcome::BadArg),
+        (w, chunk(free - 1, &[1, 2]), Outcome::BadArg),
+        (c, vec![6, 0, 0, 0, 0, 0, 0], Outcome::BadLength),
+        (c, proto::config_commit(0, 0).to_vec(), Outcome::BadArg),
+        (
+            c,
+            proto::config_commit(free as u32 + 1, 0).to_vec(),
+            Outcome::BadArg,
+        ),
+        // Nothing uploaded yet: a CRC mismatch.
+        (c, commit.to_vec(), Outcome::BadArg),
+    ] {
+        assert_eq!(out(&mut sim, cmd, &args), (false, want), "{cmd:?} {args:?}");
+    }
+    // The CRC agrees, but the bytes are not protobuf (field 0).
+    let bad = [0x00, 0x01];
+    assert_eq!(out(&mut sim, w, &chunk(0, &bad)), (true, Outcome::Ok));
+    let bad_commit = proto::config_commit(2, proto::crc32(&bad));
+    assert_eq!(out(&mut sim, c, &bad_commit), (false, Outcome::BadArg));
+    assert_eq!(sim.config.as_ref().unwrap().saved, saved, "nothing changed");
+    // Forced setup mode: LOCKED, after the length check.
+    sim.forced_setup = 2;
+    assert_eq!(out(&mut sim, w, &[0; 4]), (false, Outcome::BadLength));
+    assert_eq!(out(&mut sim, w, &chunk(0, &BLOB)), (false, Outcome::Locked));
+    assert_eq!(out(&mut sim, c, &commit), (false, Outcome::Locked));
+    sim.forced_setup = 0;
+    // The last byte of the free space is in range.
+    assert_eq!(
+        out(&mut sim, w, &chunk(free - 1, &[1])),
+        (true, Outcome::Ok)
+    );
+    // Two chunks, then the commit: saved, and a restart.
+    assert_eq!(out(&mut sim, w, &chunk(0, &BLOB[..4])), (true, Outcome::Ok));
+    assert_eq!(out(&mut sim, w, &chunk(4, &BLOB[4..])), (true, Outcome::Ok));
+    assert_eq!(out(&mut sim, c, &commit), (true, Outcome::Ok));
+    let cfg = sim.config.as_ref().unwrap();
+    assert_eq!((cfg.saved.as_slice(), cfg.commits), (&BLOB[..], 1));
+    assert_eq!(cfg.head().free as usize, 32768 - 12 - 6);
+    // A restart is pending: BUSY.
+    assert_eq!(out(&mut sim, w, &chunk(0, &BLOB)), (false, Outcome::Busy));
+}
+
+#[test]
+fn a_save_writes_over_the_upload() {
+    let pad = s16_config(InputMode::Xinput, |_| {});
+    let ch = connect(&pad);
+    ch.write_config_chunk(0, &BLOB).unwrap();
+    let before = pad.firmware().config.unwrap().saved;
+    let st = ch.status().unwrap();
+    let other = *st.enabled().iter().find(|n| **n != st.profile).unwrap();
+    ch.set_profile(other, true).unwrap();
+    let cfg = pad.firmware().config.unwrap();
+    assert!(cfg.upload.is_empty());
+    assert_ne!(cfg.saved, before, "the save changed the CRC-32");
+    assert_eq!(
+        ch.commit_config(6, proto::crc32(&BLOB)).unwrap(),
+        channel::Commit::BadArg
+    );
+    assert_eq!(pad.firmware().config.unwrap().commits, 0);
+}
+
+#[test]
+fn commit_config_saves_and_restarts_the_pad() {
+    let pad = s16_config(InputMode::Webconfig, |_| {});
+    let ch = connect(&pad);
+    assert!(ch.write_config_chunk(0, &[]).is_err());
+    assert!(ch.write_config_chunk(0, &[0; 317]).is_err());
+    ch.write_config_chunk(0, &BLOB).unwrap();
+    let commit = ch.commit_config(6, proto::crc32(&BLOB)).unwrap();
+    assert!(matches!(commit, channel::Commit::Accepted(_)));
+    replug(&pad);
+    let d = gamepadii_core::discovery::Scan::scan(&*pad).remove(0);
+    assert_ne!(d.mode, Some(InputMode::Webconfig), "{d:?}");
+    let ch = connect(&pad);
+    let head = ch.config_head().unwrap();
+    assert_eq!((head.size, head.crc), (6, proto::crc32(&BLOB)));
+}

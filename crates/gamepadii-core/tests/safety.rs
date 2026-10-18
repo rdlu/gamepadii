@@ -183,6 +183,28 @@ fn every_command(fake: &Fake, dir: &Path) {
         let _ = flow::find_pin(env, &find, &mut Silent);
         let _ = flow::log(env, None);
         let _ = flow::log_follow(env, Some(5), &mut |_| false);
+        let _ = flow::backup_channel(env, Some(&dir.join("blob.json")));
+        let data = [0x08, 0x01];
+        let file = dir.join("restore.json");
+        let bundle = serde_json::json!({
+            "schema": 1,
+            "gamepadii_version": "0",
+            "captured_at": "2026-10-18T00:00:00Z",
+            "firmware": {},
+            "endpoints": {},
+            "config_blob": {
+                "size": 2,
+                "crc32": proto::crc32(&data),
+                "firmware": null,
+                "board": null,
+                "board_id": null,
+                "hex": gamepadii_core::blob::hex(&data),
+            },
+        });
+        std::fs::write(&file, bundle.to_string()).unwrap();
+        let bundle = commands::read_backup(&file).unwrap();
+        assert!(bundle.config_blob.is_some());
+        let _ = flow::restore(env, &file, &bundle, &mut Silent);
     });
 }
 

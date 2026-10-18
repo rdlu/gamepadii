@@ -2,8 +2,8 @@
 //! switch`, `profile show` and `profile write` (over the channel only),
 //! `leds` (and `leds set`, over the channel only), `input` and `input
 //! find-pin` (over the channel only), `log` and `log --follow` (over the
-//! channel only), and the trip through
-//! web-config that `info` and `backup` take
+//! channel only), `backup --channel-only` and `restore` (over the channel
+//! only), and the trip through web-config that `info` and `backup` take
 //! from a gamepad mode ([`through_webconfig`]). They poll USB through a
 //! [`Scan`] and time through a [`Clock`], open the web-config client and
 //! the control channel through closures, and report progress through a
@@ -27,11 +27,12 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
+use crate::blob::ConfigBlob;
 use crate::buttons::{Button, Combo};
 use crate::cache::{self, DeviceCache, Key, PadId};
 use crate::channel::{self, Caps, Channel, Hello, OpenControl, Probe, proto};
 use crate::client::{self, Client};
-use crate::commands::{self, Firmware, ModeSetting, ProfileName};
+use crate::commands::{self, Bundle, Firmware, ModeSetting, ProfileName};
 use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::input::{self, Finder, FoundPin, InputReport, PinNames};
@@ -128,6 +129,12 @@ pub enum Step<'a> {
     /// `scan`: the pin scan is on.
     PushButton {
         scan: bool,
+    },
+    /// `restore` sends the config blob to the pad: `bytes` in `chunks`
+    /// WRITE_CONFIGs.
+    WritingConfig {
+        bytes: usize,
+        chunks: usize,
     },
 }
 
@@ -1734,9 +1741,14 @@ pub fn backup(
     let mut failed = None;
     let work = |c: &Client, wc: &Device| {
         let now = env.clock.wall();
+        // The channel answers in web-config too: a 1.6 pad gives the blob.
+        let blob = c
+            .hello()
+            .filter(|h| h.has_config())
+            .map(|_| read_blob(env, wc));
         let (report, cache) = match (output, &env.backups_dir) {
-            (None, Some(dir)) => commands::backup_in_dir(c, dir, now)?,
-            _ => commands::backup_with_cache(c, output, now)?,
+            (None, Some(dir)) => commands::backup_in_dir(c, dir, now, blob)?,
+            _ => commands::backup_with_cache(c, output, now, blob)?,
         };
         if let Some(cache) = cache {
             failed = store_read(env, cache, wc);
@@ -1750,6 +1762,13 @@ pub fn backup(
         progress.step(Step::CacheFailed(e));
     }
     Ok((report, trip))
+}
+
+/// The config blob of `wc` (in web-config), over its control channel.
+fn read_blob(env: &Env, wc: &Device) -> Result<ConfigBlob> {
+    let ch = channel_after_reboot(env, wc)
+        .ok_or_else(|| Error::Protocol("the control channel didn't answer in web-config".into()))?;
+    ConfigBlob::read(&ch)
 }
 
 /// With `--stay`: the profile STATUS reports in web-config (the channel
@@ -3083,6 +3102,286 @@ fn not_saved_leds() -> &'static str {
     "not saved: the pad goes back to its saved LED settings when it restarts, unless \
      something saves its settings first (any hotkey, turbo or saved profile change does); \
      --save keeps it"
+}
+
+// ---- the config blob (control channel v1.6) ---------------------------------
+
+fn no_config_channel(pad: &Device, why: Option<String>) -> Error {
+    let mut msg = format!(
+        "the pad (in {} mode) has no control channel with the config commands, so gamepadii \
+         can't read or write its saved config as one blob; that needs the gamepadii build of \
+         GP2040-CE with control channel v1.6. `gamepadii backup` with no --channel-only reads \
+         the settings through web-config",
+        Seen::from(pad).label()
+    );
+    if let Some(w) = why {
+        msg.push_str(&format!(" ({w})"));
+    }
+    Error::NeedsUser(msg)
+}
+
+/// The pad and its control channel, when it has READ_CONFIG, WRITE_CONFIG
+/// and COMMIT_CONFIG.
+fn config_channel(env: &Env) -> Result<(Device, Channel)> {
+    live_channel(env, Hello::has_config, no_config_channel, |h| {
+        format!("this build's channel speaks v{}.{}", h.major, h.minor)
+    })
+}
+
+/// `gamepadii backup --channel-only`: the saved config as one blob, with
+/// READ_CONFIG, in any mode, with no web-config. The file goes to `output`,
+/// else into `env.backups_dir` when it has one, else to the default path.
+pub fn backup_channel(env: &Env, output: Option<&Path>) -> Result<commands::BackupReport> {
+    let (_, ch) = config_channel(env)?;
+    commands::backup_blob(&ch, output, env.backups_dir.as_deref(), env.clock.wall())
+}
+
+/// What a restore says when it stops after the first WRITE_CONFIG and
+/// before an accepted COMMIT_CONFIG.
+const NOT_SAVED: &str = "; nothing was saved: the pad keeps its saved config (the chunks are \
+                         only in its free space, and a restart removes them)";
+
+/// Sends `data` in chunks of at most [`proto::CONFIG_CHUNK_MAX`] bytes, from
+/// offset 0, and counts them in `chunks`.
+fn upload_blob(ch: &Channel, data: &[u8], chunks: &mut usize) -> Result<()> {
+    for (i, part) in data.chunks(proto::CONFIG_CHUNK_MAX).enumerate() {
+        let offset = u16::try_from(i * proto::CONFIG_CHUNK_MAX).map_err(|_| {
+            Error::Usage("the config blob is larger than 64 KiB: no pad takes it".into())
+        })?;
+        ch.write_config_chunk(offset, part)?;
+        *chunks += 1;
+    }
+    Ok(())
+}
+
+/// `gamepadii restore FILE`: writes the config blob of `bundle` (read from
+/// `file`) back to the pad, over the channel, in any mode.
+///
+/// Every check comes before the first WRITE_CONFIG: the file has a blob
+/// that is not damaged, the pad has control channel 1.6, it is the same
+/// board, forced setup mode does not lock web-config, and the free space
+/// is large enough. A blob that the pad has saved already is not written
+/// again. Then it backs up the pad's config (into `env.backups_dir`, when
+/// set), sends the chunks, and sends COMMIT_CONFIG. A save on the pad
+/// during the upload makes COMMIT_CONFIG give BAD_ARG: it sends the chunks
+/// one more time. On OK the pad writes the flash and restarts into gamepad
+/// mode; it waits for the pad on USB and reads the head again, to check
+/// the CRC-32.
+pub fn restore(
+    env: &Env,
+    file: &Path,
+    bundle: &Bundle,
+    progress: &mut dyn Progress,
+) -> Result<RestoreReport> {
+    let blob = bundle.config_blob.as_ref().ok_or_else(|| {
+        Error::Usage(format!(
+            "{} has no config blob: it is a backup from a pad without control channel v1.6. \
+             Restore those settings in web-config instead",
+            file.display()
+        ))
+    })?;
+    let data = blob
+        .data()
+        .map_err(|e| prefixed(e, &file.display().to_string()))?;
+    let (pad, ch) = config_channel(env)?;
+    let st = ch.status()?;
+    let firmware = ch.string(proto::string::VERSION).ok().flatten();
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    if let (Some(from), Some(to)) = (&blob.board, &board)
+        && from != to
+    {
+        return Err(Error::Usage(format!(
+            "{} is a backup of a {from} board, but this pad is a {to}; gamepadii does not \
+             restore a config to another board",
+            file.display()
+        )));
+    }
+    if matches!(st.forced_setup, 2 | 3) {
+        return Err(Error::Usage(
+            "the pad refused the new config: its forced setup mode locks web-config, and a \
+             restore needs the same access"
+                .into(),
+        ));
+    }
+    let head = ch.config_head()?;
+    if blob.size > head.free {
+        return Err(Error::Usage(format!(
+            "the config blob is {} bytes, but the pad takes at most {} bytes now; restore \
+             those settings in web-config instead",
+            blob.size, head.free
+        )));
+    }
+    let mut notes = Vec::new();
+    if blob.firmware.is_some() && blob.firmware != firmware {
+        notes.push(format!(
+            "the backup is from firmware {}, and the pad runs {}; the firmware updates an older \
+             config when it starts",
+            blob.firmware.as_deref().unwrap_or("?"),
+            firmware.as_deref().unwrap_or("an unknown version")
+        ));
+    }
+    let board_id = ch.board_id().ok().flatten();
+    if blob.board_id.is_some() && board_id.is_some() && blob.board_id != board_id {
+        notes.push("the backup is from another pad of the same board".into());
+    }
+    let mut report = RestoreReport {
+        via: Route::Control,
+        host: ch.node(),
+        file: file.to_path_buf(),
+        size: blob.size,
+        crc32: blob.crc32,
+        blob_firmware: blob.firmware.clone(),
+        firmware: firmware.clone(),
+        board: board.clone(),
+        written: false,
+        chunks: 0,
+        uploads: 0,
+        ack: None,
+        backup: None,
+        before: match running(&st) {
+            Some(m) => confirmed(&pad, Some(m)),
+            None => (&pad).into(),
+        },
+        after: None,
+        verified: false,
+        note: None,
+    };
+    if head.size == blob.size && head.crc == blob.crc32 {
+        notes.push("the pad has this config saved already, so gamepadii wrote nothing".into());
+        report.verified = true;
+        report.note = Some(notes.join("; "));
+        return Ok(report);
+    }
+    if let Some(dir) = &env.backups_dir {
+        let b = commands::backup_blob(&ch, None, Some(dir), env.clock.wall())?;
+        progress.step(Step::BackedUp(&b.path));
+        report.backup = Some(b.path);
+    }
+    let chunks = data.len().div_ceil(proto::CONFIG_CHUNK_MAX);
+    let ack = loop {
+        report.uploads += 1;
+        progress.step(Step::WritingConfig {
+            bytes: data.len(),
+            chunks,
+        });
+        upload_blob(&ch, &data, &mut report.chunks).map_err(|e| suffixed(e, NOT_SAVED))?;
+        match ch
+            .commit_config(blob.size, blob.crc32)
+            .map_err(|e| suffixed(e, NOT_SAVED))?
+        {
+            channel::Commit::Accepted(ack) => break ack,
+            // A save on the pad wrote over the chunks: send them again.
+            channel::Commit::BadArg if report.uploads == 1 => {
+                let head = ch.config_head()?;
+                if blob.size > head.free {
+                    return Err(Error::Usage(format!(
+                        "after a save on the pad, it takes at most {} bytes{NOT_SAVED}",
+                        head.free
+                    )));
+                }
+            }
+            channel::Commit::BadArg => {
+                return Err(Error::Protocol(format!(
+                    "the pad refused the new config two times (BAD_ARG): the blob it has is not \
+                     the one that gamepadii sent, maybe because something on the pad saved the \
+                     settings during each upload{NOT_SAVED}"
+                )));
+            }
+        }
+    };
+    report.written = true;
+    report.ack = Some(ack);
+    let pad_id = cache::identify(env.cache_dir.as_deref(), &pad);
+    let firmware_key = Firmware {
+        board: board.clone(),
+        ..Firmware::default()
+    };
+    let key = Key::new(
+        &firmware_key,
+        PadId::with_board_id(pad_id, board_id.as_deref()),
+    );
+    commands::remember_restart(env.cache_dir.as_deref(), &key);
+    let saved = "; the pad took the new config";
+    let got = wait_reenumerated(
+        env,
+        &pad,
+        env.timeouts.reboot,
+        Awaiting::Reboot(BootMode::Gamepad),
+        progress,
+        in_gamepad_mode,
+    )
+    .ok_or_else(|| {
+        suffixed(
+            not_back(env.timeouts.reboot, "restarting with the new config"),
+            saved,
+        )
+    })?;
+    if pad.mode == Some(InputMode::Webconfig) {
+        left_webconfig(env, &pad, &got);
+    }
+    report.after = Some((&got).into());
+    let back = channel_after_reboot(env, &got).ok_or_else(|| {
+        Error::Protocol(format!(
+            "the pad came back, but its control channel didn't answer, so the new config is \
+             not verified{saved}"
+        ))
+    })?;
+    if let Ok(st) = back.status() {
+        report.after = Some(confirmed(&got, running(&st)));
+    }
+    let now = back.config_head()?;
+    if (now.size, now.crc) != (blob.size, blob.crc32) {
+        return Err(Error::CheckFailed(format!(
+            "the pad took the new config and restarted, but its saved config is {} bytes with \
+             CRC-32 {:08x}, not {} bytes with {:08x}",
+            now.size, now.crc, blob.size, blob.crc32
+        )));
+    }
+    report.verified = true;
+    notes.push(
+        "the device cache can have the old profiles: `gamepadii info` reads them again".into(),
+    );
+    report.note = Some(notes.join("; "));
+    Ok(report)
+}
+
+/// `gamepadii restore FILE`: what was written, and the check after the
+/// restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RestoreReport {
+    /// Always `control`.
+    pub via: Route,
+    /// The device node: `/dev/bus/usb/003/007`.
+    pub host: String,
+    /// The backup file.
+    pub file: PathBuf,
+    pub size: u32,
+    pub crc32: u32,
+    /// The firmware version that the blob came from.
+    pub blob_firmware: Option<String>,
+    /// The firmware version that the pad runs.
+    pub firmware: Option<String>,
+    pub board: Option<String>,
+    /// `false`: the pad had this config saved already, and gamepadii wrote
+    /// nothing.
+    pub written: bool,
+    /// The WRITE_CONFIGs sent, in all uploads.
+    pub chunks: usize,
+    /// 2 when a save on the pad during the first upload made it refuse the
+    /// blob, and gamepadii sent it again.
+    pub uploads: u8,
+    /// How the pad took COMMIT_CONFIG; `null` when nothing was written.
+    pub ack: Option<RebootAck>,
+    /// The backup of the config that the pad had before; `null` with
+    /// `--no-backup` or when nothing was written.
+    pub backup: Option<PathBuf>,
+    /// The pad before the restore.
+    pub before: Seen,
+    /// The pad after the restart; `null` when nothing was written.
+    pub after: Option<Seen>,
+    /// The saved config after the restart has the CRC-32 of the blob.
+    pub verified: bool,
+    pub note: Option<String>,
 }
 
 // ---- the log (control channel v1.8) ------------------------------------------

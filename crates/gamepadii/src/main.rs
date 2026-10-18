@@ -85,11 +85,33 @@ fn main() -> ExitCode {
             .map(|(i, t)| output::info(style, &i, t.as_ref()));
             finish(format, result)
         }
-        Some(Command::Backup { output: path, trip }) => {
+        Some(Command::Backup {
+            output: path,
+            channel_only: true,
+            ..
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let result = flow::backup_channel(&env, path.as_deref())
+                .map(|b| output::backup(style, &b, None));
+            finish(format, result)
+        }
+        Some(Command::Backup {
+            output: path, trip, ..
+        }) => {
             let result = match &cli.host {
                 Some(_) => connect(&cli, &root).and_then(|c| {
                     let (report, cache) =
-                        commands::backup_with_cache(&c, path.as_deref(), SystemTime::now())?;
+                        commands::backup_with_cache(&c, path.as_deref(), SystemTime::now(), None)?;
                     if let Some(cache) = cache {
                         save_cache(&cache);
                     }
@@ -100,6 +122,31 @@ fn main() -> ExitCode {
                 }),
             }
             .map(|(b, t)| output::backup(style, &b, t.as_ref()));
+            finish(format, result)
+        }
+        Some(Command::Restore {
+            file,
+            no_backup,
+            timeout,
+        }) => {
+            let timeouts = Timeouts {
+                reboot: Duration::from_secs(timeout),
+                ..Timeouts::default()
+            };
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(&cli, &root, &clock, &open, control, timeouts, !no_backup);
+            let mut progress = reporter(format);
+            // A missing backups dir fails here, before any write.
+            let result = match no_backup {
+                true => Ok(()),
+                false => commands::backups_dir().map(|_| ()),
+            }
+            .and_then(|()| read_file(&file))
+            .and_then(|t| commands::parse_backup(&t, &file))
+            .and_then(|b| flow::restore(&env, &file, &b, &mut progress))
+            .map(|r| output::restore(style, &r));
+            drop(progress);
             finish(format, result)
         }
         Some(Command::Reboot {
@@ -779,6 +826,15 @@ fn mock_control(
             sim.panic("test 1 22 333");
             sim
         }
+        MockChannel::Config => match api {
+            Some(dir) => SimChannel::from_mock(&Mock::new(dir), running),
+            None => SimChannel::gamepadii(running),
+        }
+        .with_slots()
+        .with_lights_profiles()
+        .with_input()
+        .with_log()
+        .with_config(),
     };
     let node = gamepadii_core::channel::node_path(d).unwrap_or_default();
     // One simulated pad per node for the whole process: the TUI opens the
