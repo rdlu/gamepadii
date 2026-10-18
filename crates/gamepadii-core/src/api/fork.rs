@@ -29,6 +29,11 @@
 //!    tag (`v0.7.12`): a release build with the channel isn't one of ours.
 //!
 //! Anything else, a bare release tag above all, is stock: no capability.
+//! So is upstream main as we know it ([`super::line::STOCK_MAIN_BUILDS`],
+//! `v0.7.12-119-g8013b41`): it has upstream's I2C fix, but `getConfig`
+//! still runs it out of heap, and our fixes for that are upstream PRs, not
+//! merged. Fork builds on main join [`FIXED_BUILDS`] once they pass the
+//! same stress test.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +79,9 @@ impl ForkFixes {
     /// the HELLO reply, if the channel answered one. `None`: stock, or not
     /// known to be fixed.
     pub fn check(fw: &FirmwareVersion, hello: Option<&Hello>) -> Option<ForkFixes> {
+        if super::line::is_stock_main(fw) {
+            return None;
+        }
         let version = fw.version.as_deref().unwrap_or_default();
         let commits = [described_commit(version), fw.board_build.as_deref()];
         if commits.into_iter().flatten().any(is_fixed_build) {
@@ -214,6 +222,15 @@ mod tests {
         assert_eq!(
             evidence("v0.7.12-3-g1234567", "1234567", Some(&hello())),
             Some(Evidence::ControlChannel)
+        );
+    }
+
+    #[test]
+    fn stock_main_never_qualifies() {
+        assert_eq!(evidence("v0.7.12-119-g8013b41", "8013b41", None), None);
+        assert_eq!(
+            evidence("v0.7.12-119-g8013b41", "8013b41", Some(&hello())),
+            None
         );
     }
 

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use gamepadii_core::api::FirmwareLine::{Main, V0712};
 use gamepadii_core::api::{self, Endpoint};
 use gamepadii_core::client::{self, Client};
 use gamepadii_core::commands;
@@ -67,11 +68,21 @@ const FORBIDDEN: &[&str] = &[
     "setConfig",
     "setGamepadOptions",
     "echo",
+    // Main's: ADC and GPIO access, a 5 s busy wait, a 32 KB document,
+    // static board data, setters.
+    "getHETriggerVoltage",
+    "getJoystickCenter",
+    "getJoystickCenter2",
+    "getLightsDataPresets",
+    "getLightsPresets/0",
+    "setBootModeOptions",
+    "setLightsToDefault",
+    "setAnimationButtonTestMode",
 ];
 
 #[test]
-fn allowlist_is_the_verified_set() {
-    let names: Vec<&str> = Endpoint::ALL.iter().map(|e| e.name()).collect();
+fn the_v0_7_12_allowlist_is_the_verified_set() {
+    let names: Vec<&str> = V0712.endpoints().iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
         [
@@ -235,7 +246,8 @@ fn info_without_a_memory_report() {
     let dir = tempfile::tempdir().unwrap();
     let old = dir.path().join("older");
     fs::create_dir(&old).unwrap();
-    for e in Endpoint::ALL
+    for e in V0712
+        .endpoints()
         .iter()
         .filter(|e| **e != Endpoint::GetMemoryReport)
     {
@@ -254,8 +266,8 @@ fn backup_bundle_has_every_endpoint_verbatim() {
     let bundle = commands::backup_bundle(&client, captured()).unwrap();
     assert_eq!(bundle.schema, 1);
     assert_eq!(bundle.captured_at, "2026-10-17T16:57:03Z");
-    assert_eq!(bundle.endpoints.len(), Endpoint::ALL.len());
-    for e in Endpoint::ALL {
+    assert_eq!(bundle.endpoints.len(), V0712.endpoints().len());
+    for e in V0712.endpoints() {
         assert_eq!(bundle.endpoints[e.name()], fixture(e.name()), "{e}");
     }
 }
@@ -467,7 +479,7 @@ fn fork_builds_back_up_get_config_too() {
     assert_eq!(cap.evidence(), api::Evidence::KnownBuild);
     let bundle = commands::backup_bundle(&client, captured()).unwrap();
     // The per-section reads are the same as on stock, then getConfig, last.
-    assert_eq!(bundle.endpoints.len(), Endpoint::ALL.len());
+    assert_eq!(bundle.endpoints.len(), V0712.endpoints().len());
     assert_eq!(mock.requests().last().unwrap().path, "/api/getConfig");
     let full = bundle.full_config.as_ref().unwrap();
     assert_eq!(full.evidence, api::Evidence::KnownBuild);
@@ -511,4 +523,225 @@ fn old_backups_without_full_config_still_load() {
     v.as_object_mut().unwrap().remove("full_config");
     let back: commands::Bundle = serde_json::from_value(v).unwrap();
     assert_eq!(back.full_config, None);
+}
+
+// ---- upstream main (tests/fixtures/api/s16-main, synthetic) --------------
+
+fn main_dir() -> PathBuf {
+    fixtures().join("api/s16-main")
+}
+
+fn main_pad() -> (Client, Arc<Mock>) {
+    with(Mock::new(main_dir()))
+}
+
+/// An overlay of `base` with another `getFirmwareVersion`: a build whose
+/// commit gamepadii doesn't know.
+fn unknown_build(base: &str, version: &str, build: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let pad = dir.path().join("pad");
+    fs::create_dir(&pad).unwrap();
+    let base = fixtures().join("api").join(base);
+    fs::write(pad.join("BASE"), base.to_str().unwrap()).unwrap();
+    let mut fw = fixture("getFirmwareVersion");
+    fw["version"] = json!(version);
+    fw["boardBuild"] = json!(build);
+    fs::write(pad.join("getFirmwareVersion.json"), fw.to_string()).unwrap();
+    (dir, pad)
+}
+
+/// Every path asked for, as an endpoint name.
+fn asked(mock: &Mock) -> Vec<&'static str> {
+    mock.requests()
+        .into_iter()
+        .map(|r| r.path.strip_prefix("/api/").unwrap())
+        .collect()
+}
+
+#[test]
+fn the_main_allowlist() {
+    let names: Vec<&str> = Main.endpoints().iter().map(|e| e.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "getAddonsOptions",
+            "getAnimationProtoOptions",
+            "getBoardDefinition",
+            "getBootModeOptions",
+            "getButtonLayoutDefs",
+            "getButtonLayouts",
+            "getDisplayOptions",
+            "getExpansionPins",
+            "getFirmwareVersion",
+            "getGamepadOptions",
+            "getHETriggerCalibrations",
+            "getKeyMappings",
+            "getLedOptions",
+            "getLightsDataOptions",
+            "getMacroAddonOptions",
+            "getMemoryReport",
+            "getPeripheralOptions",
+            "getPinMappings",
+            "getProfileOptions",
+            "getReactiveLEDs",
+            "getSplashImage",
+            "getUsedPins",
+            "getWiiControls",
+        ]
+    );
+    // What main removed is not in it.
+    for gone in [
+        "getCustomTheme",
+        "getHETriggerCalibration",
+        "getHETriggerOptions",
+    ] {
+        assert!(!names.contains(&gone), "{gone}");
+    }
+    // Endpoint::ALL is the two lines together.
+    let mut union: Vec<Endpoint> = [V0712, Main]
+        .iter()
+        .flat_map(|l| l.endpoints().iter().copied())
+        .collect();
+    union.sort_unstable();
+    union.dedup();
+    assert_eq!(union, Endpoint::ALL);
+}
+
+#[test]
+fn the_firmware_line() {
+    use api::LineEvidence::{KnownBuild, Shape};
+    let line = |c: &Client| {
+        let l = c.line().unwrap();
+        (l.line, l.evidence)
+    };
+    assert_eq!(line(&s16().0), (V0712, KnownBuild));
+    assert_eq!(line(&with(Mock::new(fork_dir())).0), (V0712, KnownBuild));
+    let (client, mock) = main_pad();
+    assert_eq!(line(&client), (Main, KnownBuild));
+    assert_eq!(
+        asked(&mock),
+        ["getFirmwareVersion"],
+        "the version was enough"
+    );
+    // Builds we don't know: one getGamepadOptions read, its shape decides.
+    let (_dir, pad) = unknown_build("s16-main", "v0.7.12-130-gabcdef1", "abcdef1");
+    let (client, mock) = with(Mock::new(pad));
+    assert_eq!(line(&client), (Main, Shape));
+    assert_eq!(line(&client), (Main, Shape), "remembered");
+    assert_eq!(asked(&mock), ["getFirmwareVersion", "getGamepadOptions"]);
+    let (_dir, pad) = unknown_build("s16-v0.7.12", "v0.7.12-3-g1234567", "1234567");
+    assert_eq!(line(&with(Mock::new(pad)).0), (V0712, Shape));
+}
+
+#[test]
+fn backup_on_main_reads_mains_allowlist_only() {
+    let (client, mock) = main_pad();
+    assert_eq!(client.fork_fixes(), None, "stock main has no fixes");
+    let bundle = commands::backup_bundle(&client, captured()).unwrap();
+    assert_eq!(bundle.firmware_line.unwrap().line, Main);
+    assert_eq!(bundle.full_config, None);
+    let names: Vec<&str> = bundle.endpoints.keys().map(String::as_str).collect();
+    let main: Vec<&str> = Main.endpoints().iter().map(|e| e.name()).collect();
+    assert_eq!(names, main);
+    assert!(bundle.endpoints.values().all(|v| !v.is_null()));
+    assert_eq!(
+        bundle.endpoints["getGamepadOptions"]["switch2ProIdentity"],
+        0
+    );
+    let lights = &bundle.endpoints["getLightsDataOptions"]["LightData"]["Lights"];
+    assert_eq!(lights.as_array().unwrap().len(), 16);
+    commands::info(&client).unwrap();
+    gamepadii_core::leds::read_webconfig(&client).unwrap();
+    for name in asked(&mock) {
+        let ep = Endpoint::from_name(name).unwrap_or_else(|| panic!("{name}"));
+        assert!(Main.allows(ep), "{name} is not on main's allowlist");
+        assert!(!FORBIDDEN.contains(&name), "{name}");
+    }
+}
+
+#[test]
+fn info_on_main() {
+    let (client, _) = main_pad();
+    let info = commands::info(&client).unwrap();
+    assert_eq!(info.firmware_line.line, Main);
+    assert_eq!(
+        info.firmware.version.as_deref(),
+        Some("v0.7.12-119-g8013b41")
+    );
+    assert_eq!(info.profiles.len(), 5);
+    assert_eq!(info.saved_profile, Some(2));
+    assert_eq!(info.input_mode.mode, Some(InputMode::Xinput));
+    assert!(info.display_layout.is_some());
+}
+
+#[test]
+fn stock_main_never_gets_asked_for_get_config() {
+    let hello = gamepadii_core::channel::Hello {
+        major: 1,
+        minor: 0,
+        caps: gamepadii_core::channel::Caps(0x2f),
+        token: 1,
+        modes: 0xffff,
+    };
+    let (client, mock) = main_pad();
+    // Not even with something answering HELLO: 8013b41 is upstream's.
+    let client = client.with_hello(hello);
+    assert_eq!(client.fork_fixes(), None);
+    commands::backup_bundle(&client, captured()).unwrap();
+    assert!(asked_for_fork_only(&mock).is_empty());
+    // And the mock hangs there, as stock main does on getConfig.
+    let (fork, _) = with(Mock::new(fork_dir()));
+    let cap = fork.fork_fixes().unwrap();
+    let err = commands::full_config(&client, &cap).unwrap_err();
+    assert_eq!(err.exit_code(), exit::TRANSPORT);
+}
+
+#[test]
+fn the_main_mock_has_no_removed_endpoints() {
+    let (client, _) = main_pad();
+    for gone in [
+        Endpoint::GetCustomTheme,
+        Endpoint::GetHETriggerCalibration,
+        Endpoint::GetHETriggerOptions,
+    ] {
+        assert_eq!(api::try_read_raw(client.transport(), gone).unwrap(), None);
+    }
+}
+
+#[test]
+fn leds_on_main_show_its_led_profiles() {
+    let (client, _) = main_pad();
+    let r = gamepadii_core::leds::read_webconfig(&client).unwrap();
+    let lights = r.lights.as_ref().unwrap();
+    assert_eq!(lights.profile, Some(0));
+    assert_eq!(lights.profiles.len(), 4);
+    assert_eq!(lights.light_count, Some(16));
+    let p3 = &lights.profiles[3];
+    let name = |n: &Option<gamepadii_core::leds::Named>| n.as_ref().unwrap().name.clone();
+    assert_eq!(
+        name(&p3.idle_effect).as_deref(),
+        Some("chase-horizontal-pingpong")
+    );
+    assert_eq!(name(&p3.pressed_effect).as_deref(), Some("burst"));
+    assert_eq!(r.state.brightness, Some(5));
+    // 50 % back to 0-255 the firmware's way: in f32, 50 * 2.55f is 127.5.
+    assert_eq!(r.state.brightness_maximum, Some(128));
+    // v0.7.12's model isn't there: never made up.
+    assert_eq!(r.state.animation, None);
+    assert_eq!(r.state.theme, None);
+    assert_eq!(r.custom_theme_colors, None);
+    // And v0.7.12 has no lights.
+    let (client, _) = s16();
+    let r = gamepadii_core::leds::read_webconfig(&client).unwrap();
+    assert_eq!(r.lights, None);
+}
+
+#[test]
+fn old_backups_without_a_firmware_line_still_load() {
+    let (client, _) = s16();
+    let bundle = commands::backup_bundle(&client, captured()).unwrap();
+    let mut v = serde_json::to_value(bundle).unwrap();
+    v.as_object_mut().unwrap().remove("firmware_line");
+    let back: commands::Bundle = serde_json::from_value(v).unwrap();
+    assert_eq!(back.firmware_line, None);
 }

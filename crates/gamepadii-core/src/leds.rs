@@ -11,6 +11,14 @@
 //!    `getCustomTheme`. v0.7.12 exposes no `AnimationOptions` there, so
 //!    the animation, brightness and colours are unknown.
 //!
+//!
+//! Upstream main replaced that model with LED profiles (issue #21): its
+//! web configurator has `getAnimationProtoOptions` (the brightness and the
+//! profiles' effects) and `getLightsDataOptions` (the light clusters),
+//! and no `getCustomTheme`. On main, route 2 and 3 are one:
+//! [`read_webconfig_main`] shows what those say, and leaves v0.7.12's
+//! animation, colours and theme `null`.
+//!
 //! Changing them is SET_LED, on the channel only (issue #19).
 //!
 //! The names are GP2040-CE v0.7.12's: [`EFFECTS`] is `AnimationEffects` in
@@ -23,7 +31,7 @@ use std::str::FromStr;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::api::{self, Endpoint, ForkFixes};
+use crate::api::{self, Endpoint, FirmwareLine, ForkFixes};
 use crate::channel::{Channel, LedStatus, SetLed, proto};
 use crate::client::Client;
 use crate::commands::{self, Route};
@@ -87,6 +95,41 @@ pub const THEMES: &[&str] = &[
 pub const THEME_BUTTONS: &[&str] = &[
     "Up", "Down", "Left", "Right", "B1", "B2", "B3", "B4", "L1", "R1", "L2", "R2", "S1", "S2",
     "L3", "R3", "A1", "A2",
+];
+
+/// Main's `AnimationNonPressedEffects` (`proto/enums.proto` at 8013b41),
+/// by value: the idle effect of an LED profile, and its case effect.
+pub const MAIN_IDLE_EFFECTS: &[&str] = &[
+    "static-color",
+    "rainbow-synced",
+    "rainbow-rotate",
+    "chase-index",
+    "chase-sequential",
+    "chase-circle-clockwise",
+    "chase-circle-anticlockwise",
+    "chase-left-to-right",
+    "chase-right-to-left",
+    "chase-top-to-bottom",
+    "chase-bottom-to-top",
+    "chase-index-pingpong",
+    "chase-sequential-pingpong",
+    "chase-circle-pingpong",
+    "chase-horizontal-pingpong",
+    "chase-vertical-pingpong",
+    "chase-random",
+    "jigglestatic",
+    "jiggletwostatics",
+    "rain",
+];
+
+/// Main's `AnimationPressedEffects`, by value: what a pressed key shows.
+pub const MAIN_PRESSED_EFFECTS: &[&str] = &[
+    "static-color",
+    "random",
+    "jigglestatic",
+    "jiggletwostatics",
+    "burst",
+    "burst-small",
 ];
 
 /// What an index names.
@@ -299,7 +342,40 @@ pub struct LedReport {
     pub state: LedState,
     /// From `getCustomTheme`, in web-config; `null` over the channel.
     pub custom_theme_colors: Option<Vec<ButtonColor>>,
+    /// Main firmware's LED profiles, from web-config; `null` on v0.7.12
+    /// and over the channel.
+    pub lights: Option<Lights>,
     pub note: Option<String>,
+}
+
+/// One of main's LED profiles (`AnimationOptions.profiles`), as saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LightsProfile {
+    /// From 0, as the firmware counts (`baseProfileIndex`).
+    pub index: u8,
+    /// `bEnabled`: in the profile cycle.
+    pub enabled: Option<bool>,
+    /// `baseNonPressedEffect` ([`MAIN_IDLE_EFFECTS`]).
+    pub idle_effect: Option<Named>,
+    /// `basePressedEffect` ([`MAIN_PRESSED_EFFECTS`]).
+    pub pressed_effect: Option<Named>,
+    /// `baseCaseEffect` ([`MAIN_IDLE_EFFECTS`]).
+    pub case_effect: Option<Named>,
+}
+
+/// What main firmware's web configurator says about its lights:
+/// `getAnimationProtoOptions` and `getLightsDataOptions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Lights {
+    /// `baseProfileIndex`: the LED profile the pad starts with.
+    pub profile: Option<u8>,
+    pub profiles: Vec<LightsProfile>,
+    /// `idletimeout`: seconds without input before the LEDs go dark (0:
+    /// never).
+    pub idle_timeout_s: Option<u64>,
+    /// How many light clusters `getLightsDataOptions` lists (buttons, case
+    /// and player LEDs); `null` when it couldn't be read.
+    pub light_count: Option<usize>,
 }
 
 /// The firmware's names for effects past [`EFFECTS`] (STRING `0x20 + n`).
@@ -321,6 +397,7 @@ pub fn over_channel(ch: &Channel) -> Result<LedReport> {
         host: ch.node(),
         state: LedState::from_status(&l, &extra),
         custom_theme_colors: None,
+        lights: None,
         note: None,
     })
 }
@@ -348,10 +425,19 @@ fn hex(v: Option<&Value>) -> Option<String> {
     Some(format!("#{:06x}", n & 0xff_ffff))
 }
 
-/// [`LedReport`] from the web configurator: `getLedOptions` and
-/// `getCustomTheme`, and on a fork build `getConfig`'s `animationOptions`
-/// (what is saved; a RAM-only change from the channel isn't there).
+/// What `leds` says on main firmware, read from web-config.
+pub const MAIN_NOTE: &str = "main firmware has LED profiles in place of v0.7.12's animation, \
+     colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's \
+     model and aren't on main yet)";
+
+/// [`LedReport`] from the web configurator, by firmware line. On v0.7.12:
+/// `getLedOptions` and `getCustomTheme`, and on a fork build `getConfig`'s
+/// `animationOptions` (what is saved; a RAM-only change from the channel
+/// isn't there). On main: [`read_webconfig_main`].
 pub fn read_webconfig(client: &Client) -> Result<LedReport> {
+    if client.line()?.line == FirmwareLine::Main {
+        return read_webconfig_main(client);
+    }
     let t = client.transport();
     let options = api::try_read_raw(t, Endpoint::GetLedOptions)?;
     let theme = api::try_read_raw(t, Endpoint::GetCustomTheme)?;
@@ -381,7 +467,76 @@ pub fn read_webconfig(client: &Client) -> Result<LedReport> {
         host: client.host(),
         state,
         custom_theme_colors: colors,
+        lights: None,
         note,
+    })
+}
+
+/// A name from `table`, by value.
+fn table_name(table: &[&str], v: &Value, key: &str) -> Option<Named> {
+    let index = byte(v, key)?;
+    Some(Named {
+        index,
+        name: table.get(usize::from(index)).map(|s| (*s).to_string()),
+    })
+}
+
+/// [`LedReport`] from main firmware's web configurator, as saved:
+/// `getLedOptions` (set up or not, the maximum brightness, which main
+/// prints as a percentage), `getAnimationProtoOptions` (the brightness
+/// level and the LED profiles) and `getLightsDataOptions` (the light
+/// clusters). Main has no animation, static colour, theme or custom theme
+/// as v0.7.12 has them: those stay `null`.
+pub fn read_webconfig_main(client: &Client) -> Result<LedReport> {
+    let t = client.transport();
+    let options = api::try_read_raw(t, Endpoint::GetLedOptions)?;
+    let animation = api::try_read_raw(t, Endpoint::GetAnimationProtoOptions)?;
+    let lights_data = api::try_read_raw(t, Endpoint::GetLightsDataOptions)?;
+    let mut state = LedState::default();
+    if let Some(o) = &options {
+        state.running = o.get("dataPin").and_then(Value::as_i64).map(|p| p >= 0);
+        // Back to 0-255 as the setter does it, in f32: int(percent * 2.55f + 0.5f).
+        state.brightness_maximum = o
+            .get("brightnessMaximum")
+            .and_then(Value::as_f64)
+            .map(|p| (p.clamp(0.0, 100.0) as f32 * 2.55f32 + 0.5) as u8);
+    }
+    let a = animation.as_ref().and_then(|a| a.get("AnimationOptions"));
+    let light_count = lights_data
+        .as_ref()
+        .and_then(|d| d.get("LightData")?.get("Lights")?.as_array().map(Vec::len));
+    let lights = a.map(|a| {
+        state.brightness = byte(a, "brightness");
+        let profiles = a
+            .get("profiles")
+            .and_then(Value::as_array)
+            .map(|ps| {
+                ps.iter()
+                    .zip(0u8..)
+                    .map(|(p, index)| LightsProfile {
+                        index,
+                        enabled: flag(p, "bEnabled"),
+                        idle_effect: table_name(MAIN_IDLE_EFFECTS, p, "baseNonPressedEffect"),
+                        pressed_effect: table_name(MAIN_PRESSED_EFFECTS, p, "basePressedEffect"),
+                        case_effect: table_name(MAIN_IDLE_EFFECTS, p, "baseCaseEffect"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Lights {
+            profile: byte(a, "baseProfileIndex"),
+            profiles,
+            idle_timeout_s: a.get("idletimeout").and_then(Value::as_u64),
+            light_count,
+        }
+    });
+    Ok(LedReport {
+        via: Route::WebConfig,
+        host: client.host(),
+        state,
+        custom_theme_colors: None,
+        lights,
+        note: Some(MAIN_NOTE.to_string()),
     })
 }
 

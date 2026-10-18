@@ -1,7 +1,9 @@
 //! A connection to a pad in web-config: finds it (or takes `--host`),
 //! checks it answers, and remembers its firmware version.
 
-use crate::api::{self, FirmwareVersion, ForkFixes};
+use std::cell::OnceCell;
+
+use crate::api::{self, FirmwareVersion, ForkFixes, Line};
 use crate::channel::Hello;
 use crate::discovery::{self, Device};
 use crate::error::{Error, Result};
@@ -22,6 +24,8 @@ pub struct Client {
     firmware: FirmwareVersion,
     /// The control channel's HELLO, when the same pad answered one.
     hello: Option<Hello>,
+    /// The firmware line, worked out on first use.
+    line: OnceCell<Line>,
 }
 
 impl Client {
@@ -42,6 +46,7 @@ impl Client {
             transport,
             firmware,
             hello: None,
+            line: OnceCell::new(),
         })
     }
 
@@ -66,6 +71,28 @@ impl Client {
     /// [`api::fork`]). `None` for stock.
     pub fn fork_fixes(&self) -> Option<ForkFixes> {
         ForkFixes::check(&self.firmware, self.hello.as_ref())
+    }
+
+    /// Which firmware line the pad is on (the rule is in [`api::line`]):
+    /// from the version when that is enough, else from one
+    /// `getGamepadOptions` read, the first time it is asked; remembered.
+    pub fn line(&self) -> Result<Line> {
+        if let Some(l) = self.line.get() {
+            return Ok(*l);
+        }
+        let l = api::line::detect(&*self.transport, &self.firmware)?;
+        Ok(*self.line.get_or_init(|| l))
+    }
+
+    /// [`Client::line`] when `getGamepadOptions` has been read already
+    /// (`options`): no second read.
+    pub fn line_with(&self, options: &serde_json::Value) -> Line {
+        *self.line.get_or_init(|| {
+            api::line::from_version(&self.firmware).unwrap_or(Line {
+                line: api::line::from_gamepad_options(options),
+                evidence: api::LineEvidence::Shape,
+            })
+        })
     }
 
     /// Where it talks to: `http://192.168.7.1`.
