@@ -42,6 +42,7 @@ use crate::discovery::{Device, Scan};
 use crate::error::{Error, Result};
 use crate::input::{self, Finder, FoundPin, InputReport, PinNames};
 use crate::leds::{self, LedChange, LedReport, LedSetReport, LedState};
+use crate::library::diff::{Apply, ApplyReport, DiffReport};
 use crate::library::{self, PullReport};
 use crate::lights::{self, LightsFile, LightsReport, LightsWrite, LightsWriteReport};
 use crate::log::LogReport;
@@ -2296,6 +2297,18 @@ pub fn profile_write(
     progress: &mut dyn Progress,
 ) -> Result<SlotWriteReport> {
     let (pad, ch) = slot_channel(env)?;
+    write_slot(env, &pad, &ch, file, write, progress)
+}
+
+/// [`profile_write`] on a channel that is open already.
+fn write_slot(
+    env: &Env,
+    pad: &Device,
+    ch: &Channel,
+    file: &SlotFile,
+    write: &SlotWrite,
+    progress: &mut dyn Progress,
+) -> Result<SlotWriteReport> {
     let st = ch.status()?;
     let firmware = Firmware {
         board: ch.string(proto::string::BOARD).ok().flatten(),
@@ -2329,7 +2342,7 @@ pub fn profile_write(
     ch.write_slot(&slot)?;
     let active = write.select || st.profile == write.slot;
     let board_id = ch.board_id().ok().flatten();
-    let pad_id = cache::identify(env.cache_dir.as_deref(), &pad);
+    let pad_id = cache::identify(env.cache_dir.as_deref(), pad);
     let key = Key::new(&firmware, PadId::with_board_id(pad_id, board_id.as_deref()));
     let dir = env.cache_dir.as_deref();
     if active
@@ -2464,6 +2477,160 @@ pub fn library_pull(env: &Env) -> Result<PullReport> {
         slots: read.iter().map(|s| s.profile).collect(),
         skipped,
         file: None,
+    })
+}
+
+/// The slot of the pad for `profile`: `slot`, or the enabled profile with
+/// the label of `profile`. It is never profile 1, the base of all other
+/// profiles. The `bool` is `true` for a slot found by its label.
+fn library_slot(
+    ch: &Channel,
+    st: &channel::Status,
+    profile: &library::Resolved,
+    slot: Option<u8>,
+) -> Result<(u8, bool)> {
+    let refuse_1 = |why: &str| {
+        Error::Usage(format!(
+            "{why}; gamepadii writes only profiles 2 to 6, because the pins that a profile \
+             leaves out follow profile 1"
+        ))
+    };
+    match slot {
+        Some(1) => Err(refuse_1("profile 1 is the base of the other profiles")),
+        Some(n) => Ok((n, false)),
+        None => {
+            let label = ProfileArg::Label(profile.label.clone());
+            match slot_number(ch, st, &label) {
+                Ok(1) => Err(refuse_1(&format!(
+                    "profile 1 of the pad has the label {:?}: give --slot N",
+                    profile.label
+                ))),
+                Ok(n) => Ok((n, true)),
+                Err(_) => Err(Error::Usage(format!(
+                    "no enabled profile of the pad has the label {:?}: give --slot N (2 to 6)",
+                    profile.label
+                ))),
+            }
+        }
+    }
+}
+
+/// The diff of `profile` against its slot, on a channel that is open
+/// already. Every refusal of `library apply` is here, before a write.
+fn library_compare(
+    ch: &Channel,
+    profile: &library::Resolved,
+    slot: Option<u8>,
+) -> Result<DiffReport> {
+    let st = ch.status()?;
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    match board.as_deref() {
+        Some(b) if b == profile.firmware_board => {}
+        Some(b) => {
+            return Err(Error::Usage(format!(
+                "profile {:?} is for board {} ({}), but the pad is {b}",
+                profile.name, profile.board, profile.firmware_board
+            )));
+        }
+        None => {
+            return Err(Error::Usage(format!(
+                "the pad does not give its board config, so gamepadii can't make sure that \
+                 profile {:?} ({}) is for it",
+                profile.name, profile.firmware_board
+            )));
+        }
+    }
+    let (n, slot_by_label) = library_slot(ch, &st, profile, slot)?;
+    let base = ch.read_slot(1)?;
+    let before = ch.read_slot(n)?;
+    let write = SlotWrite {
+        slot: n,
+        ..SlotWrite::default()
+    };
+    let planned = slots::plan(
+        &profile.slot_file(),
+        &write,
+        base.pins.len(),
+        st.profile,
+        board.as_deref(),
+    )?;
+    let (label, enabled, pins) = library::diff::compare(profile, &planned, &before, &base);
+    let changed = label.changed() || enabled.changed() || pins.iter().any(|p| !p.same_action);
+    let pad_input_mode = running(&st);
+    let note = match (profile.input_mode, pad_input_mode) {
+        (Some(want), Some(have)) if want != have => Some(format!(
+            "the profile is for {}, but the pad runs {}; gamepadii does not change the \
+             input mode here. `gamepadii mode {}` changes it (it writes flash and restarts \
+             the pad)",
+            want.label(),
+            have.label(),
+            want.key()
+        )),
+        _ => None,
+    };
+    Ok(DiffReport {
+        via: commands::Route::Control,
+        host: ch.node(),
+        name: profile.name.clone(),
+        board: profile.board.clone(),
+        firmware_board: profile.firmware_board.clone(),
+        slot: n,
+        slot_by_label,
+        active: before.active(),
+        label,
+        enabled,
+        pins,
+        changed,
+        input_mode: profile.input_mode,
+        pad_input_mode,
+        note,
+    })
+}
+
+/// `gamepadii library diff NAME`: READ_SLOT of the slot, next to what
+/// `library apply` writes there. It reads only.
+pub fn library_diff(
+    env: &Env,
+    profile: &library::Resolved,
+    slot: Option<u8>,
+) -> Result<DiffReport> {
+    let (_, ch) = slot_channel(env)?;
+    library_compare(&ch, profile, slot)
+}
+
+/// `gamepadii library apply NAME`: the slot file of `profile`, written
+/// with [`profile_write`] (check, backup, WRITE_SLOT, read back). It
+/// writes nothing when the slot has the profile already, unless
+/// `apply.save` asks for flash or `apply.select` for another active
+/// profile. It does not change the input mode: the diff has a note.
+pub fn library_apply(
+    env: &Env,
+    profile: &library::Resolved,
+    apply: &Apply,
+    progress: &mut dyn Progress,
+) -> Result<ApplyReport> {
+    let (pad, ch) = slot_channel(env)?;
+    let diff = library_compare(&ch, profile, apply.slot)?;
+    // RAM and flash can hold different slots, and the pad does not tell
+    // which one READ_SLOT gives: --save always writes.
+    if !diff.changed && !apply.save && (diff.active || !apply.select) {
+        return Ok(ApplyReport {
+            diff,
+            written: false,
+            write: None,
+        });
+    }
+    let write = SlotWrite {
+        slot: diff.slot,
+        select: apply.select,
+        save: apply.save,
+        label: None,
+    };
+    let report = write_slot(env, &pad, &ch, &profile.slot_file(), &write, progress)?;
+    Ok(ApplyReport {
+        diff,
+        written: true,
+        write: Some(report),
     })
 }
 

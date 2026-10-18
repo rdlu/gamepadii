@@ -15,7 +15,8 @@ buttons. With our firmware fork, most changes do not need a button press.
 **Status: pre-release, in development.** These commands operate now:
 `status`, `info`, `backup`, `restore`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `library list`,
-`library show`, `library pull`, `display layout`, `leds`,
+`library show`, `library pull`, `library diff`, `library apply`,
+`display layout`, `leds`,
 `leds profile show`, `leds profile write`, `leds colors`, `leds theme`,
 `input`, `input find-pin`, `log` and `setup udev`. The TUI
 (`gamepadii` on a terminal) shows the pad, and changes the input mode and
@@ -114,6 +115,13 @@ gamepadii library pull [--write [FILE]] [--force]
                                   the enabled profiles of the pad, live,
                                   as KDL (needs control channel v1.4);
                                   --write puts them into the library
+gamepadii library diff NAME [--slot N]
+                                  what library apply writes to slot N,
+                                  live (needs control channel v1.4);
+                                  exit 1 when apply writes
+gamepadii library apply NAME [--slot N] [--select] [--save] [--no-backup]
+                                  write a profile to slot 2-6, live;
+                                  RAM only unless --save; backs up first
 gamepadii leds profile show [N]   the effects and colours of a lights
                                   profile, live (needs control channel
                                   v1.5); --json gives a lights file
@@ -224,10 +232,20 @@ profile "My Game" {
   profile 1 with every button, and each other profile with "Default" as
   its base and only the buttons that it changes. `--write` puts the file
   into the library, and never replaces a file without `--force`.
-- `library show NAME --slot-file` gives the slot file of a profile, so
-  `gamepadii library show "My Game" --slot-file > game.json` and
-  `gamepadii profile write game.json --slot 6 --select` put it on the
-  pad. The buttons that the profile leaves out follow profile 1.
+- `library apply NAME --slot N --select` writes a profile to slot N of
+  the pad and selects it, live, in RAM. Use it at each game start: for
+  example, `gamepadii library apply "My Game" --slot 6 --select`.
+  `--save` also writes the flash, so do not use it at each game start.
+  gamepadii backs up the slot first. It writes nothing when the slot has
+  the profile already. It does not change the input mode, and a note
+  gives the command when the profile needs another one.
+- `library diff NAME --slot N` shows what `apply` writes: the label and
+  each button, with its action now and after. It reads only.
+- With no `--slot`, the slot is the enabled slot with the label of the
+  profile. gamepadii never writes profile 1: the buttons that a profile
+  leaves out follow it.
+- `library show NAME --slot-file` gives the slot file of a profile, for
+  `gamepadii profile write`.
 - `library list` shows each profile, and each error with its file, line
   and column: an unknown button or action, a button twice, two input
   modes, a base that is not there, or a loop of bases.

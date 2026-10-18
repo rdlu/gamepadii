@@ -17,6 +17,8 @@ use gamepadii_core::error::exit;
 use gamepadii_core::flow::{self, Awaiting, Env, Progress, Step, Timeouts, Via};
 use gamepadii_core::input::{FoundPin, NamesFrom};
 use gamepadii_core::leds::{LedChange, LedReport, LedSetReport, Level, LightsPick, Pick};
+use gamepadii_core::library::diff::Apply;
+use gamepadii_core::library::{Library, Resolved};
 use gamepadii_core::lights::{LightsFile, LightsWrite, LightsWriteReport};
 use gamepadii_core::mode::{BootMode, InputMode};
 use gamepadii_core::sim::{self, SimPad, UserAction};
@@ -2845,6 +2847,253 @@ fn library_pull_needs_the_slot_commands_and_a_board_file() {
     let e = rig.run(flow::library_pull).unwrap_err();
     assert_eq!(e.exit_code(), exit::USAGE, "{e}");
     assert!(e.to_string().contains("no board file"), "{e}");
+}
+
+fn shipped(name: &str) -> Resolved {
+    Library::from_sources(Vec::new(), true)
+        .resolve(name)
+        .unwrap()
+}
+
+fn library_apply(
+    rig: &Rig,
+    name: &str,
+    apply: &Apply,
+) -> gamepadii_core::Result<gamepadii_core::library::diff::ApplyReport> {
+    let profile = shipped(name);
+    rig.run(|env| flow::library_apply(env, &profile, apply, &mut Log::default()))
+}
+
+fn to_slot(slot: u8, select: bool, save: bool) -> Apply {
+    Apply {
+        slot: Some(slot),
+        select,
+        save,
+    }
+}
+
+#[test]
+fn library_apply_writes_a_profile_with_a_base_in_ram() {
+    let rig = slots_rig(InputMode::Xinput);
+    let r = library_apply(&rig, "My Game", &to_slot(6, true, false)).unwrap();
+    assert!(r.written && r.diff.changed);
+    let w = r.write.unwrap();
+    assert_eq!((w.profile, w.label.as_str()), (6, "My Game"));
+    assert!(w.active && !w.saved && w.verified);
+    assert_eq!(rig.channel_commands(), [0x15], "one WRITE_SLOT");
+    let fw = rig.pad.firmware();
+    let pins = &fw.slots[&6].pins;
+    // My Game: up B1, m2 L1, rs R1; the other buttons from Default.
+    assert_eq!(
+        (pins[2].action, pins[26].action, pins[19].action),
+        (5, 9, 10)
+    );
+    assert_eq!((pins[5].action, pins[14].action), (3, 78), "left, turbo");
+    assert_eq!(pins[15].action, 0, "no button: follows profile 1");
+    assert_eq!(fw.active, 6);
+    assert!(!fw.saved_slots.contains_key(&6), "flash untouched");
+    // A restart takes the RAM write away.
+    reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    let fw = rig.pad.firmware();
+    assert!(fw.slots.get(&6).is_none_or(|s| !s.enabled));
+    assert_eq!(fw.active, 2);
+}
+
+#[test]
+fn library_apply_save_survives_a_restart_and_the_backup_undoes_it() {
+    let rig = slots_rig(InputMode::Xinput);
+    let r = library_apply(&rig, "SilkSong", &to_slot(3, false, true)).unwrap();
+    let w = r.write.unwrap();
+    assert!(w.saved && !w.active);
+    assert_eq!(w.before_label, "Celeste");
+    reboot_pad(&rig, BootMode::Gamepad).unwrap();
+    let fw = rig.pad.firmware();
+    assert_eq!(fw.slots[&3].label, "SilkSong");
+    assert_eq!(fw.slots[&3].pins[6].action, 11, "k1 L2");
+    // `profile write` of the backup gives Celeste back.
+    let path = w.backup.unwrap();
+    let backup = SlotFile::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let undo = SlotWrite {
+        slot: 3,
+        save: true,
+        ..SlotWrite::default()
+    };
+    write_slot(&rig, &backup, &undo).unwrap();
+    let d = rig
+        .run(|env| flow::library_diff(env, &shipped("Celeste"), Some(3)))
+        .unwrap();
+    assert!(!d.changed, "{d:?}");
+}
+
+#[test]
+fn library_apply_with_no_change_writes_nothing() {
+    let rig = slots_rig(InputMode::Xinput);
+    // No --slot: the profile with the label SilkSong, 2.
+    let by_label = Apply::default();
+    let r = library_apply(&rig, "SilkSong", &by_label).unwrap();
+    assert!(!r.written && r.write.is_none());
+    assert_eq!((r.diff.slot, r.diff.slot_by_label), (2, true));
+    // The pins with no button store none now, and 0 after: same action.
+    assert!(
+        r.diff.pins.iter().all(|p| p.same_action),
+        "{:?}",
+        r.diff.pins
+    );
+    assert_eq!(
+        r.diff.pins.iter().map(|p| p.gpio).collect::<Vec<_>>(),
+        [15, 22, 25, 29]
+    );
+    // --select of the active profile changes nothing either.
+    let select = Apply {
+        select: true,
+        ..Apply::default()
+    };
+    assert!(!library_apply(&rig, "SilkSong", &select).unwrap().written);
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup");
+    // --select of another profile writes, and --save always writes: the
+    // flash can hold something else.
+    assert!(library_apply(&rig, "Celeste", &select).unwrap().written);
+    assert_eq!(rig.pad.firmware().active, 3);
+    let save = Apply {
+        save: true,
+        ..Apply::default()
+    };
+    assert!(library_apply(&rig, "Celeste", &save).unwrap().written);
+}
+
+#[test]
+fn library_apply_refuses_before_it_writes() {
+    let rig = slots_rig(InputMode::Xinput);
+    for (name, how, says) in [
+        ("My Game", Apply::default(), "no enabled profile of the pad"),
+        (
+            "Default",
+            Apply::default(),
+            "profile 1 of the pad has the label",
+        ),
+        (
+            "SilkSong",
+            to_slot(1, false, false),
+            "profile 1 is the base",
+        ),
+    ] {
+        let e = library_apply(&rig, name, &how).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        let profile = shipped(name);
+        let e = rig
+            .run(|env| flow::library_diff(env, &profile, how.slot))
+            .unwrap_err();
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    // A profile that is not in the library.
+    let e = Library::from_sources(Vec::new(), true)
+        .resolve("Hades")
+        .unwrap_err();
+    assert_eq!(e.exit_code(), exit::USAGE);
+    // The pad of another board, or one that does not say.
+    for board in [Some("Pico"), None] {
+        let rig = Rig::new(
+            SimPad::new(s16_dir(), InputMode::Xinput)
+                .with_channel()
+                .channel(|c| {
+                    *c = c.clone().with_slots();
+                    match board {
+                        Some(b) => {
+                            c.strings
+                                .insert(gamepadii_core::channel::proto::string::BOARD, b.into());
+                        }
+                        None => {
+                            c.strings
+                                .remove(&gamepadii_core::channel::proto::string::BOARD);
+                        }
+                    }
+                }),
+        );
+        let e = library_apply(&rig, "My Game", &to_slot(6, true, false)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::USAGE, "{e}");
+        let says = match board {
+            Some(_) => "but the pad is Pico",
+            None => "does not give its board config",
+        };
+        assert!(e.to_string().contains(says), "{e}");
+        assert!(rig.channel_commands().is_empty());
+    }
+    // No v1.4 channel: exit 5.
+    for (rig, says) in [
+        (Rig::cc(InputMode::Xinput), "v1.0"),
+        (Rig::s16(InputMode::Xinput), "control channel v1.4"),
+    ] {
+        let e = library_apply(&rig, "My Game", &to_slot(6, true, false)).unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(e.to_string().contains(says), "{e}");
+        let e = rig
+            .run(|env| flow::library_diff(env, &shipped("My Game"), Some(6)))
+            .unwrap_err();
+        assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+        assert!(rig.channel_commands().is_empty());
+    }
+    assert!(rig.channel_commands().is_empty(), "nothing sent");
+    assert!(files(&rig.backups_dir()).is_empty(), "no backup");
+}
+
+#[test]
+fn library_apply_does_not_change_the_input_mode() {
+    let rig = slots_rig(InputMode::Keyboard);
+    let r = library_apply(&rig, "My Game", &to_slot(6, true, false)).unwrap();
+    assert!(r.written);
+    assert_eq!(r.diff.input_mode, Some(InputMode::Xinput));
+    assert_eq!(r.diff.pad_input_mode, Some(InputMode::Keyboard));
+    let note = r.diff.note.unwrap();
+    assert!(note.contains("`gamepadii mode xinput`"), "{note}");
+    assert_eq!(rig.channel_commands(), [0x15], "no SET_INPUT_MODE");
+    // The pad in the mode of the profile: no note.
+    let rig = slots_rig(InputMode::Xinput);
+    let d = rig
+        .run(|env| flow::library_diff(env, &shipped("My Game"), Some(6)))
+        .unwrap();
+    assert_eq!(d.note, None);
+}
+
+#[test]
+fn library_diff_shows_what_apply_writes() {
+    let rig = slots_rig(InputMode::Xinput);
+    let d = rig
+        .run(|env| flow::library_diff(env, &shipped("SilkSong"), Some(3)))
+        .unwrap();
+    assert!(d.changed && !d.slot_by_label);
+    assert_eq!(
+        (d.label.now.as_str(), d.label.after.as_str()),
+        ("Celeste", "SilkSong")
+    );
+    let changed: Vec<(&str, &str, &str)> = d
+        .pins
+        .iter()
+        .filter(|p| !p.same_action)
+        .map(|p| {
+            (
+                p.button.as_deref().unwrap(),
+                p.now.action_name.as_deref().unwrap(),
+                p.after.action_name.as_deref().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(changed[0], ("k1", "B1", "L2"));
+    assert_eq!(changed.len(), 8);
+    assert!(rig.channel_commands().is_empty(), "reads only");
+    // apply writes exactly that: a second diff has no change.
+    let w = library_apply(&rig, "SilkSong", &to_slot(3, false, false))
+        .unwrap()
+        .write
+        .unwrap();
+    let mut gpios: Vec<u8> = d.pins.iter().map(|p| p.gpio).collect();
+    gpios.sort_unstable();
+    assert_eq!(w.changed_pins, gpios);
+    let again = rig
+        .run(|env| flow::library_diff(env, &shipped("SilkSong"), Some(3)))
+        .unwrap();
+    assert!(!again.changed && again.pins.is_empty(), "{again:?}");
 }
 
 // ---- lights profiles (control channel v1.5) ----------------------------------

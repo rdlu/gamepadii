@@ -47,6 +47,7 @@ it here in the same change.
 | custom theme | The LED colors that the user sets for each button, one color when the button is released and one color when it is pressed. |
 | D-pad | The four direction buttons: up, down, left and right. |
 | debounce | A check that a button change stays for some reads, so that a short electrical change (a bounce) does not count as a press. |
+| diff | The list of the differences between two versions of a thing. `gamepadii library diff` shows the differences between a library profile and a slot of the pad. |
 | endpoint | One address of the web-config server, for example `/api/getGamepadOptions`. |
 | firmware line | A family of firmware versions: the v0.7.12 release, or the upstream main branch. The two lines have different settings and endpoints. |
 | firmware | The software that operates on the pad. |

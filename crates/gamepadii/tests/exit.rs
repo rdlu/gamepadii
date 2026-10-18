@@ -943,6 +943,51 @@ fn library_exit_codes() {
     );
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(json(&stdout)["label"], "My Game");
+    // diff: 0 with no change, 1 when apply writes; the JSON is the report.
+    let (code, stdout, stderr) = pad("slots", &["--json", "library", "diff", "SilkSong"]);
+    assert_eq!(code, 0, "{stderr}");
+    let v = json(&stdout);
+    assert_eq!(
+        (v["schema"].as_u64(), v["slot"].as_u64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(v["changed"], false);
+    let (code, stdout, _) = pad(
+        "slots",
+        &["--json", "library", "diff", "SilkSong", "--slot", "3"],
+    );
+    assert_eq!(code, 1);
+    let v = json(&stdout);
+    assert_eq!(v["changed"], true);
+    assert_eq!(v["label"]["now"], "Celeste");
+    assert_eq!(v["pins"][0]["button"], "k1");
+    // apply: the write, or nothing when the slot has the profile.
+    let (code, stdout, stderr) = pad(
+        "slots",
+        &[
+            "--json", "library", "apply", "My Game", "--slot", "6", "--select",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let v = json(&stdout);
+    assert_eq!(v["written"], true);
+    assert_eq!(v["write"]["active"], true);
+    let (code, stdout, _) = pad("slots", &["--json", "library", "apply", "SilkSong"]);
+    assert_eq!(code, 0);
+    let v = json(&stdout);
+    assert_eq!(
+        (v["written"].as_bool(), &v["write"]),
+        (Some(false), &serde_json::Value::Null)
+    );
+    // Refusals: profile 1, an unknown profile.
+    for (channel, args, want) in [
+        ("slots", &["library", "apply", "Default"][..], 3),
+        ("slots", &["library", "apply", "Hades", "--slot", "6"], 3),
+        ("slots", &["library", "apply", "SilkSong", "--slot", "1"], 3),
+    ] {
+        let (code, _, stderr) = pad(channel, args);
+        assert_eq!(code, want, "{args:?}: {stderr}");
+    }
     // Files with errors: `list` names them, and exits 0.
     std::fs::write(library.join("broken.kdl"), "profile \"X\" {\n").unwrap();
     std::fs::write(
@@ -969,11 +1014,15 @@ fn library_exit_codes() {
     assert_eq!(json(&stdout)["error"]["kind"], "usage");
     let (code, _, _) = run(&["library", "show", "Nobody"]);
     assert_eq!(code, 3);
-    let (code, _, _) = pad("slots", &["library", "pull", "--write", "pad.txt"]);
-    assert_eq!(code, 3);
+    let (code, _, stderr) = pad("slots", &["library", "pull", "--write", "pad.txt"]);
+    assert_eq!(code, 3, "{stderr}");
     // No v1.4 channel: 5; no pad: 2.
     let (code, _, stderr) = pad("channel", &["library", "pull"]);
     assert_eq!(code, 5, "{stderr}");
+    for cmd in ["diff", "apply"] {
+        let (code, _, stderr) = pad("channel", &["library", cmd, "My Game", "--slot", "6"]);
+        assert_eq!(code, 5, "{stderr}");
+    }
     let (code, _, _) = run(&["--sysroot", "@no-pad", "library", "pull"]);
     assert_eq!(code, 2);
 }

@@ -398,6 +398,44 @@ pub enum LibraryCommand {
         #[arg(long, requires = "write")]
         force: bool,
     },
+    /// Compare a library profile with a slot of the pad, live (needs
+    /// control channel v1.4). It shows what `library apply` writes: the
+    /// label, the state, and each button that changes. It reads only. Exit
+    /// 0: no change; exit 1: `apply` writes.
+    Diff {
+        /// The name of the profile, any case.
+        #[arg(add = ArgValueCandidates::new(library_names))]
+        name: String,
+        /// The slot: 2 to 6 [default: the enabled slot with the label of
+        /// the profile].
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(2..=6))]
+        slot: Option<u8>,
+    },
+    /// Write a library profile to a slot of the pad, live, with no reboot
+    /// (needs control channel v1.4). RAM only unless --save. gamepadii
+    /// backs up the slot first, and writes nothing when the slot has the
+    /// profile already. It does not change the input mode.
+    Apply {
+        /// The name of the profile, any case.
+        #[arg(add = ArgValueCandidates::new(library_names))]
+        name: String,
+        /// The slot: 2 to 6 [default: the enabled slot with the label of
+        /// the profile]. Profile 1 is the base of the others, so gamepadii
+        /// never writes it.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(2..=6))]
+        slot: Option<u8>,
+        /// Make it the active profile now.
+        #[arg(long)]
+        select: bool,
+        /// Also save it to flash. Do not use it at each game start: each
+        /// save writes the flash, and RAM is sufficient until the pad
+        /// restarts.
+        #[arg(long)]
+        save: bool,
+        /// Don't back up the slot first.
+        #[arg(long)]
+        no_backup: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

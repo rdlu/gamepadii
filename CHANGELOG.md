@@ -273,6 +273,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--slot-file` gives the slot file for `profile write`;
   `library pull [--write [FILE]] [--force]` reads the enabled slots of the
   pad (READ_SLOT, control channel 1.4) and writes them as KDL.
+- `gamepadii library apply NAME [--slot N] [--select] [--save]
+  [--no-backup]` writes a library profile to slot 2 to 6, live, with
+  `profile write` (backup, WRITE_SLOT, read back). RAM only unless
+  `--save`. With no `--slot`, the slot is the enabled slot with the label
+  of the profile. It refuses profile 1, a profile for another board, and
+  a pad with no channel 1.4, before it writes. It writes nothing when the
+  slot has the profile already. It does not change the input mode: a note
+  gives the `gamepadii mode` command.
+- `gamepadii library diff NAME [--slot N]` shows what `library apply`
+  writes: the label, the state, and each button with its action now and
+  after. It reads only. Exit 0 with no change, 1 when `apply` writes.
 
 ### Fixed
 

@@ -356,6 +356,66 @@ fn main() -> ExitCode {
             });
             finish(format, result)
         }
+        Some(Command::Library {
+            command: LibraryCommand::Diff { name, slot },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                false,
+            );
+            let dir = library::library_dir();
+            let result = Library::load(dir.as_deref())
+                .and_then(|l| l.resolve(&name))
+                .and_then(|p| flow::library_diff(&env, &p, slot))
+                .map(|r| {
+                    // As diff(1): 1 when there is a difference.
+                    let code = if r.changed {
+                        exit::CHECK_FAILED
+                    } else {
+                        exit::OK
+                    };
+                    (output::library_diff(style, &r), code)
+                });
+            finish_with(format, result)
+        }
+        Some(Command::Library {
+            command:
+                LibraryCommand::Apply {
+                    name,
+                    slot,
+                    select,
+                    save,
+                    no_backup,
+                },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let apply = library::diff::Apply { slot, select, save };
+            let dir = library::library_dir();
+            let mut progress = reporter(format);
+            let result = Library::load(dir.as_deref())
+                .and_then(|l| l.resolve(&name))
+                .and_then(|p| flow::library_apply(&env, &p, &apply, &mut progress))
+                .map(|r| output::library_apply(style, &r));
+            drop(progress);
+            finish(format, result)
+        }
         Some(Command::Leds {
             command: None,
             trip,
@@ -1149,14 +1209,19 @@ fn xdg_open(url: &str) {
 /// JSON object (or a waybar line) on stdout so machine readers never get
 /// nothing.
 fn finish(format: Format, result: gamepadii_core::Result<String>) -> ExitCode {
+    finish_with(format, result.map(|text| (text, exit::OK)))
+}
+
+/// [`finish`] with the exit code of a result that is not an error.
+fn finish_with(format: Format, result: gamepadii_core::Result<(String, u8)>) -> ExitCode {
     match result {
-        Ok(text) => {
+        Ok((text, code)) => {
             let mut out = std::io::stdout().lock();
             let _ = out.write_all(text.as_bytes());
             if format != Format::Human {
                 let _ = out.write_all(b"\n");
             }
-            ExitCode::from(exit::OK)
+            ExitCode::from(code)
         }
         Err(err) => {
             eprintln!("gamepadii: {err}");

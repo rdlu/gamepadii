@@ -167,6 +167,16 @@ fn every_command(fake: &Fake, dir: &Path) {
         };
         let _ = flow::profile_write(env, &file, &write, &mut Silent);
         let _ = flow::library_pull(env);
+        let profile = gamepadii_core::library::Library::from_sources(Vec::new(), true)
+            .resolve("My Game")
+            .unwrap();
+        let _ = flow::library_diff(env, &profile, Some(6));
+        let apply = gamepadii_core::library::diff::Apply {
+            slot: Some(6),
+            select: true,
+            save: true,
+        };
+        let _ = flow::library_apply(env, &profile, &apply, &mut Silent);
         let _ = flow::lights_show(env, None);
         let file = gamepadii_core::lights::LightsFile::default();
         let write = gamepadii_core::lights::LightsWrite {
