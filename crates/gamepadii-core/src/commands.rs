@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::api::{self, Endpoint, Evidence, FirmwareVersion, ForkFixes, MemoryReport};
+use crate::api::{self, Endpoint, Evidence, FirmwareVersion, ForkFixes, Line, MemoryReport};
 use crate::cache::{self, DeviceCache};
 use crate::channel::{self, Caps, Channel, OpenControl, Probe, proto};
 use crate::client::Client;
@@ -371,6 +371,8 @@ pub struct Info {
     /// Where it was read from: `http://192.168.7.1`.
     pub host: String,
     pub firmware: Firmware,
+    /// The firmware line (`v0.7.12` or `main`) and why gamepadii thinks so.
+    pub firmware_line: Line,
     /// `null` when the firmware has no `getMemoryReport`.
     pub memory: Option<Memory>,
     /// The persisted input mode: what the pad boots into in gamepad mode.
@@ -422,6 +424,7 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
         .map(|v| typed::<MemoryReport>(Endpoint::GetMemoryReport, &v))
         .transpose()?;
     let raw_options = api::read_raw(t, Endpoint::GetGamepadOptions)?;
+    let firmware_line = client.line_with(&raw_options);
     let raw_base = api::read_raw(t, Endpoint::GetPinMappings)?;
     let raw_profiles = api::read_raw(t, Endpoint::GetProfileOptions)?;
     let options: api::GamepadOptions = typed(Endpoint::GetGamepadOptions, &raw_options)?;
@@ -474,6 +477,7 @@ pub fn info_with_cache(client: &Client, now: SystemTime) -> Result<(Info, Device
         display_layout,
         hints,
         firmware,
+        firmware_line,
     };
     let cache = DeviceCache::new(
         info.firmware.clone(),
@@ -497,6 +501,10 @@ pub struct Bundle {
     /// RFC 3339, UTC.
     pub captured_at: String,
     pub firmware: Firmware,
+    /// The firmware line, whose allowlist `endpoints` holds. Older backups
+    /// (all v0.7.12) don't have the key.
+    #[serde(default)]
+    pub firmware_line: Option<Line>,
     /// Endpoint name → its JSON, verbatim; `null` when the firmware doesn't
     /// have that endpoint (a 404).
     pub endpoints: BTreeMap<String, Value>,
@@ -526,15 +534,17 @@ pub fn full_config(client: &Client, cap: &ForkFixes) -> Result<Value> {
     api::fork::get_config(client.transport(), cap)
 }
 
-/// Reads every endpoint in [`Endpoint::ALL`], one at a time, stopping at the
-/// first transport error (a pad that stops answering should be left alone,
-/// not asked twenty more times). Then, on a fork build with the fixes
-/// ([`Client::fork_fixes`]), `getConfig`, last: it is the biggest reply,
-/// and a failure there is recorded in the bundle rather than losing the
-/// rest.
+/// Reads every endpoint in the pad's line's allowlist
+/// ([`Client::line`], [`api::FirmwareLine::endpoints`]), one at a time,
+/// stopping at the first transport error (a pad that stops answering should
+/// be left alone, not asked twenty more times). Then, on a fork build with
+/// the fixes ([`Client::fork_fixes`]), `getConfig`, last: it is the biggest
+/// reply, and a failure there is recorded in the bundle rather than losing
+/// the rest.
 pub fn backup_bundle(client: &Client, now: SystemTime) -> Result<Bundle> {
+    let line = client.line()?;
     let mut endpoints = BTreeMap::new();
-    for &ep in Endpoint::ALL {
+    for &ep in line.line.endpoints() {
         let value = api::try_read_raw(client.transport(), ep)?.unwrap_or(Value::Null);
         endpoints.insert(ep.name().to_string(), value);
     }
@@ -554,6 +564,7 @@ pub fn backup_bundle(client: &Client, now: SystemTime) -> Result<Bundle> {
         gamepadii_version: env!("CARGO_PKG_VERSION").to_string(),
         captured_at: Utc::from_system(now).rfc3339(),
         firmware: client.firmware().into(),
+        firmware_line: Some(line),
         endpoints,
         full_config,
     })
@@ -565,6 +576,8 @@ pub struct BackupReport {
     pub path: PathBuf,
     pub captured_at: String,
     pub firmware: Firmware,
+    /// The firmware line, whose allowlist was read.
+    pub firmware_line: Option<Line>,
     /// The endpoints saved.
     pub endpoints: Vec<String>,
     /// The endpoints this firmware doesn't have (saved as `null`).
@@ -626,6 +639,7 @@ fn backup_to(
         path,
         captured_at: bundle.captured_at.clone(),
         firmware: bundle.firmware.clone(),
+        firmware_line: bundle.firmware_line,
         endpoints: names(endpoints),
         unavailable: names(unavailable),
         full_config: bundle

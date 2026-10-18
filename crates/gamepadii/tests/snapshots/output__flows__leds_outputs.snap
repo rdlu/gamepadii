@@ -72,6 +72,7 @@ now           XInput (045e:028e, confirmed), as before
   "custom_theme": true,
   "unsaved": false,
   "custom_theme_colors": null,
+  "lights": null,
   "note": null,
   "trip": null
 }
@@ -181,6 +182,7 @@ now           XInput (045e:028e, confirmed), as before
       "pressed": "#bebaba"
     }
   ],
+  "lights": null,
   "note": "the running animation, brightness and colours are unknown on stock firmware: its web configurator doesn't expose them (the gamepadii firmware's control channel does)",
   "trip": null
 }

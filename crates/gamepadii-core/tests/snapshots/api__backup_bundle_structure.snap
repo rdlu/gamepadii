@@ -15,6 +15,10 @@ expression: v
     "build_type": "Release",
     "file_name": "GP2040-CE_0.7.12_Haute42COSMOX"
   },
+  "firmware_line": {
+    "line": "v0.7.12",
+    "evidence": "known_build"
+  },
   "endpoints": {
     "getAddonsOptions": "object, 143 keys",
     "getButtonLayoutDefs": "object, 2 keys",

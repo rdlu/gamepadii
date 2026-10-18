@@ -1,0 +1,135 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "[output::info(human, &info, None), output::backup(human, &backup, None),\noutput::leds(human, &leds, None), output::leds(json, &leds, None),].join(\"\\n\")"
+---
+Haute42 COSMOX (GP2040-CE v0.7.12-119-g8013b41)
+firmware      v0.7.12-119-g8013b41 (build 8013b41, Release, rp2040)
+line          main (a known build)
+board         Haute42COSMOX
+flash         1.2 MiB of 2.0 MiB used (2.0 MiB chip)
+heap          19.3 KiB of 118.8 KiB used, 145.2 KiB static
+input mode    XInput
+profiles      1 Default
+              2 SilkSong (saved)
+              3 Celeste
+              4 DKC
+              5 TGX
+boot buttons  B1 Nintendo Switch
+              B2 XInput
+              B3 PS3
+              B4 PS5
+              L1 -
+              L2 -
+              R1 Xbox One
+              R2 Keyboard
+oled layout   Board Defined (27/31): Stickless, 12 buttons
+web-config    mock:s16-main
+hint          the OLED draws the generic 12-button layout (27/31), but the pins map 16 buttons; on an S16 or G16: gamepadii display layout s16
+
+Backed up Haute42 COSMOX (GP2040-CE v0.7.12-119-g8013b41)
+file          /backups/s16.json
+endpoints     23 of 23
+line          main (a known build)
+size          78.3 KiB
+captured      2026-10-17T16:57:03Z
+
+LEDs
+brightness    5 (maximum 128/255)
+led profiles  *0 idle rainbow-synced (1), pressed static-color (0), case rainbow-synced (1)
+               1 idle static-color (0), pressed static-color (0), case static-color (0)
+               2 idle rainbow-rotate (2), pressed static-color (0), case rainbow-rotate (2)
+               3 idle chase-horizontal-pingpong (14), pressed burst (4), case chase-index (3)
+lights        16
+idle timeout  never
+via           web-config (mock:s16-main)
+note          main firmware has LED profiles in place of v0.7.12's animation, colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's model and aren't on main yet)
+
+{
+  "schema": 1,
+  "via": "web_config",
+  "host": "mock:s16-main",
+  "running": true,
+  "animation": null,
+  "brightness": 5,
+  "brightness_steps": null,
+  "brightness_maximum": 128,
+  "static_color": null,
+  "button_color": null,
+  "theme": null,
+  "custom_theme": null,
+  "unsaved": null,
+  "custom_theme_colors": null,
+  "lights": {
+    "profile": 0,
+    "profiles": [
+      {
+        "index": 0,
+        "enabled": true,
+        "idle_effect": {
+          "index": 1,
+          "name": "rainbow-synced"
+        },
+        "pressed_effect": {
+          "index": 0,
+          "name": "static-color"
+        },
+        "case_effect": {
+          "index": 1,
+          "name": "rainbow-synced"
+        }
+      },
+      {
+        "index": 1,
+        "enabled": true,
+        "idle_effect": {
+          "index": 0,
+          "name": "static-color"
+        },
+        "pressed_effect": {
+          "index": 0,
+          "name": "static-color"
+        },
+        "case_effect": {
+          "index": 0,
+          "name": "static-color"
+        }
+      },
+      {
+        "index": 2,
+        "enabled": true,
+        "idle_effect": {
+          "index": 2,
+          "name": "rainbow-rotate"
+        },
+        "pressed_effect": {
+          "index": 0,
+          "name": "static-color"
+        },
+        "case_effect": {
+          "index": 2,
+          "name": "rainbow-rotate"
+        }
+      },
+      {
+        "index": 3,
+        "enabled": true,
+        "idle_effect": {
+          "index": 14,
+          "name": "chase-horizontal-pingpong"
+        },
+        "pressed_effect": {
+          "index": 4,
+          "name": "burst"
+        },
+        "case_effect": {
+          "index": 3,
+          "name": "chase-index"
+        }
+      }
+    ],
+    "idle_timeout_s": 0,
+    "light_count": 16
+  },
+  "note": "main firmware has LED profiles in place of v0.7.12's animation, colours and themes; shown as saved (the control channel's LED commands speak v0.7.12's model and aren't on main yet)",
+  "trip": null
+}

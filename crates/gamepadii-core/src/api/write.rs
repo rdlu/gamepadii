@@ -34,6 +34,18 @@
 //! - It saves like `setGamepadOptions` (a `GPStorageSaveEvent`) and echoes
 //!   the body. The OLED picks the layout up when the pad next starts.
 //!
+//! On upstream main (8013b41) both setters work the same way and read more
+//! keys ([`super::line`] says which line a pad is on, and the setters take
+//! it):
+//!
+//! - `setGamepadOptions` also reads the 15 `switch2Pro*` numbers
+//!   ([`MAIN_SETTER_KEYS`]: the Switch 2 Pro identity, colour presets and
+//!   colours), through the same `readDoc`, so a body without them zeroes
+//!   them. The getter writes them too; nothing else changed (the USB ids
+//!   are still `%04X` strings, the strings still `strncpy`'d).
+//! - `setDisplayOptions` also reads `displayContrast`
+//!   ([`MAIN_DISPLAY_SETTER_KEYS`]), a number the getter writes.
+//!
 //! The server ignores the HTTP method, so the setters are only ever POSTed
 //! (a GET would replay the previous POST body).
 
@@ -41,6 +53,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+use super::line::FirmwareLine;
 use super::{DisplayOptions, Endpoint, GamepadOptions, read_raw};
 use crate::error::{Error, Result};
 use crate::transport::{ApiPath, Method, Transport};
@@ -103,6 +116,35 @@ pub const SETTER_KEYS: &[&str] = &[
     "forcedSetupMode",
 ];
 
+/// What main's `setGamepadOptions` reads on top of [`SETTER_KEYS`], in its
+/// order: all numbers (`uint32` colours and two enums).
+pub const MAIN_SETTER_KEYS: &[&str] = &[
+    "switch2ProIdentity",
+    "switch2ProColorPreset",
+    "switch2ProBodyColor",
+    "switch2ProButtonsColor",
+    "switch2ProHighlightColor",
+    "switch2ProGripColor",
+    "switch2ProJoyCon2ColorPreset",
+    "switch2ProJoyCon2LeftBodyColor",
+    "switch2ProJoyCon2LeftButtonsColor",
+    "switch2ProJoyCon2LeftAccentColor",
+    "switch2ProJoyCon2LeftStickColor",
+    "switch2ProJoyCon2RightBodyColor",
+    "switch2ProJoyCon2RightButtonsColor",
+    "switch2ProJoyCon2RightAccentColor",
+    "switch2ProJoyCon2RightStickColor",
+];
+
+/// Every top-level key `setGamepadOptions` reads on `line`.
+pub fn setter_keys(line: FirmwareLine) -> Vec<&'static str> {
+    let extra = match line {
+        FirmwareLine::V0712 => &[][..],
+        FirmwareLine::Main => MAIN_SETTER_KEYS,
+    };
+    SETTER_KEYS.iter().chain(extra).copied().collect()
+}
+
 /// The keys under each `hotkeyNN`.
 pub const HOTKEY_KEYS: &[&str] = &["auxMask", "buttonsMask", "action"];
 
@@ -141,6 +183,19 @@ pub const DISPLAY_SETTER_KEYS: &[&str] = &[
     "inputHistoryCol",
     "inputHistoryRow",
 ];
+
+/// What main's `setDisplayOptions` reads on top of
+/// [`DISPLAY_SETTER_KEYS`]: the OLED contrast (a `uint32`).
+pub const MAIN_DISPLAY_SETTER_KEYS: &[&str] = &["displayContrast"];
+
+/// Every top-level number `setDisplayOptions` reads on `line`.
+pub fn display_setter_keys(line: FirmwareLine) -> Vec<&'static str> {
+    let extra = match line {
+        FirmwareLine::V0712 => &[][..],
+        FirmwareLine::Main => MAIN_DISPLAY_SETTER_KEYS,
+    };
+    DISPLAY_SETTER_KEYS.iter().chain(extra).copied().collect()
+}
 
 /// The display fields that are `bool` in the protobuf (the getter prints
 /// them as 1/0).
@@ -199,7 +254,7 @@ struct Setter {
     set: ApiPath,
     /// `setGamepadOptions`, for messages.
     name: &'static str,
-    body: fn(&Object) -> Result<Object>,
+    body: fn(&Object, FirmwareLine) -> Result<Object>,
 }
 
 const GAMEPAD: Setter = Setter {
@@ -224,16 +279,23 @@ fn refusal(setter: &str, why: String) -> Error {
 
 /// The body for the setter, from the getter's object: everything it
 /// returned, with the USB ids turned into integers. Fails (before anything
-/// is sent) when a key the setter reads is missing or has the wrong type.
-pub fn setter_body(options: &Map<String, Value>) -> Result<Map<String, Value>> {
+/// is sent) when a key the setter reads on `line` is missing or has the
+/// wrong type.
+pub fn setter_body(options: &Map<String, Value>, line: FirmwareLine) -> Result<Map<String, Value>> {
     let refuse = |why: String| refusal(GAMEPAD.name, why);
     let mut body = options.clone();
-    for key in SETTER_KEYS {
+    for key in setter_keys(line) {
+        let key = &key;
         let Some(v) = body.get(*key) else {
-            return Err(refuse(format!("the pad's options have no {key:?}")));
+            return Err(refuse(format!(
+                "the pad's options have no {key:?} ({line} firmware reads it)"
+            )));
         };
         if STRING_KEYS.contains(key) && !v.is_string() {
             return Err(refuse(format!("{key:?} is not a string")));
+        }
+        if MAIN_SETTER_KEYS.contains(key) && !numeric(v) {
+            return Err(refuse(format!("{key:?} is {v}, not a number")));
         }
         if key.starts_with("hotkey") {
             for sub in HOTKEY_KEYS {
@@ -264,12 +326,20 @@ fn numeric(v: &Value) -> bool {
 }
 
 /// The body for `setDisplayOptions`: the getter's object as it is, once
-/// every key the setter reads is there and numeric (nested ones included).
-pub fn display_setter_body(options: &Map<String, Value>) -> Result<Map<String, Value>> {
+/// every key the setter reads on `line` is there and numeric (nested ones
+/// included).
+pub fn display_setter_body(
+    options: &Map<String, Value>,
+    line: FirmwareLine,
+) -> Result<Map<String, Value>> {
     let refuse = |why: String| refusal(DISPLAY.name, why);
-    for key in DISPLAY_SETTER_KEYS {
-        match options.get(*key) {
-            None => return Err(refuse(format!("the pad's display options have no {key:?}"))),
+    for key in display_setter_keys(line) {
+        match options.get(key) {
+            None => {
+                return Err(refuse(format!(
+                    "the pad's display options have no {key:?} ({line} firmware reads it)"
+                )));
+            }
             Some(v) if !numeric(v) => return Err(refuse(format!("{key:?} is {v}, not a number"))),
             Some(_) => {}
         }
@@ -352,6 +422,7 @@ fn options_object(t: &dyn Transport, ep: Endpoint) -> Result<Map<String, Value>>
 fn read_modify_write<T: Serialize + DeserializeOwned>(
     t: &dyn Transport,
     s: &Setter,
+    line: FirmwareLine,
     edit: impl FnOnce(&mut T),
 ) -> Result<OptionsWrite> {
     let before = options_object(t, s.get)?;
@@ -366,7 +437,7 @@ fn read_modify_write<T: Serialize + DeserializeOwned>(
             posted: false,
         });
     }
-    let body = serde_json::to_vec(&(s.body)(&wanted)?).expect("plain data serialises");
+    let body = serde_json::to_vec(&(s.body)(&wanted, line)?).expect("plain data serialises");
     if body.len() > MAX_POST_BODY {
         return Err(Error::Protocol(format!(
             "{}: the body is {} bytes, over the firmware's {MAX_POST_BODY}",
@@ -403,19 +474,23 @@ fn read_modify_write<T: Serialize + DeserializeOwned>(
 /// Read-modify-write of `setGamepadOptions`: GET the whole object, let
 /// `edit` change the typed fields, POST the whole object back (see
 /// [`setter_body`]), then GET it again and check that exactly the edited
-/// fields changed. Nothing is posted when `edit` changes nothing.
+/// fields changed. Nothing is posted when `edit` changes nothing. `line`
+/// (from [`crate::client::Client::line`]) decides which keys the body must
+/// carry.
 pub fn set_gamepad_options(
     t: &dyn Transport,
+    line: FirmwareLine,
     edit: impl FnOnce(&mut GamepadOptions),
 ) -> Result<OptionsWrite> {
-    read_modify_write(t, &GAMEPAD, edit)
+    read_modify_write(t, &GAMEPAD, line, edit)
 }
 
 /// Read-modify-write of `setDisplayOptions`, the same way (the body:
 /// [`display_setter_body`]).
 pub fn set_display_options(
     t: &dyn Transport,
+    line: FirmwareLine,
     edit: impl FnOnce(&mut DisplayOptions),
 ) -> Result<OptionsWrite> {
-    read_modify_write(t, &DISPLAY, edit)
+    read_modify_write(t, &DISPLAY, line, edit)
 }

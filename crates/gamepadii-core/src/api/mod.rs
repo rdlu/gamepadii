@@ -1,15 +1,25 @@
 //! The web-config API, through an allowlist. [`Endpoint`] lists every
-//! endpoint verified safe to read on the S16 (GP2040-CE v0.7.12); reads take
-//! an `Endpoint`, so nothing else can be read. In particular these are not
-//! in it, and cannot be named:
+//! endpoint verified safe to read on a firmware line (GP2040-CE v0.7.12,
+//! on the S16, and upstream main, from its source); reads take an
+//! `Endpoint`, so nothing else can be read. Which ones a pad has depends on
+//! its line ([`line::FirmwareLine::endpoints`]; [`line`] tells the lines
+//! apart). In particular these are not in it on any line, and cannot be
+//! named:
 //!
 //! - `getConfig`: on stock v0.7.12 it runs the web server out of heap and
 //!   hangs the S16's network stack until it is replugged.
 //! - `getI2CPeripheralMap`: a live I2C bus scan, which hangs stock the same
 //!   way.
 //! - `resetSettings`: a destructive GET that wipes the configuration.
-//! - `getHeldPins`: blocks until a button is pressed (it will come later,
-//!   behind its own function, for the button test).
+//! - `getHeldPins`: blocks until a button is pressed (up to 5 s on main,
+//!   which also reconfigures the unused GPIOs; it will come later, behind
+//!   its own function, for the button test).
+//! - main's `getHETriggerVoltage`, `getJoystickCenter` and
+//!   `getJoystickCenter2`: they drive the ADC (and the mux select pins),
+//!   and the first reads the previous POST body.
+//! - main's `getLightsDataPresets` (a 32 KB document) and
+//!   `getLightsPresets/<n>`: the board's built-in light layouts, not
+//!   settings.
 //! - every `set*`: the server ignores the method, so a GET would replay the
 //!   previous POST body. The writes, [`set_gamepad_options`] and
 //!   [`set_display_options`], live in `write` and are only ever POSTed.
@@ -28,6 +38,7 @@
 //! The only other request is [`reboot`].
 
 pub mod fork;
+pub mod line;
 pub mod model;
 pub mod write;
 
@@ -36,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use fork::{Evidence, ForkFixes};
+pub use line::{FirmwareLine, Line, LineEvidence};
 pub use model::{
     DisplayOptions, FirmwareVersion, GamepadOptions, KeyMappings, MemoryReport, PinMapping,
     PinMappings, ProfileOptions,
@@ -55,7 +67,8 @@ macro_rules! endpoints {
         }
 
         impl Endpoint {
-            /// The whole allowlist, in alphabetical order.
+            /// Every line's allowlist together, in alphabetical order
+            /// (a pad has [`line::FirmwareLine::endpoints`]).
             pub const ALL: &[Endpoint] = &[$(Endpoint::$variant,)*];
 
             /// The firmware's name: `getGamepadOptions`.
@@ -76,6 +89,9 @@ macro_rules! endpoints {
 
 endpoints! {
     GetAddonsOptions => "getAddonsOptions",
+    GetAnimationProtoOptions => "getAnimationProtoOptions",
+    GetBoardDefinition => "getBoardDefinition",
+    GetBootModeOptions => "getBootModeOptions",
     GetButtonLayoutDefs => "getButtonLayoutDefs",
     GetButtonLayouts => "getButtonLayouts",
     GetCustomTheme => "getCustomTheme",
@@ -84,9 +100,11 @@ endpoints! {
     GetFirmwareVersion => "getFirmwareVersion",
     GetGamepadOptions => "getGamepadOptions",
     GetHETriggerCalibration => "getHETriggerCalibration",
+    GetHETriggerCalibrations => "getHETriggerCalibrations",
     GetHETriggerOptions => "getHETriggerOptions",
     GetKeyMappings => "getKeyMappings",
     GetLedOptions => "getLedOptions",
+    GetLightsDataOptions => "getLightsDataOptions",
     GetMacroAddonOptions => "getMacroAddonOptions",
     GetMemoryReport => "getMemoryReport",
     GetPeripheralOptions => "getPeripheralOptions",

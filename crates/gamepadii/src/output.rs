@@ -9,7 +9,7 @@
 use std::io::IsTerminal;
 
 use gamepadii_core::Error;
-use gamepadii_core::api::{Evidence, RebootAck};
+use gamepadii_core::api::{Evidence, Line, LineEvidence, RebootAck};
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
 };
@@ -19,7 +19,7 @@ use gamepadii_core::flow::{
     ModeReport, ModeStatus, ProfileReport, RebootReport, Route, Seen, Trip, Via, WebconfigReport,
     WebconfigVia,
 };
-use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Named};
+use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
 use gamepadii_core::udev;
 use serde::Serialize;
@@ -385,6 +385,16 @@ fn trip_rows(t: &Trip) -> Vec<(&'static str, String)> {
     rw
 }
 
+/// `main (a known build)`.
+fn line_text(l: &Line) -> String {
+    let why = match l.evidence {
+        LineEvidence::KnownBuild => "a known build",
+        LineEvidence::ReleaseTag => "the release tag",
+        LineEvidence::Shape => "from what getGamepadOptions has",
+    };
+    format!("{} ({why})", l.line)
+}
+
 pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
     if style.format != Format::Human {
         return json(&WithTrip { data: i, trip });
@@ -408,6 +418,7 @@ pub fn info(style: Style, i: &Info, trip: Option<&Trip>) -> String {
     }
     let mut r: Vec<(&str, String)> = vec![
         ("firmware", firmware),
+        ("line", line_text(&i.firmware_line)),
         ("board", f.board.clone().unwrap_or_else(|| "-".into())),
     ];
     if let Some(m) = &i.memory {
@@ -607,6 +618,9 @@ pub fn backup(style: Style, b: &BackupReport, trip: Option<&Trip>) -> String {
         ("file", b.path.display().to_string()),
         ("endpoints", format!("{} of {total}", b.endpoints.len())),
     ];
+    if let Some(l) = &b.firmware_line {
+        r.push(("line", line_text(l)));
+    }
     if !b.unavailable.is_empty() {
         r.push(("not on this fw", b.unavailable.join("\n")));
     }
@@ -1022,6 +1036,50 @@ fn theme_colors(c: &[ButtonColor]) -> String {
         .join("\n")
 }
 
+/// Main firmware's LED profiles: one line each, the start-up one marked.
+fn lights_rows(l: &Lights) -> Vec<(&'static str, String)> {
+    let name = |n: &Option<Named>| n.as_ref().map_or_else(|| "-".into(), Named::display);
+    let profiles = l
+        .profiles
+        .iter()
+        .map(|p| {
+            let mark = if l.profile == Some(p.index) { "*" } else { " " };
+            let off = if p.enabled == Some(false) {
+                ", off"
+            } else {
+                ""
+            };
+            format!(
+                "{mark}{} idle {}, pressed {}, case {}{off}",
+                p.index,
+                name(&p.idle_effect),
+                name(&p.pressed_effect),
+                name(&p.case_effect)
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut rw = vec![(
+        "led profiles",
+        if profiles.is_empty() {
+            "-".into()
+        } else {
+            profiles.join("\n")
+        },
+    )];
+    if let Some(n) = l.light_count {
+        rw.push(("lights", n.to_string()));
+    }
+    if let Some(s) = l.idle_timeout_s {
+        let v = if s == 0 {
+            "never".into()
+        } else {
+            format!("{s} s")
+        };
+        rw.push(("idle timeout", v));
+    }
+    rw
+}
+
 pub fn leds(style: Style, r: &LedReport, trip: Option<&Trip>) -> String {
     if style.format != Format::Human {
         return json(&WithTrip { data: r, trip });
@@ -1032,8 +1090,15 @@ pub fn leds(style: Style, r: &LedReport, trip: Option<&Trip>) -> String {
     };
     let mut out = format!("{}\n", style.bold(head));
     let mut rw = led_rows(&r.state, r.via);
+    if r.lights.is_some() {
+        // Main firmware: no animation, colours or theme of the v0.7.12 kind.
+        rw.retain(|(k, _)| *k == "brightness");
+    }
     if let Some(c) = &r.custom_theme_colors {
         rw.push(("colours", theme_colors(c)));
+    }
+    if let Some(l) = &r.lights {
+        rw.extend(lights_rows(l));
     }
     if trip.is_none() {
         rw.push(("via", via_text(r.via, &r.host)));

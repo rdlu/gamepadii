@@ -980,7 +980,8 @@ fn via_webconfig(
             None => None,
         };
         progress.step(Step::Writing(target));
-        let w = api::set_gamepad_options(client.transport(), |o| o.input_mode = Some(proto))?;
+        let line = client.line()?.line;
+        let w = api::set_gamepad_options(client.transport(), line, |o| o.input_mode = Some(proto))?;
         (Some(w), backup)
     };
     progress.step(Step::Rebooting(BootMode::Gamepad));

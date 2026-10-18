@@ -121,6 +121,7 @@ fn set_gamepad_options_round_trip() {
     let backup = commands::backup(&client, None, std::time::SystemTime::now()).expect("backup");
     eprintln!("backed up to {}", backup.path.display());
     let t = client.transport();
+    let line = client.line().expect("firmware line").line;
     let before = api::gamepad_options(t).unwrap();
     let delay = before
         .extra
@@ -128,7 +129,7 @@ fn set_gamepad_options_round_trip() {
         .and_then(serde_json::Value::as_i64)
         .expect("debounceDelay");
     let set = |v: i64| {
-        api::set_gamepad_options(t, |o| {
+        api::set_gamepad_options(t, line, |o| {
             o.extra.insert("debounceDelay".into(), v.into());
         })
     };
@@ -158,6 +159,7 @@ fn set_display_options_round_trip() {
     let backup = commands::backup(&client, None, std::time::SystemTime::now()).expect("backup");
     eprintln!("backed up to {}", backup.path.display());
     let t = client.transport();
+    let line = client.line().expect("firmware line").line;
     let before = api::display_options(t).unwrap();
     let splash = before
         .extra
@@ -165,7 +167,7 @@ fn set_display_options_round_trip() {
         .and_then(serde_json::Value::as_i64)
         .expect("splashDuration");
     let set = |v: i64| {
-        api::set_display_options(t, |o| {
+        api::set_display_options(t, line, |o| {
             o.extra.insert("splashDuration".into(), v.into());
         })
     };

@@ -4,6 +4,7 @@ expression: "info(Format::Human)"
 ---
 Haute42 COSMOX (GP2040-CE v0.7.12)
 firmware      v0.7.12 (build 0014e4a, Release, rp2040)
+line          v0.7.12 (a known build)
 board         Haute42COSMOX
 flash         1.2 MiB of 2.0 MiB used (2.0 MiB chip)
 heap          19.3 KiB of 118.8 KiB used, 145.2 KiB static

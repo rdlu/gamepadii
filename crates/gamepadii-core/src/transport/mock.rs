@@ -12,12 +12,21 @@
 //! the `bool` fields come back as 1/0. The result is what later GETs
 //! return. Every request is logged so tests can check what was asked for.
 //!
+//! The setters keep exactly the getter's keys, so the same simulation
+//! serves both firmware lines: main's getter has the `switch2Pro*` keys and
+//! `displayContrast`, and a body without them zeroes them, as main's
+//! `readDoc` does (`tests/fixtures/api/s16-main/`).
+//!
 //! `getConfig` and `getI2CPeripheralMap` time out, as they hang the real
-//! pad, while the firmware version is a bare release tag (stock); on any
-//! other build they are served from the fixture like the rest.
+//! pad, while the firmware is stock: a bare release tag, or upstream main
+//! as we know it (`api::line::STOCK_MAIN_BUILDS`); on any other build they
+//! are served from the fixture like the rest. An endpoint the fixture
+//! doesn't have is a 404 (the real firmware sends no reply at all).
 //!
 //! A fixture directory can be an overlay: a `BASE` file in it names (relative
-//! to it) the directory endpoints it doesn't have come from.
+//! to it) the directory endpoints it doesn't have come from, and a `REMOVED`
+//! file the endpoints (one name a line) its firmware lacks, which the base
+//! has: those are a 404.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -120,14 +129,17 @@ impl Mock {
         read_fixture(&self.dir, &format!("{name}.json"), 4)
     }
 
-    /// Whether the simulated firmware is a stock release: its version is a
-    /// bare tag, where the fork's are `git describe`d (`v0.7.12-6-gf507f0b`).
+    /// Whether the simulated firmware is stock: a release (its version is a
+    /// bare tag, where the fork's are `git describe`d, `v0.7.12-6-gf507f0b`)
+    /// or upstream main as we know it (`v0.7.12-119-g8013b41`).
     fn stock(&self) -> bool {
-        let version = self
+        let fw: crate::api::FirmwareVersion = self
             .current("getFirmwareVersion")
-            .and_then(|f| f.get("version")?.as_str().map(str::to_string))
+            .and_then(|f| serde_json::from_value(f).ok())
             .unwrap_or_default();
-        crate::api::fork::described_commit(&version).is_none()
+        let version = fw.version.as_deref().unwrap_or_default();
+        crate::api::fork::described_commit(version).is_none()
+            || crate::api::line::is_stock_main(&fw)
     }
 
     /// Replaces what `GET /api/<name>` returns, as a write on the pad
@@ -173,7 +185,14 @@ impl Mock {
 
 /// `file` in `dir`, else in the directory its `BASE` names, `depth` overlays
 /// deep at most.
+/// An overlay's `REMOVED` file names (one per line) endpoints its firmware
+/// doesn't have, which its `BASE` does.
 fn read_fixture(dir: &std::path::Path, file: &str, depth: usize) -> std::io::Result<Vec<u8>> {
+    let stem = file.strip_suffix(".json").unwrap_or(file);
+    let removed = fs::read_to_string(dir.join("REMOVED")).unwrap_or_default();
+    if removed.lines().any(|l| l.trim() == stem) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
     match fs::read(dir.join(file)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && depth > 0 => {
             match fs::read_to_string(dir.join("BASE")) {
