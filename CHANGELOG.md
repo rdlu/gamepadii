@@ -146,6 +146,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exits 3.
 - Control channel v1.1 on the host: LED_STATUS (`0x04`), SET_LED
   (`0x13`), capability bit 8, protocol minor 1; the simulator models them.
+- Upstream GP2040-CE main (8013b41, unreleased, `v0.7.12-119-g8013b41`)
+  alongside v0.7.12 (#21), built from main's source and not yet tried on a
+  pad. gamepadii tells the firmware lines apart (a known build, the release
+  tag, else the shape of `getGamepadOptions`: main's has the `switch2Pro*`
+  keys) and keeps an allowlist per line: main drops `getCustomTheme`,
+  `getHETriggerCalibration` and `getHETriggerOptions` and adds
+  `getAnimationProtoOptions`, `getBoardDefinition`, `getBootModeOptions`,
+  `getHETriggerCalibrations` and `getLightsDataOptions`; its ADC, GPIO,
+  busy-wait and 32 KB endpoints stay out. The setter guards use main's
+  key sets (`setGamepadOptions` reads 15 more keys, `setDisplayOptions`
+  `displayContrast`). `info` and `backup` report the line
+  (`firmware_line` in JSON, additive), and `leds` on main shows its LED
+  profiles (`lights`). Stock main never counts as a fork build, so it is
+  never asked for `getConfig`. Synthetic fixtures in
+  `tests/fixtures/api/s16-main/`.
 
 ### Fixed
 

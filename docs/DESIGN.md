@@ -132,7 +132,7 @@ GitHub issues (#1). The words that we use are in
     too, and it sits behind the same check. The client keeps an explicit
     allowlist of endpoints verified as safe to read; a `get*` name alone
     doesn't make an endpoint safe. Verified safe on the S16 so far (the
-    allowlist in `gamepadii-core/src/api/mod.rs`): getAddonsOptions,
+    v0.7.12 allowlist in `gamepadii-core/src/api/line.rs`): getAddonsOptions,
     getButtonLayoutDefs, getButtonLayouts, getCustomTheme,
     getDisplayOptions, getExpansionPins, getFirmwareVersion,
     getGamepadOptions, getHETriggerCalibration, getHETriggerOptions,
@@ -141,7 +141,13 @@ GitHub issues (#1). The words that we use are in
     getReactiveLEDs, getSplashImage, getUsedPins, getWiiControls. Their
     responses are the fixtures in `tests/fixtures/api/s16-v0.7.12/`.
     `getHeldPins` blocks until a button is pressed and stays out of the
-    read path; it gets its own function with the button test.
+    read path; it gets its own function with the button test. That list is
+    the v0.7.12 line's; upstream main has its own ("Firmware lines" below).
+    (Read since in the source: v0.7.12's `getHETriggerCalibration` is not a
+    plain read, it reads the previous POST body for a `targetId`, sets the
+    HE mux select pins and samples the ADC. It answered harmlessly on the
+    S16, which has no HE triggers, and main renamed it `getHETriggerVoltage`
+    and keeps it out of the allowlist.)
 - **Input mode persists.** It is written to flash and survives replugs. It is
   also selected at boot by holding a mapped button: `inputModeB1..R2`, and on
   newer firmware `bootModeOptions.inputModeMappings`, which also picks the
@@ -182,10 +188,10 @@ GitHub issues (#1). The words that we use are in
   `Config`, followed by a 12-byte footer of `{size, crc32, magic 0xD2F1E365}`).
   This allows an offline backup and a mode change with no network.
   gp2040ce-binary-tools (Python) is the prior art.
-- **Firmware drift:** endpoints differ between v0.7.12 and main. The tool
-  probes `getFirmwareVersion` and endpoint availability, and round-trips any
-  JSON fields it doesn't know. The S16's exact build is still unknown; it may
-  be a Haute42 vendor build.
+- **Firmware drift:** endpoints and setters differ between v0.7.12 and
+  main ("Firmware lines" below). The tool works out the line, reads only
+  that line's allowlist, and round-trips any JSON fields it doesn't know.
+  The S16's stock build is 0014e4a (v0.7.12, Haute42COSMOX).
 
 ## Fork firmware
 
@@ -241,7 +247,12 @@ the same fixes, ported.
    sits on the fixes) and the version isn't a bare release tag.
 
 Anything else is stock, a bare tag such as `v0.7.12` above all, even with
-something on EP0 that passes for the channel. Someone else's dev build
+something on EP0 that passes for the channel. So is stock upstream main
+(`STOCK_MAIN_BUILDS`: 8013b41, `v0.7.12-119-g8013b41`), whatever answers:
+it has upstream's I2C fix (#1739) but `getConfig` still runs it out of
+heap, and our fixes for that are upstream PRs (#1781-#1783), not merged.
+Our builds on main join `FIXED_BUILDS` (and `line::KNOWN_BUILDS`, as main)
+once they pass the same stress test. Someone else's dev build
 (`v0.7.12-3-g1234567`) isn't necessarily fixed, so it qualifies only with
 the channel. The channel's STATUS and STRING have no feature field for the
 fixes, so the version is the signal; a new fork build goes into
@@ -259,6 +270,114 @@ a trip, the one from before the reboot; in web-config, one HELLO there.
 while its firmware version is a bare release tag, and the fork fixture
 (`tests/fixtures/api/s16-fork/`, an overlay of the stock capture with a
 synthetic `getConfig`) serves them.
+
+## Firmware lines (v0.7.12 and main)
+
+Upstream main (8013b41, 119 commits past v0.7.12, unreleased) changed the
+web API, so gamepadii supports two lines (#21): `v0.7.12` (the release and
+builds on it, our fork's included) and `main`. Everything here was read in
+main's `src/webconfig.cpp`, `proto/` and `src/config_utils.cpp` at 8013b41;
+no pad has run main yet, and the fixtures in `tests/fixtures/api/s16-main/`
+are synthetic (see its README).
+
+**Which line** (`api::line`, `Client::line`, remembered per connection).
+Main's version string is `v0.7.12-119-g8013b41`, the same form as our fork's
+`v0.7.12-6-gf507f0b`, and a commit count is no line, so:
+
+1. a commit we know (the `-g<hash>`, or `boardBuild`) in `KNOWN_BUILDS`
+   gives its line: the S16's stock 0014e4a, every fork build (all v0.7.12
+   so far; a test makes each `FIXED_BUILDS` entry declare its line) and
+   upstream's 8013b41 (main);
+2. else the bare tag `v0.7.12` is the release line;
+3. else the shape of `getGamepadOptions`: main's getter writes the 15
+   `switch2Pro*` keys (Switch 2 Pro mode, after v0.7.12), v0.7.12's has
+   none. It is a plain read on both lines and one gamepadii does anyway
+   (`info` reuses its read, no second request).
+
+`getFirmwareVersion` itself is the same on both lines. No probe asks for
+an endpoint that one line lacks: with lwIP's `LWIP_HTTPD_DYNAMIC_HEADERS`
+off and no 404 page in the firmware's file system, an unknown path most
+likely gets no reply at all (a closed connection), which reads as a
+dropped pad (from the lwIP 2.2.1 source; unverified on a pad). The mock
+answers a 404 instead and the tests check that nothing outside the line's
+allowlist is asked. A line's guess only decides what is read and which
+keys a setter needs; a wrong guess fails safe (a refused write, a 404).
+
+**Main's allowlist** (`FirmwareLine::Main.endpoints()`): v0.7.12's, minus
+what main removed (`getCustomTheme`, `getHETriggerCalibration`,
+`getHETriggerOptions`; `setHETriggerOptions` is still there, write-only),
+plus its new reads that are clearly plain. Every new main GET, by its
+handler:
+
+| endpoint | what the handler does | allowed |
+|---|---|---|
+| getBootModeOptions | storage read, 1.6 KB document (`JSON_OBJECT_SIZE(100)`) | yes |
+| getBoardDefinition | storage read and pin constants (`isAdcPin` is arithmetic), 1.6 KB | yes |
+| getHETriggerCalibrations | storage read of the 32 HE triggers, 8 KB document like v0.7.12's `getHETriggerOptions` | yes |
+| getAnimationProtoOptions | storage read of the LED profiles, a 16 KB document (twice v0.7.12's biggest getter), about 4 KB out; the web UI's LED page asks for it | yes |
+| getLightsDataOptions | storage read of the light clusters, a 16 KB document, under 2 KB out; the LED page asks for it | yes |
+| getLightsPresets/0..7 | board-config constants (`LIGHT_DATA_*`), not settings, a 16 KB document each | no: nothing to back up |
+| getLightsDataPresets | the same, all eight in a 32 KB document | no: large heap, not settings |
+| getHeldPins | `gpio_init`s the unused pins, then busy-waits up to 5 s for a press (main's version of v0.7.12's) | no: blocks, side effects |
+| getHETriggerVoltage | v0.7.12's `getHETriggerCalibration` renamed: reads the previous POST body, sets mux select pins, samples the ADC | no: GPIO and ADC |
+| getJoystickCenter, getJoystickCenter2 | with the analog add-on on, `adc_init()` and ADC samples on its pins | no: ADC |
+
+The two 16 KB ones are the remaining heap risk (the S16 has about 100 KB
+of free heap, and main keeps each reply in its own buffer until it is
+sent); they are the first things to stress-test on a main pad.
+`getConfig` and `getI2CPeripheralMap` stay behind `ForkFixes` on main too:
+main has the I2C fix, but `getConfig` still hangs stock main.
+
+**Setters on main** (`api::write`, which takes the line). Both are the same
+kind of `readDoc`-everything setter as on v0.7.12, with more keys:
+
+- `setGamepadOptions` reads the 15 `switch2Pro*` numbers on top of
+  v0.7.12's 46 keys (`MAIN_SETTER_KEYS`: identity, two colour presets and
+  twelve `uint32` colours), so a body without them zeroes them. Nothing
+  else changed: the USB ids are still `%04X` strings out and integers in,
+  the USB strings still `strncpy`'d, the hotkeys still fold the dpad mask.
+- `setDisplayOptions` reads `displayContrast` (a `uint32`, default 255) on
+  top of v0.7.12's 22 + 10.
+
+The guards refuse a body missing any key the pad's line reads, so a main
+pad whose getter lacked one is never written. The mock's setters keep the
+getter's keys, which on the main fixture are main's, so it zeroes what a
+partial body leaves out on both lines.
+
+**Getters gamepadii reads, main vs v0.7.12:** `getGamepadOptions` and
+`getDisplayOptions` gain the keys above; `getPinMappings`,
+`getProfileOptions` (an exactly sized document now), `getKeyMappings`,
+`getFirmwareVersion` and `getMemoryReport` keep their shape on the RP2040
+(pins 30-47 only on the RP2350). `getLedOptions` lost the LED layout, the
+button-to-LED map, the player-LED indexes and colour and the case RGB, and
+prints `brightnessMaximum` as a percentage (the setter turns it back with
+`int(p * 2.55f + 0.5f)`). `getButtonLayouts` dropped `ledLayout`;
+`getAddonsOptions` gained analog calibration, ADS1115 and profile-slider
+keys. Input modes: P5General (16), SInput (17) and Switch 2 Pro (19) are
+in `proto/enums.proto` and already in `mode.rs`. Hotkeys 52-57 were
+renumbered for LED profiles and 60-70 removed (gamepadii names no hotkey
+actions).
+
+**LEDs on main.** AnimationStation has LED profiles instead of v0.7.12's
+animation, static colours and themes: `AnimationOptions` keeps
+`brightness`, `baseProfileIndex`, `autoDisableTime`, `customColors` and up
+to four `profiles` (idle, pressed and case effects from
+`AnimationNonPressedEffects` / `AnimationPressedEffects`, per-GPIO colour
+indexes), and the lights are clusters tied to GPIO pins
+(`lightClusterData`). `leds` on main reads `getLedOptions`,
+`getAnimationProtoOptions` and `getLightsDataOptions` and reports
+`lights` (the start-up profile, each profile's effects by name, the light
+count, the idle timeout); v0.7.12's animation, colours and theme stay
+`null`, never mapped. The control channel's LED commands speak v0.7.12's
+model, so `leds set` on main waits for the channel's port (#21 step 2).
+
+**To verify on a main pad** (the main session's captures replace the
+synthetic fixtures): every allowlisted getter's real shape and its answer
+(no hang) on the S16, stress-tested like `getConfig` was, the two 16 KB
+ones above all; that an unknown endpoint gets no reply rather than a 404;
+the `switch2Pro*` marker on the real getter; a `setGamepadOptions` and a
+`setDisplayOptions` round trip (`GAMEPADII_LIVE_WRITE=1`, with the user's
+OK); and the converted config's values after main's first boot.
 
 ## The control channel (gamepadii firmware)
 
@@ -347,7 +466,9 @@ Host side (`gamepadii-core/src/channel/`):
      `getConfig`'s `animationOptions` on a fork build (`ForkFixes`). From a
      gamepad mode it gets there through the same trip as `info`;
   3. on stock firmware, the animation, brightness and colours are `null`
-     ("unknown on stock firmware").
+     ("unknown on stock firmware");
+  4. on main firmware (no LED commands there yet), web-config's LED
+     profiles instead ("Firmware lines" above).
 
   `leds set` and `leds brightness` use SET_LED only, never web-config.
   Changes are RAM only unless `--save`, with the same caveat as
@@ -408,7 +529,9 @@ crates/gamepadii-core/src/
   channel/       control channel: proto.rs (wire v1, v1.1 LEDs), usbfs.rs (Linux),
                  sim.rs (simulated firmware), mod.rs (probe, Channel)
   udev.rs        the opt-in uaccess rule (70-gamepadii.rules)
-  api/           typed endpoint structs + raw serde_json::Value passthrough
+  api/           typed endpoint structs + raw serde_json::Value passthrough;
+                 line.rs (v0.7.12 vs main, per-line allowlists), fork.rs,
+                 write.rs (the setters, per-line key sets)
   client.rs      connect, firmware probe
   buttons.rs     logical buttons, labels, per-profile GPIO → button, key hints
   cache.rs       last web-config read per pad (~/.cache/gamepadii/<board>-<serial>.json,

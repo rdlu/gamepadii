@@ -87,7 +87,8 @@ gamepadii display layout --left N --right N
 gamepadii leds                    the LEDs: animation, brightness, colours,
                                   theme (live over the control channel;
                                   else from web-config, partly unknown on
-                                  stock firmware)
+                                  stock firmware; on main firmware its LED
+                                  profiles instead)
 gamepadii leds set [--animation NAME|N] [--brightness N|up|down]
     [--static-color NAME|N] [--button-color NAME|N] [--theme NAME|N] [--save]
                                   change them live (needs control channel
@@ -234,7 +235,12 @@ newest cache that could be this pad is used, as before.
 endpoint's JSON exactly as the pad sent it. The client only reads endpoints
 on an allowlist verified safe on the S16: some GP2040-CE endpoints
 (`getConfig`, `getI2CPeripheralMap`) hang the device on v0.7.12, and
-`resetSettings` wipes it.
+`resetSettings` wipes it. The allowlist is per firmware line: v0.7.12 and
+upstream main (unreleased past v0.7.12, which also says
+`v0.7.12-<n>-g<hash>`) have different endpoints and setters, so gamepadii
+works out which line the pad runs (from a known build, else from what
+`getGamepadOptions` returns) and `info` and `backup` say so. Main support is
+built from main's source and not yet tried on a pad.
 
 Exit codes are stable: 0 ok, 1 check failed (the pad came back in another
 mode, or a write didn't read back), 2 no device found, 3 usage,
@@ -261,6 +267,9 @@ channel, the firmware says which mode it runs, so it is always `confirmed`
   with the `Haute42COSMOX` board config.
 - Other GP2040-CE controllers should work the same way: detection relies on
   the firmware, not the board.
+- Firmware: GP2040-CE v0.7.12 (tested) and upstream main as of 8013b41
+  (from its source; `info`, `backup`, `mode`, `display layout` and `leds`
+  read and write main's shapes, untested on hardware).
 
 ## License
 
