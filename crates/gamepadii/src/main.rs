@@ -31,6 +31,7 @@ use gamepadii_core::wait::{Poll, SystemClock};
 use gamepadii_core::{Error, commands, display, udev};
 
 fn main() -> ExitCode {
+    cli::complete_env();
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
@@ -700,8 +701,13 @@ fn main() -> ExitCode {
             finish(format, result.map(|r| output::udev(style, &r)))
         }
         Some(Command::Completions { shell }) => {
-            cli::completions(shell, &mut std::io::stdout().lock());
-            ExitCode::from(exit::OK)
+            match cli::completions(shell, &mut std::io::stdout().lock()) {
+                Ok(()) => ExitCode::from(exit::OK),
+                Err(e) => {
+                    eprintln!("gamepadii: {e}");
+                    ExitCode::from(exit::TRANSPORT)
+                }
+            }
         }
         Some(Command::Manpages { dir }) => finish(
             Format::Human,

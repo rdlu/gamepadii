@@ -38,6 +38,7 @@ it here in the same change.
 | CLI | The command-line interface: you type a command, for example `gamepadii status`, and gamepadii writes the result. |
 | colours file | A JSON file with the custom colours. `gamepadii leds colors --json` makes one, and `gamepadii leds colors write` reads one. |
 | commit | One recorded change in git. A short hash (for example `0a23ea3`) identifies it. |
+| completion | The words that the shell shows when you push Tab: the commands, the options and their values. `gamepadii completions` gives the script for each shell. |
 | config blob | The saved config of the pad as one block of bytes: a `Config` message in protobuf, as the firmware keeps it in flash. Control channel 1.6 reads and writes it. A backup keeps it in hex. |
 | config, config sector | The settings of the pad. The firmware keeps them in a 32 KB area of flash memory at address `0x101F8000`. |
 | control channel | The USB connection that our firmware adds. gamepadii uses it to read the status of the pad and to change the profile, the input mode, and the LEDs, without a button press. |

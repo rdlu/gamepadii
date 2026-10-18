@@ -52,6 +52,16 @@ cargo install --locked --git https://github.com/rdlu/gamepadii gamepadii
 
 or `mise run install` in a clone.
 
+Shell completion: add one line to the start file of your shell. Tab then
+also completes the names in the profile library and the profile labels of
+the pad (from the device cache: a Tab never talks to the pad).
+
+```sh
+gamepadii completions fish | source          # ~/.config/fish/config.fish
+source <(gamepadii completions zsh)          # ~/.zshrc, after compinit
+source <(gamepadii completions bash)         # ~/.bashrc
+```
+
 ## Commands
 
 ```text

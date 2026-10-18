@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `gamepadii completions <shell>` is now visible, for bash, zsh, fish,
+  elvish and PowerShell. The script calls gamepadii at each Tab, so it
+  completes the profile names of `library show` and the profile numbers and
+  labels of `profile switch` and `profile show` (from the device cache).
 - Cargo workspace: `gamepadii-core` (library) and `gamepadii` (CLI), with
   the `mise run check` gate and CI (rustfmt, clippy, tests, MSRV 1.88).
 - `gamepadii status`: finds GP2040-CE devices on USB through sysfs and
