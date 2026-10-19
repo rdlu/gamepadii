@@ -40,7 +40,7 @@ pins          button  GPIO  now                     after
               rs        19  same as profile 1 (R3)  R1
               m2        26  same as profile 1 (L3)  L1
 same action   18 pins: the stored value changes, the action does not
-              down, right, left, k1, k2, k3, k4, p1, p2, p3, p4, turbo, fn3, fn4, ls, fn2, fn1, m1
+              down, right, left, k1, k2, k3, k4, p1, p2, p3, p4, turbo, share, options, ls, home, touchpad, m1
 input mode    XInput (the pad runs Keyboard)
 was           no label, disabled
 applied       yes

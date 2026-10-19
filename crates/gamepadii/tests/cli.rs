@@ -485,20 +485,62 @@ fn parses_library() {
         lib(&["library", "show", "My Game", "--slot-file"]).unwrap(),
         LibraryCommand::Show {
             name: "My Game".into(),
-            slot_file: true
+            slot_file: true,
+            theme_file: false
         }
     );
+    assert_eq!(
+        lib(&["library", "show", "snes", "--theme-file"]).unwrap(),
+        LibraryCommand::Show {
+            name: "snes".into(),
+            slot_file: false,
+            theme_file: true
+        }
+    );
+    assert!(lib(&["library", "show", "X", "--slot-file", "--theme-file"]).is_err());
     assert!(lib(&["library", "show"]).is_err(), "a name is required");
     let pull = |args: &[&str]| match lib(args).unwrap() {
-        LibraryCommand::Pull { write, force } => (write, force),
+        LibraryCommand::Pull {
+            write,
+            force,
+            names,
+        } => (write, force, names),
         other => panic!("{other:?}"),
     };
-    assert_eq!(pull(&["library", "pull"]), (None, false));
-    assert_eq!(pull(&["library", "pull", "--write"]), (Some(None), false));
+    use gamepadii_core::buttons::NameSystem;
+    assert_eq!(
+        pull(&["library", "pull"]),
+        (None, false, NameSystem::Gp2040)
+    );
+    assert_eq!(
+        pull(&["library", "pull", "--write"]),
+        (Some(None), false, NameSystem::Gp2040)
+    );
     assert_eq!(
         pull(&["library", "pull", "--write", "pad.kdl", "--force"]),
-        (Some(Some("pad.kdl".into())), true)
+        (Some(Some("pad.kdl".into())), true, NameSystem::Gp2040)
     );
+    for (name, want) in [
+        ("xbox", NameSystem::Xbox),
+        ("playstation", NameSystem::Playstation),
+        ("ps", NameSystem::Playstation),
+        ("switch", NameSystem::Switch),
+        ("gp2040", NameSystem::Gp2040),
+    ] {
+        assert_eq!(pull(&["library", "pull", "--names", name]).2, want);
+    }
+    assert!(lib(&["library", "pull", "--names", "snes"]).is_err());
+    assert_eq!(
+        lib(&["library", "theme", "snes", "--profile", "2", "--save"]).unwrap(),
+        LibraryCommand::Theme {
+            name: "snes".into(),
+            profile: Some(2),
+            save: true,
+            no_backup: false
+        }
+    );
+    assert!(lib(&["library", "theme", "snes", "--profile", "4"]).is_err());
+    assert!(lib(&["library", "theme"]).is_err());
     assert!(
         lib(&["library", "pull", "--force"]).is_err(),
         "--force needs --write"
@@ -517,9 +559,17 @@ fn parses_library() {
             slot: Some(6),
             select: true,
             save: false,
-            no_backup: false
+            no_backup: false,
+            no_lights: false
         }
     );
+    assert!(matches!(
+        lib(&["library", "apply", "My Game", "--no-lights"]).unwrap(),
+        LibraryCommand::Apply {
+            no_lights: true,
+            ..
+        }
+    ));
     // Profile 1 is the base of the others: never a target.
     for cmd in ["diff", "apply"] {
         for slot in ["1", "7"] {
@@ -536,4 +586,9 @@ fn help_library_diff() {
 #[test]
 fn help_library_apply() {
     insta::assert_snapshot!(help(&["library", "apply"]));
+}
+
+#[test]
+fn help_library_theme() {
+    insta::assert_snapshot!(help(&["library", "theme"]));
 }

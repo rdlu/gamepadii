@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
-use crate::buttons::Button;
+use crate::buttons::{Button, NameSystem};
 use crate::channel::{Slot, SlotPin};
 use crate::commands::Route;
 use crate::error::{Error, Result};
@@ -210,6 +210,25 @@ pub fn action_from_name(name: &str) -> Option<i16> {
                 .find(|(_, n)| normal(n) == want)
                 .map(|(v, _)| *v)
         })
+}
+
+/// [`action_name`] in the name system `names`: `A` for B1 in Xbox. The
+/// other actions keep their GP2040 names.
+pub fn action_name_in(names: NameSystem, action: i16) -> Option<String> {
+    match Button::from_action(action.into()) {
+        Some(b) => Some(names.label(b).to_string()),
+        None => action_name(action),
+    }
+}
+
+/// [`action_from_name`] in the name system `names`: its names first, then
+/// the GP2040 names. No name of a system is a GP2040 name of another
+/// action, so the order does not change a result.
+pub fn action_from_name_in(names: NameSystem, name: &str) -> Option<i16> {
+    match names.button(name) {
+        Some(b) => i16::try_from(b.action()).ok(),
+        None => action_from_name(name),
+    }
 }
 
 /// An action in a slot file: its number, or a name.
@@ -541,6 +560,38 @@ mod tests {
         );
         assert_eq!(ACTIONS.last().unwrap().0, proto::ACTION_MAX);
         assert_eq!(ACTIONS.first().unwrap().0, proto::ACTION_MIN);
+    }
+
+    #[test]
+    fn a_system_name_is_never_the_gp2040_name_of_another_action() {
+        for names in NameSystem::ALL {
+            for b in Button::ALL {
+                let label = names.label(*b);
+                let action = b.action() as i16;
+                // A name of the system that is also a GP2040 name means
+                // the same action there (L1 is L1 for PlayStation).
+                if let Some(other) = action_from_name(label) {
+                    assert_eq!(other, action, "{names}: {label}");
+                }
+                assert_eq!(action_from_name_in(*names, label), Some(action));
+                assert_eq!(action_name_in(*names, action).as_deref(), Some(label));
+            }
+            // The other actions keep their names in each system.
+            for (v, _) in ACTIONS {
+                let gp = action_name(*v).unwrap();
+                if Button::from_action((*v).into()).is_none() {
+                    assert_eq!(action_name_in(*names, *v).as_deref(), Some(gp.as_str()));
+                }
+                assert_eq!(action_from_name_in(*names, &gp), Some(*v), "{names}: {gp}");
+            }
+        }
+        for (names, name, b) in crate::buttons::MORE_NAMES {
+            assert_eq!(action_from_name(name), None, "{name}");
+            assert_eq!(action_from_name_in(*names, name), Some(b.action() as i16));
+        }
+        assert_eq!(action_from_name_in(NameSystem::Xbox, "A"), Some(5));
+        assert_eq!(action_from_name_in(NameSystem::Switch, "A"), Some(6));
+        assert_eq!(action_from_name_in(NameSystem::Gp2040, "A"), None);
     }
 
     #[test]

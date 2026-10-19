@@ -284,6 +284,27 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `gamepadii library diff NAME [--slot N]` shows what `library apply`
   writes: the label, the state, and each button with its action now and
   after. It reads only. Exit 0 with no change, 1 when `apply` writes.
+- The 4 small buttons of the S16 have the names of their labels:
+  `touchpad`, `home`, `share` and `options` (GPIO 21, 20, 16 and 17), in
+  place of `fn1` to `fn4`. A board file can give a button aliases: on the
+  S16, `minus`, `back` and `start`, the labels under the buttons. An old
+  name gives an error that names the new name.
+- Name systems for the actions in the library: a `names` node gives the
+  system of a file or of one profile: `gp2040` (the default), `xbox`,
+  `playstation` (or `ps`) or `switch`. In Xbox names, A is B1; in Switch
+  names, A is B2. The GP2040 names stay valid in each system.
+  `library pull --names SYSTEM` writes the actions in that system.
+  `library show` shows them in the system of the profile; the JSON keeps
+  the GP2040 names and adds `names`.
+- Themes in the library: a `theme` node gives the colours and effects of
+  a lights profile (`idle`, `pressed`, `button`, `case`, `effect`,
+  `lights`). gamepadii puts each `#rrggbb` into a custom colour, at most
+  16. `gamepadii library theme NAME [--profile N] [--save] [--no-backup]`
+  applies a theme, as `leds theme apply` does. A profile with `theme NAME`
+  gets it from `library apply`, after the pins (`--no-lights` writes the
+  pins only). `library show NAME --theme-file` gives the theme file, and
+  `library list` shows the themes. gamepadii ships the themes
+  `purple-green` and `snes`, and an example profile in Xbox names.
 
 ### Fixed
 

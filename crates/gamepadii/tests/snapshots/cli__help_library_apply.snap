@@ -2,7 +2,7 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"library\", \"apply\"])"
 ---
-Write a library profile to a slot of the pad, live, with no reboot (needs control channel v1.4). RAM only unless --save. gamepadii backs up the slot first, and writes nothing when the slot has the profile already. It does not change the input mode
+Write a library profile to a slot of the pad, live, with no reboot (needs control channel v1.4). RAM only unless --save. gamepadii backs up the slot first, and writes nothing when the slot has the profile already. It does not change the input mode. When the profile has a theme, gamepadii then applies the theme to the lights profile that runs, as `library theme` does
 
 Usage: gamepadii library apply [OPTIONS] <NAME>
 
@@ -37,7 +37,10 @@ Options:
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 
       --no-backup
-          Don't back up the slot first
+          Don't back up the slot and the LEDs first
+
+      --no-lights
+          Don't apply the theme of the profile: write the pins only
 
       --no-channel
           Don't use the USB control channel (the gamepadii firmware's): only web-config and button presses

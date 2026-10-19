@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::api::{self, FirmwareVersion, OptionsWrite, RebootAck};
 use crate::blob::ConfigBlob;
-use crate::buttons::{Button, Combo};
+use crate::buttons::{Button, Combo, NameSystem};
 use crate::cache::{self, DeviceCache, Key, PadId};
 use crate::channel::{self, Caps, Channel, Hello, OpenControl, Probe, proto};
 use crate::client::{self, Client};
@@ -2443,9 +2443,10 @@ fn join(gpios: &[u8]) -> String {
 }
 
 /// `gamepadii library pull`: the enabled slots with READ_SLOT, live, in
-/// any mode, as KDL with the button names of the board file. It reads
-/// only; [`library::save_pull`] writes the file.
-pub fn library_pull(env: &Env) -> Result<PullReport> {
+/// any mode, as KDL with the button names of the board file, and the
+/// actions in the name system `names`. It reads only;
+/// [`library::save_pull`] writes the file.
+pub fn library_pull(env: &Env, names: NameSystem) -> Result<PullReport> {
     let (_, ch) = slot_channel(env)?;
     let st = ch.status()?;
     let firmware_board = ch.string(proto::string::BOARD).ok().flatten();
@@ -2466,10 +2467,14 @@ pub fn library_pull(env: &Env) -> Result<PullReport> {
     if !read.iter().any(|s| s.profile == 1) {
         read.insert(0, ch.read_slot(1)?);
     }
-    let (profiles, skipped) = library::pull::profiles(&board, &read);
+    let (mut profiles, skipped) = library::pull::profiles(&board, &read);
+    for p in &mut profiles {
+        p.names = names;
+    }
     Ok(PullReport {
         via: commands::Route::Control,
         host: ch.node(),
+        names,
         kdl: library::pull::text(&board, &profiles, &skipped),
         board: board.name,
         firmware_board: board.firmware_board,
@@ -2603,34 +2608,57 @@ pub fn library_diff(
 /// writes nothing when the slot has the profile already, unless
 /// `apply.save` asks for flash or `apply.select` for another active
 /// profile. It does not change the input mode: the diff has a note.
+///
+/// With `theme` (the theme of the profile), it then applies the theme to
+/// the lights profile that runs, as [`theme_apply`] does: the pins first,
+/// then the LEDs. The checks of the theme also come before the first
+/// write.
 pub fn library_apply(
     env: &Env,
     profile: &library::Resolved,
+    theme: Option<&ThemeFile>,
     apply: &Apply,
     progress: &mut dyn Progress,
 ) -> Result<ApplyReport> {
     let (pad, ch) = slot_channel(env)?;
     let diff = library_compare(&ch, profile, apply.slot)?;
+    let lights_apply = ThemeApply {
+        profile: None,
+        save: apply.save,
+    };
+    if let Some(t) = theme {
+        theme_check(&pad, &ch, t, &lights_apply)?;
+    }
     // RAM and flash can hold different slots, and the pad does not tell
     // which one READ_SLOT gives: --save always writes.
-    if !diff.changed && !apply.save && (diff.active || !apply.select) {
-        return Ok(ApplyReport {
-            diff,
-            written: false,
-            write: None,
-        });
-    }
-    let write = SlotWrite {
-        slot: diff.slot,
-        select: apply.select,
-        save: apply.save,
-        label: None,
+    let write = if !diff.changed && !apply.save && (diff.active || !apply.select) {
+        None
+    } else {
+        let write = SlotWrite {
+            slot: diff.slot,
+            select: apply.select,
+            save: apply.save,
+            label: None,
+        };
+        Some(write_slot(
+            env,
+            &pad,
+            &ch,
+            &profile.slot_file(),
+            &write,
+            progress,
+        )?)
     };
-    let report = write_slot(env, &pad, &ch, &profile.slot_file(), &write, progress)?;
+    let lights = match theme {
+        Some(t) => Some(theme_apply_on(env, &pad, &ch, t, &lights_apply, progress)?),
+        None => None,
+    };
     Ok(ApplyReport {
         diff,
-        written: true,
-        write: Some(report),
+        written: write.is_some(),
+        write,
+        theme: theme.and(profile.theme.clone()),
+        lights,
     })
 }
 
@@ -3005,24 +3033,41 @@ pub fn theme_apply(
     apply: &ThemeApply,
     progress: &mut dyn Progress,
 ) -> Result<ThemeApplyReport> {
+    let (pad, ch) = lights_channel(env)?;
+    theme_apply_on(env, &pad, &ch, theme, apply, progress)
+}
+
+/// The checks of [`theme_apply`] that need no write: the lights profile
+/// that the theme goes to.
+fn theme_check(
+    pad: &Device,
+    ch: &Channel,
+    theme: &ThemeFile,
+    apply: &ThemeApply,
+) -> Result<(u8, channel::LightsStatus, Option<String>)> {
     if theme.colors.is_none() && theme.lights.is_none() {
         return Err(Error::Usage(
             "the theme file has no colors and no lights: nothing to apply".into(),
         ));
     }
-    let (pad, ch) = lights_channel(env)?;
+    if !ch.hello().has_lights_profiles() {
+        let h = ch.hello();
+        let why = if h.minor >= proto::LIGHTS_PROFILES_MINOR {
+            "the pad's LEDs are not set up".into()
+        } else {
+            format!("this build's channel speaks v{}.{}", h.major, h.minor)
+        };
+        return Err(no_lights_channel(pad, Some(why)));
+    }
     if theme.colors.is_some() && !ch.hello().has_custom_colors() {
-        return Err(no_colors_channel(&pad, Some(no_colors_why(ch.hello()))));
+        return Err(no_colors_channel(pad, Some(no_colors_why(ch.hello()))));
     }
     let status = ch.lights_status()?;
     if status.preview() {
         return Err(Error::NeedsUser(crate::leds::PREVIEW.to_string()));
     }
-    let firmware = Firmware {
-        board: ch.string(proto::string::BOARD).ok().flatten(),
-        ..Firmware::default()
-    };
-    same_board(theme.board.as_deref(), firmware.board.as_deref())?;
+    let board = ch.string(proto::string::BOARD).ok().flatten();
+    same_board(theme.board.as_deref(), board.as_deref())?;
     let n = match apply.profile {
         Some(n) => n,
         None => status.on().ok_or_else(|| {
@@ -3034,7 +3079,24 @@ pub fn theme_apply(
             "lights profile {n}: the lights profiles are 0 to 3"
         )));
     }
-    let before = read_lights_file(&ch, n, firmware.board.clone())?;
+    Ok((n, status, board))
+}
+
+/// [`theme_apply`] on a channel that is open already.
+fn theme_apply_on(
+    env: &Env,
+    pad: &Device,
+    ch: &Channel,
+    theme: &ThemeFile,
+    apply: &ThemeApply,
+    progress: &mut dyn Progress,
+) -> Result<ThemeApplyReport> {
+    let (n, status, board) = theme_check(pad, ch, theme, apply)?;
+    let firmware = Firmware {
+        board,
+        ..Firmware::default()
+    };
+    let before = read_lights_file(ch, n, firmware.board.clone())?;
     // Only the fields that change go: the firmware checks each field that
     // it gets, and a stored profile can have colours out of range. Thus a
     // theme from `theme show`, or a backup, applies again.
@@ -3085,13 +3147,13 @@ pub fn theme_apply(
     if let (Some(colors), Some(old)) = (&theme.colors, &before_colors) {
         // The colours first: core 1 builds the effects of the profile
         // again with them.
-        let (ok, after) = write_colors(env, &ch, colors, apply.save)?;
+        let (ok, after) = write_colors(env, ch, colors, apply.save)?;
         applied &= ok;
         colors_changed = colors::changed(&old.colors, &after);
     }
     ch.write_lights(&data)?;
-    applied &= lights_applied(env, &ch, channel::Command::WriteLights);
-    let after = read_lights_file(&ch, n, firmware.board.clone())?;
+    applied &= lights_applied(env, ch, channel::Command::WriteLights);
+    let after = read_lights_file(ch, n, firmware.board.clone())?;
     let sent = LightsFile::from_data(&data, None).unwrap_or_default();
     let wrong = lights::changed(&lights::expected(&before, &sent, true), &after);
     if !wrong.is_empty() {

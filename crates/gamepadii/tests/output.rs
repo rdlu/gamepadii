@@ -244,6 +244,7 @@ mod flows {
 
     use gamepadii::output::{self, Format, Style};
     use gamepadii::progress::Reporter;
+    use gamepadii_core::buttons::NameSystem;
     use gamepadii_core::cache::{self, DeviceCache};
     use gamepadii_core::commands::{self, Firmware};
     use gamepadii_core::flow::{self, Env, ModeReport, Progress, Silent, Timeouts};
@@ -860,7 +861,9 @@ mod flows {
                 .with_channel()
                 .channel(|c| *c = c.clone().with_slots()),
         );
-        let mut pull = rig.run(flow::library_pull).unwrap();
+        let mut pull = rig
+            .run(|env| flow::library_pull(env, NameSystem::Gp2040))
+            .unwrap();
         let stdout = output::library_pull(human(), &pull);
         assert_eq!(stdout, pull.kdl, "with no --write: the KDL");
         let dir = rig.dirs.path().join("profiles");
@@ -893,6 +896,69 @@ mod flows {
     }
 
     #[test]
+    fn library_theme_outputs() {
+        use gamepadii_core::channel::Rgb;
+        use gamepadii_core::channel::sim::SimCustomColors;
+        use gamepadii_core::colors::ThemeApply;
+        use gamepadii_core::library::Library;
+        use gamepadii_core::library::diff::Apply;
+        let rig = Rig::new(
+            SimPad::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/api/s16-main"),
+                InputMode::Xinput,
+            )
+            .with_lights()
+            .channel(|c| {
+                *c = c.clone().with_custom_colors().with_slots();
+                c.custom_colors = SimCustomColors::new(&[Rgb::from_u32(0xff8800)]);
+                c.saved_custom_colors = c.custom_colors;
+            }),
+        );
+        let lib = Library::from_sources(Vec::new(), true);
+        let xbox = lib.resolve("My Game Xbox").unwrap();
+        let snes = lib.resolve_theme("snes").unwrap();
+        let theme = lib.profile_theme(&xbox).unwrap().unwrap();
+        let apply = Apply {
+            slot: Some(6),
+            select: true,
+            save: false,
+        };
+        let mut both = rig
+            .run(|env| {
+                flow::library_apply(env, &xbox, Some(&theme.theme_file), &apply, &mut Silent)
+            })
+            .unwrap();
+        // The backup paths have a temporary directory in them.
+        let base = |p: &mut Option<PathBuf>| {
+            *p = p.take().map(|p| PathBuf::from(p.file_name().unwrap()));
+        };
+        if let Some(w) = both.write.as_mut() {
+            base(&mut w.backup);
+        }
+        if let Some(l) = both.lights.as_mut() {
+            base(&mut l.backup);
+        }
+        let mut alone = rig
+            .run(|env| {
+                flow::theme_apply(env, &snes.theme_file, &ThemeApply::default(), &mut Silent)
+            })
+            .unwrap();
+        base(&mut alone.backup);
+        let json_show = output::library_show(json(), &xbox);
+        let json_theme = output::library_theme(json(), &theme);
+        insta::assert_snapshot!(format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            output::library_show(human(), &xbox),
+            &json_show[..json_show.find("\"pins\"").unwrap()],
+            output::library_theme(human(), &snes),
+            &json_theme[..json_theme.find("\"theme_file\"").unwrap()],
+            output::theme_file(&theme.theme_file),
+            output::library_apply(human(), &both),
+            output::theme_apply_as(human(), &alone, Some("snes")),
+        ));
+    }
+
+    #[test]
     fn library_diff_and_apply_outputs() {
         use gamepadii_core::library::Library;
         use gamepadii_core::library::diff::Apply;
@@ -908,7 +974,7 @@ mod flows {
             .run(|env| flow::library_diff(env, &silksong, Some(3)))
             .unwrap();
         let same = rig
-            .run(|env| flow::library_apply(env, &silksong, &Apply::default(), &mut Silent))
+            .run(|env| flow::library_apply(env, &silksong, None, &Apply::default(), &mut Silent))
             .unwrap();
         let apply = Apply {
             slot: Some(6),
@@ -916,7 +982,7 @@ mod flows {
             save: false,
         };
         let mut written = rig
-            .run(|env| flow::library_apply(env, &my_game, &apply, &mut Silent))
+            .run(|env| flow::library_apply(env, &my_game, None, &apply, &mut Silent))
             .unwrap();
         // The backup path has a temporary directory in it.
         if let Some(w) = written.write.as_mut() {

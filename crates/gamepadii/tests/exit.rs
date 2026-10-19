@@ -1208,6 +1208,93 @@ fn lights_profile_exit_codes() {
 }
 
 #[test]
+fn library_theme_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let api = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/api/s16-main"
+    );
+    let pad = |channel: &'static str, args: &[&str]| {
+        let mut a = vec![
+            "--sysroot",
+            "@s16-xinput",
+            "--mock-channel",
+            channel,
+            "--mock-api",
+            api,
+        ];
+        a.extend_from_slice(args);
+        gamepadii_in(home.path(), &a)
+    };
+    let run = |args: &[&str]| gamepadii_in(home.path(), args);
+    let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+    let (code, stdout, _) = run(&["--json", "library", "list"]);
+    assert_eq!(code, 0);
+    assert_eq!(json(&stdout)["themes"][1]["name"], "snes");
+    let (code, stdout, _) = run(&["library", "show", "SNES"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Theme snes\n"), "{stdout}");
+    let (code, stdout, _) = run(&["--json", "library", "show", "snes"]);
+    assert_eq!(code, 0);
+    assert_eq!(json(&stdout)["theme_file"]["colors"][0], "#5a5a8c");
+    // The theme file goes to `leds theme apply`.
+    let (code, stdout, _) = run(&["library", "show", "snes", "--theme-file"]);
+    assert_eq!(code, 0);
+    assert!(stdout.ends_with("}\n"), "{stdout}");
+    let file = home.path().join("snes.json");
+    std::fs::write(&file, &stdout).unwrap();
+    let path = file.to_str().unwrap();
+    let (code, stdout, stderr) = pad("custom-colors", &["--json", "leds", "theme", "apply", path]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(json(&stdout)["colors"], 5);
+    // The theme of a profile.
+    let (code, stdout, _) = run(&["library", "show", "My Game Xbox", "--theme-file"]);
+    assert_eq!(code, 0);
+    assert_eq!(json(&stdout)["colors"][0], "#8000ff");
+    // `library theme`: the same apply, by the name.
+    let (code, stdout, stderr) = pad("custom-colors", &["library", "theme", "purple-green"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.starts_with("Theme purple-green on lights profile 0 runs now"),
+        "{stdout}"
+    );
+    // `library apply` of a profile with a theme: the pins, then the LEDs.
+    let args = ["--json", "library", "apply", "My Game Xbox", "--slot", "6"];
+    let (code, stdout, stderr) = pad("custom-colors", &args);
+    assert_eq!(code, 0, "{stderr}");
+    let v = json(&stdout);
+    assert_eq!(v["theme"], "purple-green");
+    assert_eq!(v["lights"]["profile"], 0);
+    let mut no_lights = args.to_vec();
+    no_lights.push("--no-lights");
+    let (code, stdout, _) = pad("custom-colors", &no_lights);
+    assert_eq!(code, 0);
+    assert_eq!(json(&stdout)["lights"], serde_json::Value::Null);
+    // A pad with no lights profiles: 5, and no slot write before it.
+    let (code, _, stderr) = pad("slots", &args);
+    assert_eq!(code, 5, "{stderr}");
+    let (code, _, stderr) = pad("slots", &["library", "theme", "snes"]);
+    assert_eq!(code, 5, "{stderr}");
+    // Usage errors: 3.
+    for args in [
+        &["library", "show", "My Game", "--theme-file"][..],
+        &["library", "show", "snes", "--slot-file"],
+        &["library", "show", "snes", "--slot-file", "--theme-file"],
+        &["library", "theme", "My Game"],
+        &["library", "theme", "nope"],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 3, "{args:?}: {stderr}");
+    }
+    // A pull in Xbox names.
+    let (code, stdout, stderr) = pad("slots", &["library", "pull", "--names", "xbox"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("\nnames xbox\n"), "{stdout}");
+    let (code, _, _) = pad("slots", &["library", "pull", "--names", "snes"]);
+    assert_eq!(code, 3);
+}
+
+#[test]
 fn custom_colors_exit_codes() {
     let home = tempfile::tempdir().unwrap();
     let api = concat!(
@@ -1582,6 +1669,12 @@ fn completion_gives_the_library_names_and_the_profile_numbers() {
     let names = complete_in(home.path(), &["gamepadii", "library", "show", ""]);
     assert!(names.lines().any(|l| l == "Default"), "{names}");
     assert!(names.lines().any(|l| l == "Hades\tHades run"), "{names}");
+    assert!(names.lines().any(|l| l == "snes\ttheme"), "{names}");
+    let themes = complete_in(home.path(), &["gamepadii", "library", "theme", ""]);
+    let values: Vec<&str> = themes.lines().filter(|l| !l.starts_with('-')).collect();
+    assert_eq!(values, ["purple-green\ttheme", "snes\ttheme"]);
+    let profiles = complete_in(home.path(), &["gamepadii", "library", "apply", ""]);
+    assert!(!profiles.contains("snes"), "{profiles}");
     // No device cache: the numbers only, and no talk to a pad.
     let profiles = complete_in(home.path(), &["gamepadii", "profile", "switch", ""]);
     let values: Vec<&str> = profiles.lines().filter(|l| !l.starts_with('-')).collect();

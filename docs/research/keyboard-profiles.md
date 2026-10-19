@@ -61,10 +61,15 @@ In the drawing:
 | `k2`    | 7  | B2    | B  | bottom row, column 2 |
 | `k3`    | 8  | R2    | RT | bottom row, column 3 |
 | `k4`    | 9  | L2    | LT | bottom row, column 4 |
-| `fn1` (Touchpad?) | 21 | A2 | – (PS Touchpad / Switch Capture) | small; the label is a guess from the layout order |
-| `fn2` (Home)      | 20 | A1 | Guide | small |
-| `fn3` (Share/Back)| 16 | S1 | Back / View | small |
-| `fn4` (Options/Start) | 17 | S2 | Start / Menu | small |
+| `touchpad` (was `fn1`) | 21 | A2 | – (PS Touchpad / Switch Capture) | small; the case prints Touchpad, and − under it |
+| `home` (was `fn2`)     | 20 | A1 | Guide | small; Home |
+| `share` (was `fn3`)    | 16 | S1 | Back / View | small; Share, and Back under it |
+| `options` (was `fn4`)  | 17 | S2 | Start / Menu | small; Options, and Start under it |
+
+Update of 2026-10-18: the user checked the pad. The 4 small buttons are top right, GPIO 21, 20, 16
+and 17 from left to right, and the board file names them `touchpad`, `home`, `share` and
+`options`, with the aliases `minus`, `back` and `start`. Turbo (GPIO 14) is top left. The pad has
+no button with the label FN. The drafts below keep the old names `fn1` to `fn4`.
 | `turbo` | 14 | MENU_NAVIGATION_TOGGLE (user) | – | board default is Turbo; not in the display layout |
 
 The other GPIOs are not buttons:
@@ -691,6 +696,7 @@ profile "NMS Foot" {
    or accepting that those hotkeys exist only there.
 4. **Physical check.** Are the 4 small buttons, left to right, really Touchpad/Home/Share/Options =
    GP21/20/16/17? Where is Turbo (GP14), and is it comfortable as the FN layer key?
+   Answer (2026-10-18): yes, GPIO 21, 20, 16 and 17 from left to right; Turbo is top left.
 5. **Sprint ergonomics.** Can the left thumb hold `m2` (Shift) and `up` (Space) together comfortably?
    If not, move Shift to `k1` and the visor to `ls`. Does NMS have a toggle-sprint option in the
    current build?

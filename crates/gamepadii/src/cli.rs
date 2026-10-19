@@ -2,8 +2,8 @@
 //! `info`, `backup [-o FILE] [--channel-only]`, `restore FILE`,
 //! `reboot <gamepad|webconfig|bootsel>`,
 //! `mode [MODE]`, `webconfig [--open|--exit]`, `profile switch <N|LABEL>
-//! [--save]`, `library list|show NAME|pull`, `display layout [LAYOUT |
-//! --left N --right N]`, `leds [set ... | brightness up|down|N]`, `input
+//! [--save]`, `library list|show NAME|pull|diff|apply|theme`, `display
+//! layout [LAYOUT | --left N --right N]`, `leds [set ... | brightness up|down|N]`, `input
 //! [--watch | find-pin [--scan]]`,
 //! `log [--from N] [--follow]`, `tui` (also no command on a terminal),
 //! `setup udev [--print|--install]`, `--host HOST` for the web-config ones
@@ -20,6 +20,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 
+use gamepadii_core::buttons::NameSystem;
 use gamepadii_core::display::LayoutArg;
 use gamepadii_core::flow::{self, ProfileArg};
 use gamepadii_core::leds::{LedChange, Level, LightsPick, Pick};
@@ -369,21 +370,25 @@ pub enum ProfileCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum LibraryCommand {
-    /// List the profiles in the library, with their file, base and label.
-    /// It also shows each file that does not parse, and each profile that
-    /// does not pass the checks.
+    /// List the profiles and the themes in the library, with their file.
+    /// It also shows each file that does not parse, and each profile or
+    /// theme that does not pass the checks.
     List,
     /// Show a profile with its bases applied: the action of each button,
-    /// and the profile that gives it.
+    /// and the profile that gives it. For a theme: its colours and effects.
     Show {
-        /// The name of the profile, any case.
-        #[arg(add = ArgValueCandidates::new(library_names))]
+        /// The name of the profile or the theme, any case.
+        #[arg(add = ArgValueCandidates::new(library_all_names))]
         name: String,
         /// Print the slot file for `gamepadii profile write` (JSON) in
         /// place of the profile. Buttons with no action are not in it, so
         /// they follow profile 1.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "theme_file")]
         slot_file: bool,
+        /// Print the theme file for `gamepadii leds theme apply` (JSON):
+        /// of the theme, or of the theme of the profile.
+        #[arg(long)]
+        theme_file: bool,
     },
     /// Read the enabled profiles of the pad, live, and write them as KDL
     /// (needs control channel v1.4 of the gamepadii firmware). It reads
@@ -397,6 +402,10 @@ pub enum LibraryCommand {
         /// Replace the file when it is there.
         #[arg(long, requires = "write")]
         force: bool,
+        /// The names of the actions: gp2040 (B1, S2), xbox (A, Start),
+        /// playstation (Cross, Options) or switch (B, Plus).
+        #[arg(long, value_name = "SYSTEM", value_parser = names_parser(), default_value = "gp2040")]
+        names: NameSystem,
     },
     /// Compare a library profile with a slot of the pad, live (needs
     /// control channel v1.4). It shows what `library apply` writes: the
@@ -414,7 +423,9 @@ pub enum LibraryCommand {
     /// Write a library profile to a slot of the pad, live, with no reboot
     /// (needs control channel v1.4). RAM only unless --save. gamepadii
     /// backs up the slot first, and writes nothing when the slot has the
-    /// profile already. It does not change the input mode.
+    /// profile already. It does not change the input mode. When the
+    /// profile has a theme, gamepadii then applies the theme to the lights
+    /// profile that runs, as `library theme` does.
     Apply {
         /// The name of the profile, any case.
         #[arg(add = ArgValueCandidates::new(library_names))]
@@ -432,7 +443,31 @@ pub enum LibraryCommand {
         /// restarts.
         #[arg(long)]
         save: bool,
-        /// Don't back up the slot first.
+        /// Don't back up the slot and the LEDs first.
+        #[arg(long)]
+        no_backup: bool,
+        /// Don't apply the theme of the profile: write the pins only.
+        #[arg(long)]
+        no_lights: bool,
+    },
+    /// Apply a library theme to the LEDs, live, with no reboot (needs
+    /// control channel v1.5, and v1.9 for #rrggbb colours): first its
+    /// custom colours, then its lights profile fields. The lights profile
+    /// becomes the one that runs. RAM only unless --save. gamepadii backs
+    /// up the colours and the profile first. The custom colours are
+    /// global: the other lights profiles that use them change too.
+    Theme {
+        /// The name of the theme, any case.
+        #[arg(add = ArgValueCandidates::new(theme_names))]
+        name: String,
+        /// The lights profile to write, 0 to 3. Default: the one that runs.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=3))]
+        profile: Option<u8>,
+        /// Also save it to flash. Don't use this each time a game starts:
+        /// each save writes the flash.
+        #[arg(long)]
+        save: bool,
+        /// Don't back up the colours and the lights profile first.
         #[arg(long)]
         no_backup: bool,
     },
@@ -797,22 +832,53 @@ pub fn complete_env() {
         .complete();
 }
 
-/// The names in the profile library, for completion. Files that do not
+/// The name systems that `library pull --names` takes; `ps` is an alias
+/// for `playstation`.
+fn names_parser() -> impl TypedValueParser<Value = NameSystem> {
+    PossibleValuesParser::new(NameSystem::ALL.iter().map(|n| {
+        let v = PossibleValue::new(n.key());
+        match n {
+            NameSystem::Playstation => v.alias("ps"),
+            _ => v,
+        }
+    }))
+    .map(|s| s.parse::<NameSystem>().expect("a listed name system"))
+}
+
+/// The profile library, for completion; `None` when it does not load.
+fn library_list() -> Option<gamepadii_core::library::ListReport> {
+    let dir = gamepadii_core::library::library_dir();
+    let library = gamepadii_core::library::Library::load(dir.as_deref()).ok()?;
+    Some(library.list())
+}
+
+/// The profile names in the library, for completion. Files that do not
 /// parse give no names.
 pub fn library_names() -> Vec<CompletionCandidate> {
-    let dir = gamepadii_core::library::library_dir();
-    let Ok(library) = gamepadii_core::library::Library::load(dir.as_deref()) else {
-        return Vec::new();
-    };
-    library
-        .list()
-        .profiles
+    library_list()
         .into_iter()
+        .flat_map(|l| l.profiles)
         .map(|p| {
             let help = (p.label != p.name).then(|| p.label.into());
             CompletionCandidate::new(p.name).help(help)
         })
         .collect()
+}
+
+/// The theme names in the library, for completion.
+pub fn theme_names() -> Vec<CompletionCandidate> {
+    library_list()
+        .into_iter()
+        .flat_map(|l| l.themes)
+        .map(|t| CompletionCandidate::new(t.name).help(Some("theme".into())))
+        .collect()
+}
+
+/// The profile and theme names in the library, for completion.
+pub fn library_all_names() -> Vec<CompletionCandidate> {
+    let mut names = library_names();
+    names.extend(theme_names());
+    names
 }
 
 /// The profile numbers and labels of the pad, from the newest device

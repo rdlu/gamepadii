@@ -3,9 +3,11 @@
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
+use super::theme::DefinedTheme;
 use super::{Defined, LibraryError, Origin, Pin, Place, Places, Profile};
+use crate::buttons::NameSystem;
 use crate::mode::InputMode;
-use crate::slots::{ACTIONS, action_from_name};
+use crate::slots::{ACTIONS, action_from_name_in};
 
 /// One file, for the places in its errors.
 pub struct Src<'a> {
@@ -68,7 +70,7 @@ impl<'a> Src<'a> {
 }
 
 /// The arguments of `node`, without its properties.
-fn args(node: &KdlNode) -> impl Iterator<Item = &KdlEntry> {
+pub fn args(node: &KdlNode) -> impl Iterator<Item = &KdlEntry> {
     node.entries().iter().filter(|e| e.name().is_none())
 }
 
@@ -103,24 +105,60 @@ pub fn is_reserved_pin_name(name: &str) -> bool {
     name == "default"
 }
 
+/// What one library file holds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Parsed {
+    pub profiles: Vec<Defined>,
+    pub themes: Vec<DefinedTheme>,
+}
+
 /// The profiles in one library file.
 pub fn profiles(origin: Origin, text: &str) -> Result<Vec<Defined>, LibraryError> {
+    file(origin, text).map(|p| p.profiles)
+}
+
+/// `names SYSTEM`: the name system of a file or a profile.
+fn names(src: &Src, node: &KdlNode) -> Result<NameSystem, LibraryError> {
+    one_string(src, node)?
+        .parse()
+        .map_err(|e: String| src.node_error(node, &e))
+}
+
+/// The profiles and the themes in one library file.
+pub fn file(origin: Origin, text: &str) -> Result<Parsed, LibraryError> {
     let src = Src::new(origin, text);
     let doc = src.document()?;
-    let mut out = Vec::new();
+    // The name system of the file applies to each profile, also to a
+    // profile before the names node.
+    let mut system = None;
+    for node in doc.nodes().iter().filter(|n| n.name().value() == "names") {
+        if system.is_some() {
+            return Err(src.node_error(node, "names is twice in the file"));
+        }
+        system = Some(names(&src, node)?);
+    }
+    let system = system.unwrap_or_default();
+    let mut out = Parsed::default();
     for node in doc.nodes() {
         match node.name().value() {
-            "profile" => out.push(profile(&src, node)?),
-            n @ ("keymap" | "hotkeys" | "loadout" | "host" | "theme") => {
+            "profile" => out.profiles.push(profile(&src, node, system)?),
+            "theme" => out.themes.push(super::theme::parse(&src, node)?),
+            "names" => {}
+            n @ ("keymap" | "hotkeys" | "loadout" | "host") => {
                 return Err(src.node_error(
                     node,
-                    &format!("gamepadii does not read {n} nodes yet: only profile nodes"),
+                    &format!(
+                        "gamepadii does not read {n} nodes yet: only profile, theme and names \
+                         nodes"
+                    ),
                 ));
             }
             n => {
                 return Err(src.node_error(
                     node,
-                    &format!("unknown node {n:?}: a library file has profile nodes"),
+                    &format!(
+                        "unknown node {n:?}: a library file has profile, theme and names nodes"
+                    ),
                 ));
             }
         }
@@ -128,16 +166,22 @@ pub fn profiles(origin: Origin, text: &str) -> Result<Vec<Defined>, LibraryError
     Ok(out)
 }
 
-fn profile(src: &Src, node: &KdlNode) -> Result<Defined, LibraryError> {
+fn profile(src: &Src, node: &KdlNode, system: NameSystem) -> Result<Defined, LibraryError> {
     let name = one_string_with_children(src, node)?;
     let mut p = Profile {
         name,
+        names: system,
         ..Profile::default()
     };
     let mut at = Places {
         node: src.node_place(node),
         ..Places::default()
     };
+    // The name system of the profile applies to its pins, also to pins
+    // before the names node.
+    if let Some(child) = node.iter_children().find(|c| c.name().value() == "names") {
+        p.names = names(src, child)?;
+    }
     let mut seen: Vec<(&str, KdlValue)> = Vec::new();
     for child in node.iter_children() {
         let key = child.name().value();
@@ -178,13 +222,18 @@ fn profile(src: &Src, node: &KdlNode) -> Result<Defined, LibraryError> {
                 p.input_mode = Some(mode);
                 at.input_mode = place;
             }
+            "theme" => {
+                p.theme = Some(one_string(src, child)?);
+                at.theme = place;
+            }
+            "names" => {}
             "pins" => pins(src, child, &mut p, &mut at)?,
             other => {
                 return Err(src.node_error(
                     child,
                     &format!(
                         "unknown node {other:?} in a profile (base, board, label, input-mode, \
-                         pins)"
+                         names, theme, pins)"
                     ),
                 ));
             }
@@ -221,7 +270,7 @@ fn pins(src: &Src, node: &KdlNode, p: &mut Profile, at: &mut Places) -> Result<(
     }
     for child in node.iter_children() {
         let button = child.name().value();
-        let pin = pin(src, child)?;
+        let pin = pin(src, child, p.names)?;
         let place = src.node_place(child);
         if is_reserved_pin_name(button) {
             if p.default.is_some() {
@@ -240,17 +289,30 @@ fn pins(src: &Src, node: &KdlNode, p: &mut Profile, at: &mut Places) -> Result<(
     Ok(())
 }
 
-/// The action of one `pins` line, by name (`B1`, `none`, `turbo`) or by
-/// number.
-fn pin(src: &Src, node: &KdlNode) -> Result<Pin, LibraryError> {
+/// The action of one `pins` line, by name in the name system `names`
+/// (`B1`, `A`, `none`, `turbo`) or by number.
+fn pin(src: &Src, node: &KdlNode, names: NameSystem) -> Result<Pin, LibraryError> {
     let button = node.name().value();
     let mut a = args(node);
     let (Some(e), None) = (a.next(), a.next()) else {
         return Err(src.node_error(node, &format!("{button}: give one action")));
     };
     let action = match e.value() {
-        KdlValue::String(s) => action_from_name(s)
-            .ok_or_else(|| src.entry_error(e, &format!("unknown action {s:?}")))?,
+        KdlValue::String(s) => action_from_name_in(names, s).ok_or_else(|| {
+            let msg = match names {
+                NameSystem::Gp2040 => format!(
+                    "unknown action {s:?}: the GP2040 names are {}; the other actions have \
+                     names such as none, turbo and macro-1, or a number",
+                    names.names()
+                ),
+                _ => format!(
+                    "unknown action {s:?}: the {names} names are {}; the GP2040 names (B1, \
+                     Fn, turbo, none, ...) and numbers are also valid",
+                    names.names()
+                ),
+            };
+            src.entry_error(e, &msg)
+        })?,
         KdlValue::Integer(n) => i16::try_from(*n)
             .ok()
             .filter(|n| ACTIONS.iter().any(|(v, _)| v == n))

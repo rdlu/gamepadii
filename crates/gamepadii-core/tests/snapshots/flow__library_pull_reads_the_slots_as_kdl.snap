@@ -24,10 +24,10 @@ profile "Default" {
         k2 B2
         k3 R2
         k4 L2
-        fn1 A2
-        fn2 A1
-        fn3 S1
-        fn4 S2
+        touchpad A2
+        home A1
+        share S1
+        options S2
         turbo menu-navigation-toggle
     }
 }
