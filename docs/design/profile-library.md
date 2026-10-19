@@ -51,7 +51,8 @@ board "haute42-s16" {
   `alias` (one or more) and `size`. A name or a GPIO can be in the board
   one time only. `default` is not a button name.
 - An alias is a second name for the button, from a label on the case. A
-  profile and a theme can use the name or an alias. An alias must not be
+  profile and a theme can use the name or an alias, in any case
+  (`Touchpad` is `touchpad`). An alias must not be
   the name or the alias of another button of the board: the board-file
   check refuses that. A profile that names one button two times, by its
   name and by an alias, is an error. gamepadii writes the name, never the

@@ -654,6 +654,20 @@ fn aliases_and_renamed_buttons() {
     assert_eq!(action("share"), (16, s("S2")), "back is share");
     assert_eq!(action("options"), (17, s("S1")));
     assert_eq!(action("touchpad"), (21, s("Fn")));
+    // Button names and aliases are case-insensitive, as action names are.
+    let caps = "profile \"U\" {\n  base \"Base\"\n  pins { Touchpad B1; BACK B2; }\n}\n";
+    let l = lib(&[("a.kdl", BASE), ("b.kdl", caps)]);
+    let r = l.resolve("U").unwrap();
+    let action = |b: &str| {
+        r.pins
+            .iter()
+            .find(|p| p.button == b)
+            .unwrap()
+            .action_name
+            .clone()
+    };
+    assert_eq!(action("touchpad"), s("B1"));
+    assert_eq!(action("share"), s("B2"));
     // A child that names the button by its name replaces the alias.
     let child = "profile \"C\" { base \"A\"; pins { share B1; }; }\n";
     let l = lib(&[("a.kdl", BASE), ("b.kdl", text), ("c.kdl", child)]);
@@ -670,6 +684,11 @@ fn aliases_and_renamed_buttons() {
             "b.kdl:3:10: button \"fn3\" is now \"share\" on haute42-s16",
         ),
         ("fn1 A2;", "b.kdl:3:10: button \"fn1\" is now \"touchpad\""),
+        ("FN2 A1;", "b.kdl:3:10: button \"FN2\" is now \"home\""),
+        (
+            "share S1; Share S2;",
+            "b.kdl:3:20: button share is twice in pins",
+        ),
         ("fn4 S2;", "b.kdl:3:10: button \"fn4\" is now \"options\""),
     ] {
         let text = format!("profile \"A\" {{\n  base \"Base\"\n  pins {{ {pins} }}\n}}\n");

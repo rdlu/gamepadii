@@ -31,8 +31,10 @@ pub struct BoardButton {
 }
 
 impl BoardButton {
+    /// Names are case-insensitive, as action names are.
     fn named(&self, name: &str) -> bool {
-        self.name == name || self.aliases.iter().any(|a| a == name)
+        self.name.eq_ignore_ascii_case(name)
+            || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
     }
 }
 
@@ -55,7 +57,7 @@ impl Board {
     pub fn renamed(&self, old: &str) -> Option<&'static str> {
         RENAMED
             .iter()
-            .find(|(b, o, _)| *b == self.name && *o == old)
+            .find(|(b, o, _)| *b == self.name && o.eq_ignore_ascii_case(old))
             .map(|(_, _, new)| *new)
     }
 
@@ -159,8 +161,8 @@ fn button(src: &Src, node: &kdl::KdlNode) -> Result<BoardButton, LibraryError> {
                     .as_string()
                     .filter(|a| !a.is_empty())
                     .ok_or_else(|| src.entry_error(e, "alias: a string"))?;
-                if a == name
-                    || aliases.iter().any(|o| o == a)
+                if a.eq_ignore_ascii_case(&name)
+                    || aliases.iter().any(|o| o.eq_ignore_ascii_case(a))
                     || super::parse::is_reserved_pin_name(a)
                 {
                     return Err(src.entry_error(e, &format!("alias {a:?}: not a new name")));
