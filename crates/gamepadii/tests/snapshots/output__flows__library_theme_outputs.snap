@@ -1,0 +1,231 @@
+---
+source: crates/gamepadii/tests/output.rs
+expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::library_show(human(), &xbox),\n&json_show[..json_show.find(\"\\\"pins\\\"\").unwrap()],\noutput::library_theme(human(), &snes),\n&json_theme[..json_theme.find(\"\\\"theme_file\\\"\").unwrap()],\noutput::theme_file(&theme.theme_file), output::library_apply(human(), &both),\noutput::theme_apply_as(human(), &alone, Some(\"snes\")),)"
+---
+Profile My Game Xbox
+file          (shipped) examples/xbox-names.kdl:8
+bases         Default
+board         haute42-s16 (Haute42COSMOX)
+label         My Game X
+input mode    XInput
+names         xbox
+theme         purple-green
+pins          button    GPIO  action                  from
+              left         5  Left                    Default
+              down         3  Down                    Default
+              right        4  Right                   Default
+              m1          27  Up                      Default
+              up           2  A                       My Game Xbox
+              m2          26  LB                      My Game Xbox
+              rs          19  RB                      My Game Xbox
+              ls          18  LS                      Default
+              p1          10  X                       Default
+              p2          11  Y                       Default
+              p3          12  RB                      Default
+              p4          13  LB                      Default
+              k1           6  A                       Default
+              k2           7  B                       Default
+              k3           8  RT                      Default
+              k4           9  LT                      Default
+              touchpad    21  A2                      Default
+              home        20  Guide                   Default
+              share       16  Back                    Default
+              options     17  Start                   Default
+              turbo       14  menu-navigation-toggle  Default
+
+{
+  "schema": 1,
+  "name": "My Game Xbox",
+  "file": "(shipped) examples/xbox-names.kdl",
+  "shipped": true,
+  "line": 8,
+  "bases": [
+    "Default"
+  ],
+  "board": "haute42-s16",
+  "firmware_board": "Haute42COSMOX",
+  "label": "My Game X",
+  "input_mode": "xinput",
+  "names": "xbox",
+  "theme": "purple-green",
+  
+Theme snes
+file          (shipped) examples/themes.kdl:28
+board         haute42-s16 (Haute42COSMOX)
+colours       custom 0 #5a5a8c, custom 1 #e0c020, custom 2 #d03030, custom 3 #20a040, custom 4 #3050d0
+idle          custom 0 (#5a5a8c)
+pressed       white
+buttons       button  GPIO  idle                pressed
+              p1        10  custom 3 (#20a040)  -
+              p2        11  custom 4 (#3050d0)  -
+              k1         6  custom 1 (#e0c020)  -
+              k2         7  custom 2 (#d03030)  -
+case          -
+lights        idle_effect static-color
+              pressed_effect static-color
+              press_fade_ms 200
+note          the custom colours are global: the other lights profiles that use colours 14 to 29 change too
+
+{
+  "schema": 1,
+  "name": "purple-green",
+  "file": "(shipped) examples/themes.kdl",
+  "shipped": true,
+  "line": 18,
+  "board": "haute42-s16",
+  "firmware_board": "Haute42COSMOX",
+  "colors": [
+    "#8000ff",
+    "#00ff60"
+  ],
+  "idle": {
+    "number": 14,
+    "name": "custom 0",
+    "rgb": "#8000ff"
+  },
+  "pressed": {
+    "number": 15,
+    "name": "custom 1",
+    "rgb": "#00ff60"
+  },
+  "case": null,
+  "buttons": [],
+  "fields": {
+    "idle_effect": "static-color",
+    "pressed_effect": "static-color"
+  },
+  
+{
+  "schema": 1,
+  "board": "Haute42COSMOX",
+  "colors": [
+    "#8000ff",
+    "#00ff60"
+  ],
+  "lights": {
+    "schema": 1,
+    "board": "Haute42COSMOX",
+    "profile": null,
+    "enabled": null,
+    "idle_effect": 0,
+    "idle_effect_name": "static-color",
+    "pressed_effect": 0,
+    "pressed_effect_name": "static-color",
+    "idle_cycle_time": null,
+    "idle_colors": [
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14,
+      14
+    ],
+    "pressed_colors": [
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15
+    ],
+    "press_hold_ms": null,
+    "press_fade_ms": null,
+    "idle_special_color": null,
+    "case_effect": null,
+    "case_effect_name": null,
+    "case_colors": null,
+    "pressed_special_color": null,
+    "case_in_special_moves": null,
+    "pressed_cycle_time": null,
+    "case_in_pressed": null,
+    "case_cycle_time": null,
+    "idle_special_rainbow": null,
+    "pressed_special_rainbow": null,
+    "case_special_rainbow": null,
+    "case_special_color": null,
+    "effect_param": null,
+    "other_fields": []
+  }
+}
+Profile My Game Xbox written to profile 6 My Game X and active
+label         no label -> My Game X
+board         haute42-s16 (Haute42COSMOX)
+pins          button  GPIO  now                     after
+              up         2  same as profile 1 (Up)  B1
+              rs        19  same as profile 1 (R3)  R1
+              m2        26  same as profile 1 (L3)  L1
+same action   18 pins: the stored value changes, the action does not
+              down, right, left, k1, k2, k3, k4, p1, p2, p3, p4, turbo, share, options, ls, home, touchpad, m1
+input mode    XInput (the pad runs it)
+was           no label, disabled
+applied       yes
+saved         no (RAM only)
+backup        20261017-165703-Haute42COSMOX-profile6.json
+via           the control channel (/dev/bus/usb/003/007)
+note          not saved: after a restart the pad has its saved profiles again, unless something saves the settings first; --save keeps it
+
+Theme purple-green on lights profile 0 runs now
+colours       2 set, changed custom 0, 1
+changed       idle_effect, idle_colors, pressed_colors
+applied       yes
+saved         no (RAM only)
+backup        20261017-165703-Haute42COSMOX-theme0.json
+via           the control channel (/dev/bus/usb/003/007)
+note          the custom colours are global: the other lights profiles that use colours 14 to 29 change too; not saved: a restart undoes the theme, unless something saves the settings first; --save keeps it
+
+Theme snes on lights profile 0 runs now
+colours       5 set, changed custom 0, 1, 2, 3, 4
+changed       idle_colors, pressed_colors, press_fade_ms
+applied       yes
+saved         no (RAM only)
+backup        20261017-165703-Haute42COSMOX-theme0.json
+via           the control channel (/dev/bus/usb/003/007)
+note          the custom colours are global: the other lights profiles that use colours 14 to 29 change too; not saved: a restart undoes the theme, unless something saves the settings first; --save keeps it

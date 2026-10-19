@@ -7,8 +7,12 @@
 // right, m1, up (the big thumb button), m2 and rs; the top row is ls and
 // p1 to p4; the bottom row is k1 to k4.
 //
-// The labels of fn1 to fn4 and the position of turbo are not checked on
-// the pad yet (open question 4 of the research doc).
+// The 4 small buttons are top right: GPIO 21, 20, 16 and 17, from left to
+// right. The case prints Touchpad, Home, Share and Options on them
+// (PlayStation), and −, Home, Back and Start under them (Xbox). The names
+// are the top labels; an alias is the label under the button. The turbo
+// button (GPIO 14) is top left. No button has the label FN: Fn is an
+// action, not a button.
 board "haute42-s16" {
     firmware-board "Haute42COSMOX"
 
@@ -30,9 +34,9 @@ board "haute42-s16" {
     button k3 gpio=8
     button k4 gpio=9
 
-    button fn1 gpio=21 label="Touchpad?"
-    button fn2 gpio=20 label="Home"
-    button fn3 gpio=16 label="Share"
-    button fn4 gpio=17 label="Options"
+    button touchpad gpio=21 label="Touchpad / −" alias="minus"
+    button home gpio=20 label="Home"
+    button share gpio=16 label="Share / Back" alias="back"
+    button options gpio=17 label="Options / Start" alias="start"
     button turbo gpio=14
 }

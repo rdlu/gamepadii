@@ -1,0 +1,38 @@
+// Themes for the LEDs. `gamepadii library theme NAME` applies a theme to
+// the lights profile that runs. A profile with `theme NAME` gets its theme
+// from `library apply`.
+//
+// A colour is a built-in colour (black, white, red, orange, yellow,
+// limegreen, green, seafoam, aqua, skyblue, blue, purple, pink, magenta),
+// custom N (a custom colour of the pad), or "#rrggbb". gamepadii puts each
+// different #rrggbb into a custom colour, in the order of first use: at
+// most 16. The custom colours are global: the 4 lights profiles of the pad
+// share them.
+//
+// `idle` and `pressed` give the colours of all buttons. A button node
+// gives the colours of one button, by its name in the board file. `case`
+// gives the colour of the case lights. `effect` gives the effects, and
+// `lights` gives the other fields of a lights file, by their keys.
+
+// Purple buttons that become green when you push them.
+theme "purple-green" {
+    board "haute42-s16"
+    effect idle="static-color" pressed="static-color"
+    idle "#8000ff"
+    pressed "#00ff60"
+}
+
+// The colours of a SNES pad: the 4 face buttons in their colours, the
+// other buttons in grey, and white when you push a button. On the S16,
+// k1 to p2 are B1 to B4: B, A, Y and X on Switch, as on a SNES.
+theme "snes" {
+    board "haute42-s16"
+    effect idle="static-color" pressed="static-color"
+    idle "#5a5a8c"
+    pressed "white"
+    button k1 idle="#e0c020"
+    button k2 idle="#d03030"
+    button p1 idle="#20a040"
+    button p2 idle="#3050d0"
+    lights press_fade_ms=200
+}

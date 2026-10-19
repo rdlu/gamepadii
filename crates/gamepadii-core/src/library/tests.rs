@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::buttons::NameSystem;
 use crate::channel::sim::SimChannel;
-use crate::channel::{Slot, SlotPin};
+use crate::channel::{Rgb, Slot, SlotPin};
 use crate::slots::{self, SlotWrite};
 use crate::transport::mock::Mock;
 
@@ -90,6 +91,8 @@ profile "Hades II" {
             board: None,
             label: Some("Hades".into()),
             input_mode: Some(InputMode::SwitchPro),
+            names: NameSystem::Gp2040,
+            theme: None,
             default: Some(pin(-10)),
             pins: vec![
                 ("up".into(), pin(6)),
@@ -346,9 +349,13 @@ fn the_shipped_files_pass_the_checks() {
             "DKC",
             "TGX",
             "My Game",
-            "My Game Alt"
+            "My Game Alt",
+            "My Game Xbox"
         ]
     );
+    let themes: Vec<&str> = report.themes.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(themes, ["purple-green", "snes"]);
+    assert!(report.themes.iter().all(|t| t.ok && t.shipped));
 }
 
 #[test]
@@ -369,7 +376,7 @@ fn a_user_profile_hides_a_shipped_one_and_names_are_unique() {
     let errors: Vec<String> = report.errors.iter().map(|e| e.to_string()).collect();
     assert_eq!(errors.len(), 2, "{errors:?}");
     assert!(
-        errors[0].starts_with("again.kdl:1:1: profile \"Celeste\" is also in mine.kdl"),
+        errors[0].starts_with("again.kdl:1:1: \"Celeste\" is also a profile in mine.kdl"),
         "{errors:?}"
     );
     assert!(errors[1].starts_with("broken.kdl:1:"), "{errors:?}");
@@ -401,6 +408,32 @@ fn the_s16_board_file_matches_the_fixtures() {
     );
     let base = &s16_slots()[0];
     assert_eq!(base.label, "Default");
+    // The 4 small buttons, from left to right, and what profile 1 gives
+    // them: the PlayStation labels on the case are the names, and the
+    // labels under them are aliases.
+    let small: Vec<(u8, i16, &[String])> = ["touchpad", "home", "share", "options"]
+        .iter()
+        .map(|n| {
+            let b = board.button(n).unwrap();
+            (
+                b.gpio,
+                base.pins[usize::from(b.gpio)].action,
+                &b.aliases[..],
+            )
+        })
+        .collect();
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        small,
+        [
+            (21, 16, &s(&["minus"])[..]),
+            (20, 15, &[][..]),
+            (16, 13, &s(&["back"])[..]),
+            (17, 14, &s(&["start"])[..]),
+        ],
+        "A2, A1, S1, S2"
+    );
+    assert_eq!(board.button("back").unwrap().name, "share");
     // Profile 1 has a button press on each button of the board, but turbo:
     // the owner gave GPIO 14 the menu toggle.
     for b in &board.buttons {
@@ -452,6 +485,26 @@ fn bad_board_files_are_refused() {
         (
             "profile \"x\" { }",
             "1:1: a board file has exactly one board node",
+        ),
+        (
+            "board \"x\" { firmware-board \"X\"; button a gpio=1; button b gpio=2 alias=a; }",
+            "1:50: \"a\" is a name of button a already",
+        ),
+        (
+            "board \"x\" { firmware-board \"X\"; button a gpio=1 alias=c; button c gpio=2; }",
+            "1:58: \"c\" is a name of button a already",
+        ),
+        (
+            "board \"x\" { firmware-board \"X\"; button a gpio=1 alias=c; button b gpio=2 alias=c; }",
+            "1:58: \"c\" is a name of button a already",
+        ),
+        (
+            "board \"x\" { button a gpio=1 alias=a; }",
+            "1:29: alias \"a\": not a new name",
+        ),
+        (
+            "board \"x\" { button a gpio=1 alias=default; }",
+            "1:29: alias \"default\": not a new name",
         ),
     ];
     for (text, want) in cases {
@@ -545,6 +598,7 @@ fn save_pull_never_replaces_a_file_without_force() {
     let report = || PullReport {
         via: crate::commands::Route::Control,
         host: "node".into(),
+        names: NameSystem::Gp2040,
         board: "haute42-s16".into(),
         firmware_board: "Haute42COSMOX".into(),
         profiles: vec!["Default".into()],
@@ -585,4 +639,537 @@ fn a_missing_library_directory_is_empty() {
     let l = Library::load(Some(&dir.path().join("none"))).unwrap();
     assert!(l.profiles.iter().all(|d| d.origin.shipped()));
     assert_eq!(l.errors, []);
+}
+
+#[test]
+fn aliases_and_renamed_buttons() {
+    let text = "profile \"A\" {\n  base \"Base\"\n  pins { back S2; start S1; minus Fn; }\n}\n";
+    let l = lib(&[("a.kdl", BASE), ("b.kdl", text)]);
+    let r = l.resolve("A").unwrap();
+    let action = |b: &str| {
+        let p = r.pins.iter().find(|p| p.button == b).unwrap();
+        (p.gpio, p.action_name.clone())
+    };
+    let s = |v: &str| Some(v.to_string());
+    assert_eq!(action("share"), (16, s("S2")), "back is share");
+    assert_eq!(action("options"), (17, s("S1")));
+    assert_eq!(action("touchpad"), (21, s("Fn")));
+    // Button names and aliases are case-insensitive, as action names are.
+    let caps = "profile \"U\" {\n  base \"Base\"\n  pins { Touchpad B1; BACK B2; }\n}\n";
+    let l = lib(&[("a.kdl", BASE), ("b.kdl", caps)]);
+    let r = l.resolve("U").unwrap();
+    let action = |b: &str| {
+        r.pins
+            .iter()
+            .find(|p| p.button == b)
+            .unwrap()
+            .action_name
+            .clone()
+    };
+    assert_eq!(action("touchpad"), s("B1"));
+    assert_eq!(action("share"), s("B2"));
+    // A child that names the button by its name replaces the alias.
+    let child = "profile \"C\" { base \"A\"; pins { share B1; }; }\n";
+    let l = lib(&[("a.kdl", BASE), ("b.kdl", text), ("c.kdl", child)]);
+    let r = l.resolve("C").unwrap();
+    let share = r.pins.iter().find(|p| p.button == "share").unwrap();
+    assert_eq!(share.action_name.as_deref(), Some("B1"));
+    for (pins, want) in [
+        (
+            "share S1; back S2;",
+            "b.kdl:3:20: button share is twice in pins: share and back are names of one button",
+        ),
+        (
+            "fn3 S1;",
+            "b.kdl:3:10: button \"fn3\" is now \"share\" on haute42-s16",
+        ),
+        ("fn1 A2;", "b.kdl:3:10: button \"fn1\" is now \"touchpad\""),
+        ("FN2 A1;", "b.kdl:3:10: button \"FN2\" is now \"home\""),
+        (
+            "share S1; Share S2;",
+            "b.kdl:3:20: button share is twice in pins",
+        ),
+        ("fn4 S2;", "b.kdl:3:10: button \"fn4\" is now \"options\""),
+    ] {
+        let text = format!("profile \"A\" {{\n  base \"Base\"\n  pins {{ {pins} }}\n}}\n");
+        let got = resolve_error(&[("a.kdl", BASE), ("b.kdl", &text)], "A");
+        assert!(got.starts_with(want), "{pins}:\n got {got}\nwant {want}");
+    }
+}
+
+#[test]
+fn each_name_system_reads_its_own_names() {
+    let pin = |files: &[(&str, &str)], name: &str, button: &str| {
+        let r = lib(files).resolve(name).unwrap();
+        r.pins
+            .iter()
+            .find(|p| p.button == button)
+            .unwrap()
+            .action_name
+            .clone()
+            .unwrap()
+    };
+    for (system, action, want) in [
+        ("xbox", "A", "B1"),
+        ("switch", "A", "B2"),
+        ("switch", "a", "B2"),
+        ("playstation", "Cross", "B1"),
+        ("ps", "triangle", "B4"),
+        ("xbox", "view", "S1"),
+        ("xbox", "Menu", "S2"),
+        ("playstation", "Create", "S1"),
+        ("switch", "ZL", "L2"),
+        ("switch", "Capture", "A2"),
+        ("gp2040", "B2", "B2"),
+        // GP2040 names and the other actions are valid in each system.
+        ("xbox", "B1", "B1"),
+        ("switch", "L1", "L1"),
+        ("playstation", "R3", "R3"),
+        ("switch", "Up", "Up"),
+        ("switch", "none", "none"),
+        ("xbox", "Fn", "Fn"),
+        ("switch", "menu-navigation-toggle", "menu-navigation-toggle"),
+        ("xbox", "BUTTON_PRESS_B2", "B2"),
+        ("xbox", "6", "B2"),
+    ] {
+        let text = format!(
+            "names {system}\nprofile \"A\" {{ base \"Base\"; pins {{ up {action}; }}; }}\n"
+        );
+        assert_eq!(
+            pin(&[("a.kdl", BASE), ("b.kdl", &text)], "A", "up"),
+            want,
+            "{system} {action}"
+        );
+    }
+    // A profile's names node replaces the file's, and a base and a child
+    // can use two systems: each one in its own.
+    let text = "names xbox\n\
+        profile \"X\" { base \"Base\"; pins { up A; k2 A; }; }\n\
+        profile \"S\" { base \"X\"; names switch; pins { k2 A; }; }\n";
+    let files = [("a.kdl", BASE), ("b.kdl", text)];
+    assert_eq!(pin(&files, "S", "up"), "B1", "from X, in Xbox names");
+    assert_eq!(pin(&files, "S", "k2"), "B2", "in Switch names");
+    let l = lib(&files);
+    assert_eq!(l.resolve("S").unwrap().names, NameSystem::Switch);
+    assert_eq!(l.resolve("X").unwrap().names, NameSystem::Xbox);
+    assert_eq!(l.resolve("Base").unwrap().names, NameSystem::Gp2040);
+    // The names node can come after the pins, and after the profiles.
+    let text = "profile \"A\" { base \"Base\"; pins { up A; }; names switch; }\n";
+    assert_eq!(pin(&[("a.kdl", BASE), ("b.kdl", text)], "A", "up"), "B2");
+    let text = "profile \"A\" { base \"Base\"; pins { up A; }; }\nnames xbox\n";
+    assert_eq!(pin(&[("a.kdl", BASE), ("b.kdl", text)], "A", "up"), "B1");
+}
+
+#[test]
+fn a_name_of_another_system_is_an_error_that_lists_the_names() {
+    let cases = [
+        (
+            "profile \"A\" { pins { up A; }; }\n",
+            "a.kdl:1:25: unknown action \"A\": the GP2040 names are Up, Down, Left, Right, B1,",
+        ),
+        (
+            "names xbox\nprofile \"A\" { pins { up Cross; }; }\n",
+            "a.kdl:2:25: unknown action \"Cross\": the xbox names are A (B1), B (B2), X (B3), \
+             Y (B4), LB (L1), RB (R1), LT (L2), RT (R2), Back/View (S1), Start/Menu (S2), \
+             Guide (A1), LS (L3), RS (R3); the GP2040 names",
+        ),
+        (
+            "names switch\nprofile \"A\" { pins { up LB; }; }\n",
+            "a.kdl:2:25: unknown action \"LB\": the switch names are B (B1), A (B2)",
+        ),
+        (
+            "names playstation\nprofile \"A\" { pins { up Plus; }; }\n",
+            "a.kdl:2:25: unknown action \"Plus\": the playstation names are Cross (B1)",
+        ),
+        (
+            "names snes\n",
+            "a.kdl:1:1: \"snes\" is not a name system (gp2040, xbox, playstation, switch)",
+        ),
+        (
+            "names xbox\nnames xbox\n",
+            "a.kdl:2:1: names is twice in the file",
+        ),
+        (
+            "profile \"A\" { names xbox; names ps; }\n",
+            "a.kdl:1:27: names is twice in the profile",
+        ),
+    ];
+    for (text, want) in cases {
+        let got = parse_error(text);
+        assert!(got.starts_with(want), "{text:?}:\n got {got}\nwant {want}");
+    }
+}
+
+#[test]
+fn a_profile_resolves_to_one_slot_file_in_each_name_system() {
+    let board = board::named("haute42-s16").unwrap();
+    let slots = s16_slots();
+    let (pulled, skipped) = pull::profiles(&board, &slots);
+    let files = |names: NameSystem| {
+        let mut profiles = pulled.clone();
+        for p in &mut profiles {
+            p.names = names;
+        }
+        pull::text(&board, &profiles, &skipped)
+    };
+    let gp2040 = lib(&[("pull.kdl", &files(NameSystem::Gp2040))]);
+    for names in NameSystem::ALL {
+        let text = files(*names);
+        if *names != NameSystem::Gp2040 {
+            assert!(
+                text.contains(&format!("\nnames {}\n", names.key())),
+                "{text}"
+            );
+        }
+        // The KDL round trip keeps each profile and its text.
+        let again: Vec<Profile> = parse::profiles(file("pull.kdl"), &text)
+            .unwrap_or_else(|e| panic!("{e}\n{text}"))
+            .into_iter()
+            .map(|d| d.profile)
+            .collect();
+        assert!(again.iter().all(|p| p.names == *names));
+        let mut want = pulled.clone();
+        for p in &mut want {
+            p.names = *names;
+        }
+        assert_eq!(again, want, "{names}");
+        let l = lib(&[("pull.kdl", &text)]);
+        assert_eq!(l.list().errors, [], "{names}");
+        for p in &pulled {
+            assert_eq!(
+                l.resolve(&p.name).unwrap().slot_file(),
+                gp2040.resolve(&p.name).unwrap().slot_file(),
+                "{names}: {}",
+                p.name
+            );
+        }
+    }
+    // Xbox names in the KDL: `k1 A` for B1.
+    let text = files(NameSystem::Xbox);
+    assert!(text.contains("        k1 A\n"), "{text}");
+    assert!(
+        text.contains("        touchpad A2\n"),
+        "Xbox has no A2: {text}"
+    );
+    let text = files(NameSystem::Switch);
+    assert!(text.contains("        k1 B\n        k2 A\n"), "{text}");
+    // A file with two systems gives each profile its own names node.
+    let mut mixed = pulled.clone();
+    mixed[1].names = NameSystem::Playstation;
+    let text = write::file(&[], &mixed);
+    assert!(!text.starts_with("names"), "{text}");
+    assert!(text.contains("    names playstation\n"), "{text}");
+    let again: Vec<Profile> = parse::profiles(file("m.kdl"), &text)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.profile)
+        .collect();
+    assert_eq!(again, mixed);
+    // The shipped example in Xbox names is "My Game" with another label.
+    let shipped = Library::from_sources(Vec::new(), true);
+    let x = shipped.resolve("My Game Xbox").unwrap().slot_file();
+    let g = shipped.resolve("My Game").unwrap().slot_file();
+    assert_eq!(x.pins, g.pins);
+}
+
+const THEMES: &str = r##"
+theme "t" {
+    board "haute42-s16"
+    effect idle="static-color" pressed=jigglestatic
+    idle "#111111"
+    pressed "red"
+    button k1 idle="#222222" pressed="#111111"
+    button back pressed=white
+    case "#333333"
+    lights idle_cycle_time=3 case_in_pressed=#true idle_special_color="#00ff00"
+}
+"##;
+
+fn theme_error(text: &str) -> String {
+    parse::file(file("t.kdl"), text).unwrap_err().to_string()
+}
+
+#[test]
+fn a_theme_parses_and_gives_a_theme_file() {
+    let l = lib(&[("t.kdl", THEMES)]);
+    assert_eq!(l.errors, []);
+    let t = l.resolve_theme("T").unwrap();
+    // Each #rrggbb in a custom colour, in the order of first use.
+    let rgb = Rgb::from_u32;
+    assert_eq!(
+        t.colors,
+        Some(vec![rgb(0x111111), rgb(0x222222), rgb(0x333333)])
+    );
+    assert_eq!(t.idle.as_ref().map(|c| c.number), Some(14));
+    assert_eq!(
+        t.pressed.as_ref().map(|c| c.number),
+        Some(2),
+        "red is built in"
+    );
+    // The buttons by GPIO, in the order of the board file.
+    let buttons: Vec<(&str, u8)> = t
+        .buttons
+        .iter()
+        .map(|b| (b.button.as_str(), b.gpio))
+        .collect();
+    assert_eq!(buttons, [("k1", 6), ("share", 16)]);
+    let f = &t.theme_file;
+    assert_eq!(f.board.as_deref(), Some("Haute42COSMOX"));
+    // The theme file is what `leds theme apply` takes.
+    let json = serde_json::to_string(f).unwrap();
+    let again = crate::colors::ThemeFile::parse(&json).unwrap();
+    assert_eq!(&again, f);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let lights = &v["lights"];
+    let idle = lights["idle_colors"].as_array().unwrap();
+    let pressed = lights["pressed_colors"].as_array().unwrap();
+    assert_eq!((idle.len(), pressed.len()), (30, 30));
+    assert_eq!((idle[6].as_u64(), idle[7].as_u64()), (Some(15), Some(14)));
+    assert_eq!(idle[29], 14, "a GPIO with no button gets the colour of all");
+    assert_eq!(
+        (pressed[6].as_u64(), pressed[16].as_u64()),
+        (Some(14), Some(1))
+    );
+    assert_eq!(pressed[0], 2);
+    assert_eq!(lights["case_colors"], serde_json::json!(vec![16; 32]));
+    assert_eq!(lights["idle_effect"], 0);
+    assert_eq!(lights["pressed_effect"], 2);
+    assert_eq!(lights["idle_cycle_time"], 3);
+    assert_eq!(lights["case_in_pressed"], true);
+    assert_eq!(lights["idle_special_color"], "#00ff00");
+    assert_eq!(
+        v["colors"],
+        serde_json::json!(["#111111", "#222222", "#333333"])
+    );
+    // The shipped themes too.
+    let shipped = Library::from_sources(Vec::new(), true);
+    let pg = shipped.resolve_theme("purple-green").unwrap();
+    assert_eq!(pg.colors, Some(vec![rgb(0x8000ff), rgb(0x00ff60)]));
+    let lights = pg.theme_file.lights.unwrap();
+    assert_eq!(lights.values[&5], crate::pb::Value::Bytes(vec![14; 30]));
+    assert_eq!(lights.values[&6], crate::pb::Value::Bytes(vec![15; 30]));
+    let snes = shipped.resolve_theme("snes").unwrap();
+    assert_eq!(snes.colors.as_ref().map(Vec::len), Some(5));
+}
+
+#[test]
+fn a_theme_without_rrggbb_keeps_the_custom_colours() {
+    let text = "theme \"t\" { idle \"custom 3\"; pressed blue; }\n";
+    let t = lib(&[("t.kdl", text)]).resolve_theme("t").unwrap();
+    assert_eq!(t.colors, None);
+    assert_eq!(t.theme_file.colors, None);
+    assert_eq!(t.board, None);
+    let idle = &t.theme_file.lights.as_ref().unwrap().values[&5];
+    assert_eq!(*idle, crate::pb::Value::Bytes(vec![17; 30]));
+}
+
+#[test]
+fn a_theme_has_at_most_16_rrggbb_colours() {
+    let mut text = String::from("theme \"t\" {\n    board \"haute42-s16\"\n");
+    let board = board::named("haute42-s16").unwrap();
+    for (i, b) in board.buttons.iter().take(16).enumerate() {
+        text.push_str(&format!("    button {} idle=\"#0000{i:02x}\"\n", b.name));
+    }
+    // The same colour again needs no new custom colour.
+    text.push_str("    idle \"#00000f\"\n");
+    let ok = format!("{text}}}\n");
+    let t = lib(&[("t.kdl", &ok)]).resolve_theme("t").unwrap();
+    assert_eq!(t.colors.unwrap().len(), 16);
+    let bad = format!("{text}    pressed \"#ffffff\"\n}}\n");
+    let got = theme_error(&bad);
+    assert!(
+        got.starts_with(
+            "t.kdl:20:13: #ffffff is colour 17 of the theme in #rrggbb: the pad keeps at most 16"
+        ),
+        "{got}"
+    );
+}
+
+#[test]
+fn bad_themes_name_the_line_and_column() {
+    let cases = [
+        (
+            "theme \"t\" { colour red; }\n",
+            "t.kdl:1:13: unknown node \"colour\" in a theme",
+        ),
+        (
+            "theme \"t\" { idle sparkle; }\n",
+            "t.kdl:1:18: unknown colour \"sparkle\": give black, white",
+        ),
+        (
+            "theme \"t\" { idle \"#12345\"; }\n",
+            "t.kdl:1:18: \"#12345\" is not a colour: give #rrggbb",
+        ),
+        (
+            "theme \"t\" { idle 3; }\n",
+            "t.kdl:1:18: a colour is a name",
+        ),
+        (
+            "theme \"t\" { idle red blue; }\n",
+            "t.kdl:1:13: idle: give one value",
+        ),
+        (
+            "theme \"t\" { idle red; idle blue; }\n",
+            "t.kdl:1:23: idle is twice in the theme",
+        ),
+        (
+            "theme \"t\" {\n  idle \"custom 1\"\n  pressed \"#ffffff\"\n}\n",
+            "t.kdl:2:8: a theme with #rrggbb colours sets the custom colours itself",
+        ),
+        (
+            "theme \"t\" { button k1; }\n",
+            "t.kdl:1:13: button k1: give idle=COLOUR",
+        ),
+        (
+            "theme \"t\" { button k1 glow=red; }\n",
+            "t.kdl:1:23: unknown property \"glow\"",
+        ),
+        (
+            "theme \"t\" { button k1 idle=red; button k1 idle=blue; }\n",
+            "t.kdl:1:33: button k1 is twice in the theme",
+        ),
+        (
+            "theme \"t\" { effect idle=sparkle; }\n",
+            "t.kdl:1:20: idle_effect: no effect sparkle",
+        ),
+        (
+            "theme \"t\" { effect idle=40; }\n",
+            "t.kdl:1:20: idle_effect: the effects are 0 to",
+        ),
+        (
+            "theme \"t\" { effect glow=1; }\n",
+            "t.kdl:1:20: unknown property \"glow\"",
+        ),
+        (
+            "theme \"t\" { lights idle_cycle_time=12; }\n",
+            "t.kdl:1:20: idle_cycle_time: the cycle times are 0 to 9",
+        ),
+        (
+            "theme \"t\" { lights sparkle=1; }\n",
+            "t.kdl:1:20: unknown lights field \"sparkle\"",
+        ),
+        (
+            "theme \"t\" { lights idle_colors=1; }\n",
+            "t.kdl:1:20: idle_colors: a theme gives it with idle and button",
+        ),
+        (
+            "theme \"t\" { lights idle_effect=1; }\n",
+            "t.kdl:1:20: idle_effect: a theme gives it with effect idle=",
+        ),
+        ("theme \"t\" { }\n", "t.kdl:1:1: theme \"t\" sets nothing"),
+        ("theme { idle red; }\n", "t.kdl:1:1: theme: give one name"),
+    ];
+    for (text, want) in cases {
+        let got = theme_error(text);
+        assert!(got.starts_with(want), "{text:?}:\n got {got}\nwant {want}");
+    }
+}
+
+#[test]
+fn themes_resolve_with_their_board_and_with_their_profile() {
+    let theme = "theme \"lit\" {\n  idle red\n  button k1 idle=blue\n}\n";
+    // No board: the button nodes need one.
+    let l = lib(&[("t.kdl", theme)]);
+    let e = l.resolve_theme("lit").unwrap_err().to_string();
+    assert!(
+        e.contains("t.kdl:3:3: theme \"lit\" has button nodes but no board"),
+        "{e}"
+    );
+    // A profile with a board gives it.
+    let profile = "profile \"A\" {\n  base \"Base\"\n  theme \"lit\"\n}\n\
+                   profile \"B\" { base \"A\"; }\n";
+    let l = lib(&[("a.kdl", BASE), ("t.kdl", theme), ("p.kdl", profile)]);
+    let a = l.resolve("A").unwrap();
+    assert_eq!(a.theme.as_deref(), Some("lit"));
+    let t = l.profile_theme(&a).unwrap().unwrap();
+    assert_eq!(t.buttons[0].gpio, 6);
+    // The base gives the theme.
+    let b = l.resolve("B").unwrap();
+    assert_eq!(b.theme.as_deref(), Some("lit"));
+    assert!(
+        l.profile_theme(&l.resolve("Base").unwrap())
+            .unwrap()
+            .is_none()
+    );
+    let a_profile = "profile \"A\" {\n  base \"Base\"\n  theme \"lit\"\n}\n";
+    for (theme, profile, want) in [
+        (
+            theme,
+            "profile \"A\" {\n  base \"Base\"\n  theme \"dark\"\n}\n",
+            "p.kdl:3:3: theme \"dark\" is not in the library",
+        ),
+        (
+            "theme \"lit\" {\n  board \"pico\"\n  idle red\n}\n",
+            a_profile,
+            "t.kdl:2:3: no board file \"pico\"",
+        ),
+        (
+            "theme \"lit\" {\n  button k9 idle=red\n}\n",
+            a_profile,
+            "t.kdl:2:3: unknown button \"k9\": haute42-s16 has",
+        ),
+        (
+            "theme \"lit\" {\n  button fn2 idle=red\n}\n",
+            a_profile,
+            "t.kdl:2:3: button \"fn2\" is now \"home\"",
+        ),
+        (
+            "theme \"lit\" {\n  button share idle=red\n  button back pressed=red\n}\n",
+            a_profile,
+            "t.kdl:3:3: button share is twice in the theme: share names it too",
+        ),
+    ] {
+        let got = resolve_error(
+            &[("a.kdl", BASE), ("t.kdl", theme), ("p.kdl", profile)],
+            "A",
+        );
+        assert!(got.starts_with(want), "{theme:?}:\n got {got}\nwant {want}");
+    }
+    // `library list` gives a theme that does not resolve.
+    let l = lib(&[("t.kdl", "theme \"lit\" { board \"pico\"; idle red; }\n")]);
+    let report = l.list();
+    assert!(!report.themes[0].ok);
+    assert!(
+        report.errors[0].to_string().contains("no board file"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn profiles_and_themes_share_the_names() {
+    let l = lib(&[
+        ("a.kdl", BASE),
+        (
+            "t.kdl",
+            "theme \"base\" { idle red; }\ntheme \"x\" { idle red; }\n",
+        ),
+        ("u.kdl", "theme \"X\" { idle blue; }\n"),
+    ]);
+    let errors: Vec<String> = l.list().errors.iter().map(|e| e.to_string()).collect();
+    assert_eq!(
+        errors,
+        [
+            "t.kdl:1:1: \"base\" is also a profile in a.kdl; names must be unique",
+            "u.kdl:1:1: \"X\" is also a theme in t.kdl; names must be unique",
+        ]
+    );
+    assert!(l.is_theme("X") && !l.is_theme("Base"));
+    let e = l.resolve("x").unwrap_err().to_string();
+    assert!(
+        e.contains("no profile \"x\" in the library (\"x\" is a theme)"),
+        "{e}"
+    );
+    let e = l.resolve_theme("base").unwrap_err().to_string();
+    assert!(
+        e.contains("no theme \"base\" in the library (\"Base\" is a profile)"),
+        "{e}"
+    );
+    // A user theme hides a shipped one.
+    let l = Library::from_sources(
+        vec![(file("mine.kdl"), "theme \"snes\" { idle red; }\n".into())],
+        true,
+    );
+    assert_eq!(l.list().errors, []);
+    assert_eq!(l.resolve_theme("snes").unwrap().file, file("mine.kdl"));
 }

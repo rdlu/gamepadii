@@ -16,6 +16,7 @@ buttons. With our firmware fork, most changes do not need a button press.
 `status`, `info`, `backup`, `restore`, `reboot`, `mode`, `webconfig`,
 `profile switch`, `profile show`, `profile write`, `library list`,
 `library show`, `library pull`, `library diff`, `library apply`,
+`library theme`,
 `display layout`, `leds`,
 `leds profile show`, `leds profile write`, `leds colors`, `leds theme`,
 `input`, `input find-pin`, `log` and `setup udev`. The TUI
@@ -107,21 +108,30 @@ gamepadii profile write FILE --slot N [--select] [--save] [--label TEXT]
 gamepadii library list            the profiles in the library (KDL files
                                   in ~/.config/gamepadii/profiles/, and
                                   the shipped examples), and their errors
-gamepadii library show NAME [--slot-file]
-                                  a profile with its bases applied;
-                                  --slot-file gives a slot file for
-                                  profile write
-gamepadii library pull [--write [FILE]] [--force]
+gamepadii library show NAME [--slot-file | --theme-file]
+                                  a profile with its bases applied, or a
+                                  theme; --slot-file gives a slot file
+                                  for profile write, --theme-file a theme
+                                  file for leds theme apply
+gamepadii library pull [--write [FILE]] [--force] [--names SYSTEM]
                                   the enabled profiles of the pad, live,
                                   as KDL (needs control channel v1.4);
-                                  --write puts them into the library
+                                  --write puts them into the library;
+                                  --names xbox|playstation|switch writes
+                                  the actions in those names
 gamepadii library diff NAME [--slot N]
                                   what library apply writes to slot N,
                                   live (needs control channel v1.4);
                                   exit 1 when apply writes
 gamepadii library apply NAME [--slot N] [--select] [--save] [--no-backup]
+                          [--no-lights]
                                   write a profile to slot 2-6, live;
-                                  RAM only unless --save; backs up first
+                                  RAM only unless --save; backs up first;
+                                  then its theme, if it has one
+gamepadii library theme NAME [--profile N] [--save] [--no-backup]
+                                  apply a library theme to the LEDs, live
+                                  (needs control channel v1.5); RAM only
+                                  unless --save
 gamepadii leds profile show [N]   the effects and colours of a lights
                                   profile, live (needs control channel
                                   v1.5); --json gives a lights file
@@ -246,9 +256,47 @@ profile "My Game" {
   leaves out follow it.
 - `library show NAME --slot-file` gives the slot file of a profile, for
   `gamepadii profile write`.
-- `library list` shows each profile, and each error with its file, line
-  and column: an unknown button or action, a button twice, two input
-  modes, a base that is not there, or a loop of bases.
+- `library list` shows each profile and theme, and each error with its
+  file, line and column: an unknown button or action, a button twice, two
+  input modes, a base that is not there, or a loop of bases.
+
+You can write the actions in the names of your console. A file gives its
+name system one time: `gp2040` (the default: B1, S2), `xbox`,
+`playstation` (or `ps`) or `switch`. Here A is B1 (Xbox), and the button
+`back` is the alias of `share`, from the label on the case:
+
+```kdl
+names xbox
+
+profile "My Game Xbox" {
+    base "Default"
+    theme "purple-green"
+    pins {
+        up A
+        m2 LB
+        back Guide
+    }
+}
+```
+
+A theme gives the colours of the LEDs. A colour is a built-in colour
+(`red`), `custom N`, or `"#rrggbb"`: gamepadii puts each `#rrggbb` into
+one of the 16 custom colours. The custom colours are global: the 4 lights
+profiles of the pad share them.
+
+```kdl
+theme "purple-green" {
+    board "haute42-s16"
+    effect idle="static-color" pressed="static-color"
+    idle "#8000ff"
+    pressed "#00ff60"
+    button k1 idle=red
+}
+```
+
+`library theme NAME` applies a theme, and `library apply` of a profile
+with a theme applies the pins, then the theme (`--no-lights` writes the
+pins only).
 
 The format is in
 [docs/design/profile-library.md](docs/design/profile-library.md).

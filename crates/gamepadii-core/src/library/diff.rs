@@ -159,6 +159,11 @@ pub struct ApplyReport {
     pub written: bool,
     /// The write; `null` when nothing was written.
     pub write: Option<slots::SlotWriteReport>,
+    /// The theme of the profile that went to the LEDs; `null` with no
+    /// theme, or with `--no-lights`.
+    pub theme: Option<String>,
+    /// The apply of the theme; `null` when there is no theme.
+    pub lights: Option<crate::colors::ThemeApplyReport>,
 }
 
 /// What `library apply` asks for, besides the profile.

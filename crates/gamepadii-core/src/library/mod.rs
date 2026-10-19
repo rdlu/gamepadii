@@ -15,6 +15,7 @@ pub mod board;
 pub mod diff;
 pub mod parse;
 pub mod pull;
+pub mod theme;
 pub mod write;
 
 use std::fmt;
@@ -22,12 +23,14 @@ use std::path::{Path, PathBuf};
 
 use serde::{Serialize, Serializer};
 
+use crate::buttons::NameSystem;
 use crate::channel::proto::SLOT_LABEL_LEN;
 use crate::error::{Error, Result};
 use crate::mode::InputMode;
 use crate::slots::{Action, FilePin, SlotFile, action_name};
 
 pub use board::Board;
+pub use theme::{DefinedTheme, ResolvedTheme};
 
 /// What a button does in a profile: a `GpioAction`, and the masks of a
 /// `CUSTOM_BUTTON_COMBO`.
@@ -52,6 +55,11 @@ pub struct Profile {
     pub label: Option<String>,
     /// The input mode that the profile needs; the base can give it.
     pub input_mode: Option<InputMode>,
+    /// The name system of the actions in `pins`: the profile's `names`,
+    /// else the file's, else GP2040. It does not come from the base.
+    pub names: NameSystem,
+    /// The theme of the lights; the base can give it.
+    pub theme: Option<String>,
     /// The action of each board button that the profile and its bases do
     /// not name; when absent, those buttons follow profile 1 of the pad.
     pub default: Option<Pin>,
@@ -104,6 +112,7 @@ pub struct Places {
     pub board: Option<Place>,
     pub label: Option<Place>,
     pub input_mode: Option<Place>,
+    pub theme: Option<Place>,
     pub default: Option<Place>,
     /// One for each of [`Profile::pins`].
     pub pins: Vec<Place>,
@@ -178,6 +187,14 @@ const EXAMPLES: &[(&str, &str)] = &[
         "examples/per-game.kdl",
         include_str!("../../data/examples/per-game.kdl"),
     ),
+    (
+        "examples/xbox-names.kdl",
+        include_str!("../../data/examples/xbox-names.kdl"),
+    ),
+    (
+        "examples/themes.kdl",
+        include_str!("../../data/examples/themes.kdl"),
+    ),
 ];
 
 /// Every profile in the library, and the files that have errors.
@@ -185,6 +202,7 @@ const EXAMPLES: &[(&str, &str)] = &[
 pub struct Library {
     pub dir: Option<PathBuf>,
     pub profiles: Vec<Defined>,
+    pub themes: Vec<DefinedTheme>,
     pub errors: Vec<LibraryError>,
     /// The board files that profiles can name.
     pub boards: Vec<Board>,
@@ -243,23 +261,35 @@ impl Library {
     }
 
     fn add(&mut self, origin: Origin, text: &str, shipped: bool) {
-        let defined = match parse::profiles(origin, text) {
+        let parsed = match parse::file(origin, text) {
             Ok(d) => d,
             Err(e) => return self.errors.push(e),
         };
-        for d in defined {
-            if let Some(other) = self.get_exact(&d.profile.name) {
-                if !shipped {
-                    let msg = format!(
-                        "profile {:?} is also in {}; names must be unique",
-                        d.profile.name, other.origin
-                    );
-                    self.errors
-                        .push(LibraryError::at(&d.origin, Some(d.at.node), &msg));
-                }
-                continue;
+        // Profiles and themes share the names: `library show NAME` shows
+        // either one.
+        let taken = |lib: &mut Library, name: &str, origin: &Origin, place: Place| {
+            let other = lib
+                .get_exact(name)
+                .map(|d| ("profile", &d.origin))
+                .or_else(|| lib.get_theme(name).map(|d| ("theme", &d.origin)));
+            let Some((kind, file)) = other else {
+                return false;
+            };
+            if !shipped {
+                let msg = format!("{name:?} is also a {kind} in {file}; names must be unique");
+                lib.errors.push(LibraryError::at(origin, Some(place), &msg));
             }
-            self.profiles.push(d);
+            true
+        };
+        for d in parsed.profiles {
+            if !taken(self, &d.profile.name, &d.origin, d.at.node) {
+                self.profiles.push(d);
+            }
+        }
+        for d in parsed.themes {
+            if !taken(self, &d.theme.name, &d.origin, d.at.node) {
+                self.themes.push(d);
+            }
         }
     }
 
@@ -269,13 +299,95 @@ impl Library {
             .find(|d| d.profile.name.eq_ignore_ascii_case(name))
     }
 
+    fn get_theme(&self, name: &str) -> Option<&DefinedTheme> {
+        self.themes
+            .iter()
+            .find(|d| d.theme.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether `name` is a theme, not a profile.
+    pub fn is_theme(&self, name: &str) -> bool {
+        self.get_theme(name).is_some()
+    }
+
     /// The profile called `name` (case does not matter).
     pub fn get(&self, name: &str) -> Result<&Defined> {
         self.get_exact(name).ok_or_else(|| {
+            let also = match self.get_theme(name) {
+                Some(t) => format!(" ({:?} is a theme)", t.theme.name),
+                None => String::new(),
+            };
             Error::Usage(format!(
-                "no profile {name:?} in the library; `gamepadii library list` shows them"
+                "no profile {name:?} in the library{also}; `gamepadii library list` shows them"
             ))
         })
+    }
+
+    /// The theme called `name` (case does not matter), checked against its
+    /// board file.
+    pub fn resolve_theme(&self, name: &str) -> Result<ResolvedTheme> {
+        self.resolve_theme_for(name, None).map_err(|e| match e {
+            ThemeError::Missing => {
+                let also = match self.get_exact(name) {
+                    Some(p) => format!(" ({:?} is a profile)", p.profile.name),
+                    None => String::new(),
+                };
+                Error::Usage(format!(
+                    "no theme {name:?} in the library{also}; `gamepadii library list` shows them"
+                ))
+            }
+            ThemeError::Bad(e) => e.into(),
+        })
+    }
+
+    /// The theme of the profile `profile` (with its bases applied), on the
+    /// profile's board.
+    pub fn profile_theme(&self, profile: &Resolved) -> Result<Option<ResolvedTheme>> {
+        let Some(name) = &profile.theme else {
+            return Ok(None);
+        };
+        let board = self.board(&profile.board);
+        match self.resolve_theme_for(name, board) {
+            Ok(t) => Ok(Some(t)),
+            Err(ThemeError::Missing) => {
+                Err(Error::Usage(format!("no theme {name:?} in the library")))
+            }
+            Err(ThemeError::Bad(e)) => Err(e.into()),
+        }
+    }
+
+    /// The theme called `name`, on its own board, or else on `board` (the
+    /// board of a profile that names it).
+    fn resolve_theme_for(
+        &self,
+        name: &str,
+        board: Option<&Board>,
+    ) -> std::result::Result<ResolvedTheme, ThemeError> {
+        let d = self.get_theme(name).ok_or(ThemeError::Missing)?;
+        let own = match &d.theme.board {
+            Some(b) => Some(self.board(b).ok_or_else(|| {
+                let known: Vec<&str> = self.boards.iter().map(|b| b.name.as_str()).collect();
+                ThemeError::Bad(LibraryError::at(
+                    &d.origin,
+                    d.at.board,
+                    &format!("no board file {b:?} (known: {})", known.join(", ")),
+                ))
+            })?),
+            None => None,
+        };
+        if let (Some(own), Some(other)) = (own, board)
+            && own.name != other.name
+        {
+            return Err(ThemeError::Bad(LibraryError::at(
+                &d.origin,
+                d.at.board,
+                &format!(
+                    "board conflict: theme {:?} is for {}, the profile for {}",
+                    d.theme.name, own.name, other.name
+                ),
+            )));
+        }
+        theme::resolve(d, own.or(board)).map_err(ThemeError::Bad)
     }
 
     fn board(&self, name: &str) -> Option<&Board> {
@@ -311,8 +423,8 @@ impl Library {
         // before.
         let mut board: Option<(&Board, &Defined)> = None;
         let mut input_mode: Option<InputMode> = None;
+        let mut theme: Option<&Defined> = None;
         let mut default: Option<(Pin, &str)> = None;
-        let mut pins: Vec<(String, Pin, &str)> = Vec::new();
         for d in chain.iter().rev() {
             let p = &d.profile;
             if let Some(name) = &p.board {
@@ -354,12 +466,11 @@ impl Library {
                 }
                 input_mode = Some(m);
             }
+            if p.theme.is_some() {
+                theme = Some(d);
+            }
             if let Some(pin) = p.default {
                 default = Some((pin, &p.name));
-            }
-            for (button, pin) in &p.pins {
-                pins.retain(|(b, _, _)| b != button);
-                pins.push((button.clone(), *pin, &p.name));
             }
         }
         let Some((board, _)) = board else {
@@ -372,23 +483,56 @@ impl Library {
                 ),
             ));
         };
-        // Every button that the chain names must be on the board.
-        for d in &chain {
-            for ((button, _), place) in d.profile.pins.iter().zip(&d.at.pins) {
-                if board.button(button).is_none() {
+        // Every button that the chain names must be on the board. An alias
+        // names the same button as its name.
+        let mut pins: Vec<(String, Pin, &str)> = Vec::new();
+        for d in chain.iter().rev() {
+            let mut seen: Vec<(&str, &str)> = Vec::new();
+            for ((button, pin), place) in d.profile.pins.iter().zip(&d.at.pins) {
+                let err = |msg: String| LibraryError::at(&d.origin, Some(*place), &msg);
+                let Some(b) = board.button(button) else {
+                    if let Some(new) = board.renamed(button) {
+                        return Err(err(format!(
+                            "button {button:?} is now {new:?} on {}",
+                            board.name
+                        )));
+                    }
                     let known: Vec<&str> = board.buttons.iter().map(|b| b.name.as_str()).collect();
-                    return Err(LibraryError::at(
-                        &d.origin,
-                        Some(*place),
-                        &format!(
-                            "unknown button {button:?}: {} has {}",
-                            board.name,
-                            known.join(", ")
-                        ),
-                    ));
+                    return Err(err(format!(
+                        "unknown button {button:?}: {} has {}",
+                        board.name,
+                        known.join(", ")
+                    )));
+                };
+                if let Some((other, _)) = seen.iter().find(|(_, name)| *name == b.name) {
+                    return Err(err(format!(
+                        "button {} is twice in pins: {other} and {button} are names of one \
+                         button",
+                        b.name
+                    )));
                 }
+                seen.push((button, &b.name));
+                pins.retain(|(n, _, _)| *n != b.name);
+                pins.push((b.name.clone(), *pin, &d.profile.name));
             }
         }
+        let theme = match theme {
+            Some(d) => {
+                let name = d.profile.theme.as_deref().expect("a profile with a theme");
+                let t = self
+                    .resolve_theme_for(name, Some(board))
+                    .map_err(|e| match e {
+                        ThemeError::Missing => LibraryError::at(
+                            &d.origin,
+                            d.at.theme,
+                            &format!("theme {name:?} is not in the library"),
+                        ),
+                        ThemeError::Bad(e) => e,
+                    })?;
+                Some(t.name)
+            }
+            None => None,
+        };
         let label = top
             .profile
             .label
@@ -442,6 +586,8 @@ impl Library {
             firmware_board: board.firmware_board.clone(),
             label,
             input_mode,
+            names: top.profile.names,
+            theme,
             pins: resolved_pins,
         })
     }
@@ -478,12 +624,56 @@ impl Library {
                 }
             })
             .collect();
+        let themes = self
+            .themes
+            .iter()
+            .map(|d| {
+                let ok = match self.resolve_theme_for(&d.theme.name, None) {
+                    Ok(_) => true,
+                    Err(ThemeError::Bad(e)) => {
+                        if !errors.contains(&e) {
+                            errors.push(e);
+                        }
+                        false
+                    }
+                    Err(ThemeError::Missing) => false,
+                };
+                ThemeEntry {
+                    name: d.theme.name.clone(),
+                    file: d.origin.clone(),
+                    shipped: d.origin.shipped(),
+                    line: d.at.node.line,
+                    board: d.theme.board.clone(),
+                    ok,
+                }
+            })
+            .collect();
         ListReport {
             dir: self.dir.clone(),
             profiles,
+            themes,
             errors,
         }
     }
+}
+
+/// Why a theme does not resolve.
+enum ThemeError {
+    Missing,
+    Bad(LibraryError),
+}
+
+/// A theme in `gamepadii library list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThemeEntry {
+    pub name: String,
+    pub file: Origin,
+    pub shipped: bool,
+    pub line: usize,
+    /// `null`: for any board.
+    pub board: Option<String>,
+    /// The theme passes the checks.
+    pub ok: bool,
 }
 
 /// `gamepadii library list`.
@@ -492,7 +682,9 @@ pub struct ListReport {
     /// The library directory; `null` without a home.
     pub dir: Option<PathBuf>,
     pub profiles: Vec<ListEntry>,
-    /// Files that do not parse, and profiles that do not pass the checks.
+    pub themes: Vec<ThemeEntry>,
+    /// Files that do not parse, and profiles and themes that do not pass
+    /// the checks.
     pub errors: Vec<LibraryError>,
 }
 
@@ -522,6 +714,11 @@ pub struct Resolved {
     pub label: String,
     /// `null`: any input mode.
     pub input_mode: Option<InputMode>,
+    /// The name system of the profile's file, for the human output. The
+    /// JSON gives the GP2040 names in `action_name`.
+    pub names: NameSystem,
+    /// The theme of the lights; `null`: none.
+    pub theme: Option<String>,
     /// Each button of the board, in the order of the board file.
     pub pins: Vec<ResolvedPin>,
 }
@@ -574,6 +771,8 @@ pub struct PullReport {
     /// Always `control`: READ_SLOT.
     pub via: crate::commands::Route,
     pub host: String,
+    /// The name system of the actions in the KDL.
+    pub names: NameSystem,
     pub board: String,
     pub firmware_board: String,
     /// The names of the profiles, profile 1 first.

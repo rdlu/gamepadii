@@ -1,26 +1,43 @@
 //! Profiles → KDL 2.0 text, in the form that [`super::parse`] reads.
 
 use super::{Pin, Profile};
-use crate::slots::action_name;
+use crate::buttons::NameSystem;
+use crate::slots::action_name_in;
 
-/// `profiles` as one KDL file, after the `//` lines of `header`.
+/// `profiles` as one KDL file, after the `//` lines of `header`. When all
+/// profiles use one name system other than GP2040, a `names` node at the
+/// top gives it; else each profile gives its own.
 pub fn file(header: &[String], profiles: &[Profile]) -> String {
     let mut out = String::new();
     for line in header {
         out.push_str(&format!("// {line}\n"));
     }
-    for (i, p) in profiles.iter().enumerate() {
-        if i > 0 || !header.is_empty() {
+    let system = match profiles.first() {
+        Some(p) if profiles.iter().all(|o| o.names == p.names) => p.names,
+        _ => NameSystem::Gp2040,
+    };
+    let top = system != NameSystem::Gp2040;
+    if top {
+        if !header.is_empty() {
             out.push('\n');
         }
-        out.push_str(&profile(p));
+        out.push_str(&format!("names {}\n", system.key()));
+    }
+    for (i, p) in profiles.iter().enumerate() {
+        if i > 0 || !header.is_empty() || top {
+            out.push('\n');
+        }
+        out.push_str(&profile(p, system));
     }
     out
 }
 
-/// One `profile` node.
-pub fn profile(p: &Profile) -> String {
+/// One `profile` node, in a file with the name system `system`.
+pub fn profile(p: &Profile, system: NameSystem) -> String {
     let mut out = format!("profile {} {{\n", string(&p.name));
+    if p.names != system {
+        out.push_str(&format!("    names {}\n", p.names.key()));
+    }
     let mut prop = |key: &str, value: &Option<String>| {
         if let Some(v) = value {
             out.push_str(&format!("    {key} {}\n", string(v)));
@@ -32,13 +49,20 @@ pub fn profile(p: &Profile) -> String {
     if let Some(m) = p.input_mode {
         out.push_str(&format!("    input-mode {}\n", m.key().replace('_', "-")));
     }
+    if let Some(t) = &p.theme {
+        out.push_str(&format!("    theme {}\n", string(t)));
+    }
     if p.default.is_some() || !p.pins.is_empty() {
         out.push_str("    pins {\n");
         if let Some(d) = &p.default {
-            out.push_str(&format!("        default {}\n", pin(d)));
+            out.push_str(&format!("        default {}\n", pin(d, p.names)));
         }
         for (button, action) in &p.pins {
-            out.push_str(&format!("        {} {}\n", ident(button), pin(action)));
+            out.push_str(&format!(
+                "        {} {}\n",
+                ident(button),
+                pin(action, p.names)
+            ));
         }
         out.push_str("    }\n");
     }
@@ -46,9 +70,11 @@ pub fn profile(p: &Profile) -> String {
     out
 }
 
-/// `B1`, `none`, or `custom-button-combo button-mask=0x3 dpad-mask=0x0`.
-fn pin(p: &Pin) -> String {
-    let mut out = action_name(p.action).map_or_else(|| p.action.to_string(), |n| ident(&n));
+/// `B1` (`A` in Xbox names), `none`, or `custom-button-combo
+/// button-mask=0x3 dpad-mask=0x0`.
+fn pin(p: &Pin, names: NameSystem) -> String {
+    let mut out =
+        action_name_in(names, p.action).map_or_else(|| p.action.to_string(), |n| ident(&n));
     if p.button_mask != 0 || p.dpad_mask != 0 {
         out.push_str(&format!(
             " button-mask={:#x} dpad-mask={:#x}",

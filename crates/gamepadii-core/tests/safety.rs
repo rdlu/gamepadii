@@ -166,17 +166,22 @@ fn every_command(fake: &Fake, dir: &Path) {
             ..Default::default()
         };
         let _ = flow::profile_write(env, &file, &write, &mut Silent);
-        let _ = flow::library_pull(env);
-        let profile = gamepadii_core::library::Library::from_sources(Vec::new(), true)
-            .resolve("My Game")
-            .unwrap();
+        let _ = flow::library_pull(env, gamepadii_core::buttons::NameSystem::Xbox);
+        let lib = gamepadii_core::library::Library::from_sources(Vec::new(), true);
+        let profile = lib.resolve("My Game").unwrap();
+        let themed = lib.resolve("My Game Xbox").unwrap();
+        let theme = lib.profile_theme(&themed).unwrap().unwrap().theme_file;
         let _ = flow::library_diff(env, &profile, Some(6));
         let apply = gamepadii_core::library::diff::Apply {
             slot: Some(6),
             select: true,
             save: true,
         };
-        let _ = flow::library_apply(env, &profile, &apply, &mut Silent);
+        let _ = flow::library_apply(env, &profile, None, &apply, &mut Silent);
+        let _ = flow::library_apply(env, &themed, Some(&theme), &apply, &mut Silent);
+        let theme = lib.resolve_theme("snes").unwrap().theme_file;
+        let to = gamepadii_core::colors::ThemeApply::default();
+        let _ = flow::theme_apply(env, &theme, &to, &mut Silent);
         let _ = flow::lights_show(env, None);
         let file = gamepadii_core::lights::LightsFile::default();
         let write = gamepadii_core::lights::LightsWrite {

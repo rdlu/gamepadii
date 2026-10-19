@@ -25,11 +25,40 @@ pub struct BoardButton {
     pub gpio: u8,
     /// The text printed on the case, when the button has one.
     pub label: Option<String>,
+    /// Other names that a profile can use for the button: the other
+    /// printed labels.
+    pub aliases: Vec<String>,
 }
 
+impl BoardButton {
+    /// Names are case-insensitive, as action names are.
+    fn named(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
+            || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    }
+}
+
+/// Buttons that a board file gave another name before a release, for a
+/// clear error: (board, old name, new name).
+const RENAMED: &[(&str, &str, &str)] = &[
+    ("haute42-s16", "fn1", "touchpad"),
+    ("haute42-s16", "fn2", "home"),
+    ("haute42-s16", "fn3", "share"),
+    ("haute42-s16", "fn4", "options"),
+];
+
 impl Board {
+    /// The button called `name`, by its name or an alias.
     pub fn button(&self, name: &str) -> Option<&BoardButton> {
-        self.buttons.iter().find(|b| b.name == name)
+        self.buttons.iter().find(|b| b.named(name))
+    }
+
+    /// The new name of a button that had the name `old`.
+    pub fn renamed(&self, old: &str) -> Option<&'static str> {
+        RENAMED
+            .iter()
+            .find(|(b, o, _)| *b == self.name && o.eq_ignore_ascii_case(old))
+            .map(|(_, _, new)| *new)
     }
 
     pub fn by_gpio(&self, gpio: u8) -> Option<&BoardButton> {
@@ -63,6 +92,15 @@ impl Board {
                     if buttons.iter().any(|o| o.name == b.name) {
                         return Err(src.node_error(child, &format!("button {} is twice", b.name)));
                     }
+                    // A name or an alias names one button only.
+                    for name in std::iter::once(&b.name).chain(&b.aliases) {
+                        if let Some(o) = buttons.iter().find(|o| o.named(name)) {
+                            return Err(src.node_error(
+                                child,
+                                &format!("{name:?} is a name of button {} already", o.name),
+                            ));
+                        }
+                    }
                     if !gpios.insert(b.gpio) {
                         return Err(
                             src.node_error(child, &format!("GPIO {} has two buttons", b.gpio))
@@ -89,7 +127,7 @@ impl Board {
     }
 }
 
-/// `button NAME gpio=N [label="TEXT"] [size="TEXT"]`.
+/// `button NAME gpio=N [label="TEXT"] [alias="NAME" ...] [size="TEXT"]`.
 fn button(src: &Src, node: &kdl::KdlNode) -> Result<BoardButton, LibraryError> {
     let name = one_string(src, node)?;
     if super::parse::is_reserved_pin_name(&name) {
@@ -97,6 +135,7 @@ fn button(src: &Src, node: &kdl::KdlNode) -> Result<BoardButton, LibraryError> {
     }
     let mut gpio = None;
     let mut label = None;
+    let mut aliases: Vec<String> = Vec::new();
     for e in node.entries().iter().filter(|e| e.name().is_some()) {
         let key = e.name().map(|n| n.value()).unwrap_or_default();
         match key {
@@ -116,12 +155,31 @@ fn button(src: &Src, node: &kdl::KdlNode) -> Result<BoardButton, LibraryError> {
                         .to_string(),
                 );
             }
+            "alias" => {
+                let a = e
+                    .value()
+                    .as_string()
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| src.entry_error(e, "alias: a string"))?;
+                if a.eq_ignore_ascii_case(&name)
+                    || aliases.iter().any(|o| o.eq_ignore_ascii_case(a))
+                    || super::parse::is_reserved_pin_name(a)
+                {
+                    return Err(src.entry_error(e, &format!("alias {a:?}: not a new name")));
+                }
+                aliases.push(a.to_string());
+            }
             "size" => {}
             _ => return Err(src.entry_error(e, &format!("unknown property {key:?}"))),
         }
     }
     let gpio = gpio.ok_or_else(|| src.node_error(node, &format!("button {name} has no gpio")))?;
-    Ok(BoardButton { name, gpio, label })
+    Ok(BoardButton {
+        name,
+        gpio,
+        label,
+        aliases,
+    })
 }
 
 /// The board files that gamepadii ships.

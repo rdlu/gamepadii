@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamepadii_core::api::{PinMappings, ProfileOptions, RebootAck};
-use gamepadii_core::buttons::{self, Button, Combo, Profiles};
+use gamepadii_core::buttons::{self, Button, Combo, NameSystem, Profiles};
 use gamepadii_core::cache::{self, DeviceCache};
 use gamepadii_core::channel::Rgb;
 use gamepadii_core::channel::sim::{SimChannel, SimCustomColors, SimInput};
@@ -2793,12 +2793,20 @@ fn profile_write_refuses_before_it_sends() {
 #[test]
 fn library_pull_reads_the_slots_as_kdl() {
     let rig = slots_rig(InputMode::Xinput);
-    let r = rig.run(flow::library_pull).unwrap();
+    let r = rig
+        .run(|env| flow::library_pull(env, NameSystem::Gp2040))
+        .unwrap();
     assert_eq!(r.profiles, ["Default", "SilkSong", "Celeste", "DKC", "TGX"]);
     assert_eq!(r.slots, [1, 2, 3, 4, 5]);
     assert_eq!((r.board.as_str(), r.skipped.len()), ("haute42-s16", 0));
     assert_eq!(r.file, None);
     insta::assert_snapshot!(r.kdl);
+    // In Xbox names: the same profiles.
+    let x = rig
+        .run(|env| flow::library_pull(env, NameSystem::Xbox))
+        .unwrap();
+    assert_eq!(x.names, NameSystem::Xbox);
+    insta::assert_snapshot!("library_pull_in_xbox_names", x.kdl);
     assert!(rig.channel_commands().is_empty(), "reads only");
     assert!(rig.requests().is_empty() && reboots(&rig).is_empty());
     // The KDL is a library that passes the checks, and each profile gives
@@ -2831,7 +2839,9 @@ fn library_pull_needs_the_slot_commands_and_a_board_file() {
         (Rig::cc(InputMode::Xinput), "v1.0"),
         (Rig::s16(InputMode::Xinput), "control channel v1.4"),
     ] {
-        let e = rig.run(flow::library_pull).unwrap_err();
+        let e = rig
+            .run(|env| flow::library_pull(env, NameSystem::Gp2040))
+            .unwrap_err();
         assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
         assert!(e.to_string().contains(says), "{e}");
     }
@@ -2844,7 +2854,9 @@ fn library_pull_needs_the_slot_commands_and_a_board_file() {
                     .insert(gamepadii_core::channel::proto::string::BOARD, "Pico".into());
             }),
     );
-    let e = rig.run(flow::library_pull).unwrap_err();
+    let e = rig
+        .run(|env| flow::library_pull(env, NameSystem::Gp2040))
+        .unwrap_err();
     assert_eq!(e.exit_code(), exit::USAGE, "{e}");
     assert!(e.to_string().contains("no board file"), "{e}");
 }
@@ -2861,7 +2873,7 @@ fn library_apply(
     apply: &Apply,
 ) -> gamepadii_core::Result<gamepadii_core::library::diff::ApplyReport> {
     let profile = shipped(name);
-    rig.run(|env| flow::library_apply(env, &profile, apply, &mut Log::default()))
+    rig.run(|env| flow::library_apply(env, &profile, None, apply, &mut Log::default()))
 }
 
 fn to_slot(slot: u8, select: bool, save: bool) -> Apply {
@@ -3649,6 +3661,143 @@ fn theme_show_is_a_theme_file() {
         .run(|env| flow::theme_show(env, None))
         .unwrap();
     assert_eq!(r.theme.colors, None);
+}
+
+// ---- library themes ----------------------------------------------------------
+
+/// A v1.9 pad with the slot commands too.
+fn library_lights_rig(f: impl FnOnce(&mut SimChannel)) -> Rig {
+    colors_rig(2, |c| {
+        *c = c.clone().with_slots();
+        f(c);
+    })
+}
+
+fn shipped_theme(name: &str) -> ThemeFile {
+    Library::from_sources(Vec::new(), true)
+        .resolve_theme(name)
+        .unwrap()
+        .theme_file
+}
+
+#[test]
+fn library_theme_applies_through_theme_apply() {
+    let rig = library_lights_rig(|_| {});
+    let theme = shipped_theme("purple-green");
+    let r = rig
+        .run(|env| flow::theme_apply(env, &theme, &ThemeApply::default(), &mut Log::default()))
+        .unwrap();
+    assert!(r.active && r.applied && r.verified && !r.saved);
+    assert_eq!((r.profile, r.colors), (0, Some(2)));
+    // The colours, the wait until PENDING is clear, then the profile.
+    let log = writes_and_waits(&rig);
+    let colors = log.iter().position(|c| *c == 0x1a).unwrap();
+    let lights = log.iter().position(|c| *c == 0x16).unwrap();
+    assert!(colors < lights, "{log:x?}");
+    assert!(log[colors..lights].contains(&0x05), "{log:x?}");
+    assert_eq!(rig.channel_commands(), [0x1a, 0x16]);
+    let fw = rig.pad.firmware();
+    assert_eq!(
+        fw.custom_colors,
+        SimCustomColors::new(&[rgb(0x8000ff), rgb(0x00ff60)])
+    );
+    assert_ne!(fw.saved_custom_colors, fw.custom_colors, "RAM only");
+    let shown = rig.run(|env| flow::theme_show(env, None)).unwrap();
+    let lights = shown.theme.lights.unwrap();
+    assert_eq!(
+        lights.values[&5],
+        gamepadii_core::pb::Value::Bytes(vec![14; 30])
+    );
+    assert_eq!(
+        lights.values[&6],
+        gamepadii_core::pb::Value::Bytes(vec![15; 30])
+    );
+    assert!(r.note.unwrap().contains("the custom colours are global"));
+}
+
+#[test]
+fn library_apply_writes_the_pins_then_the_theme() {
+    let rig = library_lights_rig(|_| {});
+    let lib = Library::from_sources(Vec::new(), true);
+    let profile = lib.resolve("My Game Xbox").unwrap();
+    assert_eq!(profile.theme.as_deref(), Some("purple-green"));
+    let theme = lib.profile_theme(&profile).unwrap().unwrap().theme_file;
+    let r = rig
+        .run(|env| {
+            flow::library_apply(
+                env,
+                &profile,
+                Some(&theme),
+                &to_slot(6, true, false),
+                &mut Log::default(),
+            )
+        })
+        .unwrap();
+    assert!(r.written);
+    assert_eq!(r.theme.as_deref(), Some("purple-green"));
+    let l = r.lights.unwrap();
+    assert!(l.active && !l.saved);
+    // The slot, then the colours, then the lights profile; RAM only.
+    assert_eq!(rig.channel_commands(), [0x15, 0x1a, 0x16]);
+    let log = writes_and_waits(&rig);
+    let colors = log.iter().position(|c| *c == 0x1a).unwrap();
+    let lights = log.iter().position(|c| *c == 0x16).unwrap();
+    assert!(log[colors..lights].contains(&0x05), "{log:x?}");
+    let fw = rig.pad.firmware();
+    assert!(!fw.saved_slots.contains_key(&6));
+    assert_ne!(fw.saved_custom_colors, fw.custom_colors);
+    // In Xbox names, A is B1: the same pins as "My Game".
+    assert_eq!(fw.slots[&6].pins[2].action, 5);
+    // A slot that has the profile already: still the theme.
+    let rig = library_lights_rig(|_| {});
+    let apply = |theme: Option<&ThemeFile>| {
+        rig.run(|env| {
+            flow::library_apply(
+                env,
+                &profile,
+                theme,
+                &to_slot(6, false, false),
+                &mut Log::default(),
+            )
+        })
+    };
+    apply(None).unwrap();
+    let r = apply(Some(&theme)).unwrap();
+    assert!(!r.written && r.lights.is_some());
+    // --no-lights: the caller gives no theme.
+    let r = apply(None).unwrap();
+    assert!(r.lights.is_none() && r.theme.is_none());
+}
+
+#[test]
+fn library_apply_checks_the_theme_before_it_writes() {
+    let lib = Library::from_sources(Vec::new(), true);
+    let profile = lib.resolve("My Game Xbox").unwrap();
+    let theme = lib.profile_theme(&profile).unwrap().unwrap().theme_file;
+    let run = |rig: &Rig| {
+        rig.run(|env| {
+            flow::library_apply(
+                env,
+                &profile,
+                Some(&theme),
+                &to_slot(6, true, false),
+                &mut Log::default(),
+            )
+        })
+    };
+    // The lights are off, a preview, or a pad with no custom colours.
+    let off = library_lights_rig(|c| c.lights.profile = -1);
+    let e = run(&off).unwrap_err();
+    assert!(e.to_string().contains("the lights are off"), "{e}");
+    assert!(off.channel_commands().is_empty());
+    let preview = library_lights_rig(|c| c.lights_limits.preview = true);
+    assert_eq!(run(&preview).unwrap_err().exit_code(), exit::NEEDS_USER);
+    assert!(preview.channel_commands().is_empty());
+    let no_lights = slots_rig(InputMode::Xinput);
+    let e = run(&no_lights).unwrap_err();
+    assert_eq!(e.exit_code(), exit::NEEDS_USER, "{e}");
+    assert!(no_lights.channel_commands().is_empty(), "no slot write");
+    assert!(files(&no_lights.backups_dir()).is_empty(), "no backup");
 }
 
 // ---- the board ID (control channel v1.3) -------------------------------------

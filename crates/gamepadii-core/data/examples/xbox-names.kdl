@@ -1,0 +1,20 @@
+// "My Game" of per-game.kdl again, in Xbox names. A file gives its name
+// system one time, with a names node: gp2040 (the default), xbox,
+// playstation (or ps) or switch. In this file, A is B1, LB is L1 and RB
+// is R1. The GP2040 names (B1, Fn, turbo, none) are also valid here. A
+// profile can give its own names node, for example `names switch`.
+names xbox
+
+profile "My Game Xbox" {
+    base "Default"
+    label "My Game X"
+    input-mode xinput
+    // The LED theme in themes.kdl: `library apply` applies it after the
+    // pins. `library apply --no-lights` writes only the pins.
+    theme "purple-green"
+    pins {
+        up A
+        m2 LB
+        rs RB
+    }
+}

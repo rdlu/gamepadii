@@ -26,6 +26,12 @@ Options:
       --json
           Same as `--format json`
 
+      --names <SYSTEM>
+          The names of the actions: gp2040 (B1, S2), xbox (A, Start), playstation (Cross, Options) or switch (B, Plus)
+          
+          [default: gp2040]
+          [possible values: gp2040, xbox, playstation, switch]
+
       --host <HOST>
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1
 

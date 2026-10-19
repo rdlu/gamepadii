@@ -13,7 +13,7 @@ use gamepadii_core::api::{Evidence, Line, LineEvidence, RebootAck};
 use gamepadii_core::buttons::Button;
 use gamepadii_core::channel::{LogEvent, proto};
 use gamepadii_core::colors::{
-    self, ColorEntry, ColorsReport, ColorsWriteReport, ThemeApplyReport, ThemeReport,
+    self, ColorEntry, ColorsReport, ColorsWriteReport, ThemeApplyReport, ThemeFile, ThemeReport,
 };
 use gamepadii_core::commands::{
     BackupReport, ChannelReport, Firmware, Info, ModeSetting, Status, StatusDevice,
@@ -27,11 +27,12 @@ use gamepadii_core::flow::{
 use gamepadii_core::input::{FoundPin, InputReport, NamesFrom, PinInfo, Sticks};
 use gamepadii_core::leds::{ButtonColor, LedReport, LedSetReport, LedState, Lights, Named};
 use gamepadii_core::library::diff::{ApplyReport, Change, DiffReport, PinState};
-use gamepadii_core::library::{ListReport, PullReport, Resolved};
+use gamepadii_core::library::theme::ColorView;
+use gamepadii_core::library::{ListReport, PullReport, Resolved, ResolvedTheme};
 use gamepadii_core::lights::{self, Kind, LightsReport, LightsWriteReport};
 use gamepadii_core::log::{self, LogEntry, LogReport};
 use gamepadii_core::mode::{BootMode, Confidence, InputMode};
-use gamepadii_core::slots::{PinView, SlotReport, SlotWriteReport};
+use gamepadii_core::slots::{self, PinView, SlotReport, SlotWriteReport};
 use gamepadii_core::udev;
 use serde::Serialize;
 
@@ -1143,9 +1144,11 @@ pub fn library_list(style: Style, r: &ListReport) -> String {
         return json(r);
     }
     let n = r.profiles.len();
+    let t = r.themes.len();
     let head = format!(
-        "{n} profile{} in the library",
-        if n == 1 { "" } else { "s" }
+        "{n} profile{} and {t} theme{} in the library",
+        if n == 1 { "" } else { "s" },
+        if t == 1 { "" } else { "s" }
     );
     let mut out = format!("{}\n", style.bold(&head));
     let mut rw = vec![(
@@ -1177,6 +1180,25 @@ pub fn library_list(style: Style, r: &ListReport) -> String {
             table(&["name", "base", "label", "file"], &lines),
         ));
     }
+    if !r.themes.is_empty() {
+        let lines: Vec<Vec<String>> = r
+            .themes
+            .iter()
+            .map(|t| {
+                vec![
+                    t.name.clone(),
+                    t.board.clone().unwrap_or_else(|| "any".into()),
+                    format!(
+                        "{}:{}{}",
+                        t.file,
+                        t.line,
+                        if t.ok { "" } else { " (see the errors)" }
+                    ),
+                ]
+            })
+            .collect();
+        rw.push(("themes", table(&["name", "board", "file"], &lines)));
+    }
     if !r.errors.is_empty() {
         let errors = r
             .errors
@@ -1199,9 +1221,11 @@ pub fn library_show(style: Style, r: &Resolved) -> String {
         .pins
         .iter()
         .map(|p| {
-            let action = match (&p.action_name, p.action) {
+            // In the name system of the profile: `A` for B1 in Xbox.
+            let name = p.action.and_then(|a| slots::action_name_in(r.names, a));
+            let action = match (name, p.action) {
                 (Some(n), Some(40)) => format!("{n} {:#x}/{:#x}", p.button_mask, p.dpad_mask),
-                (Some(n), _) => n.clone(),
+                (Some(n), _) => n,
                 (None, Some(a)) => a.to_string(),
                 (None, None) => "same as profile 1".into(),
             };
@@ -1229,10 +1253,97 @@ pub fn library_show(style: Style, r: &Resolved) -> String {
             r.input_mode
                 .map_or_else(|| "any".into(), |m| m.label().to_string()),
         ),
+        ("names", r.names.key().to_string()),
+        ("theme", r.theme.clone().unwrap_or_else(|| "none".into())),
         ("pins", table(&["button", "GPIO", "action", "from"], &lines)),
     ];
     rows(style, &mut out, &rw);
     out
+}
+
+/// A colour of a theme: `red`, `custom 0 (#8000ff)`.
+fn theme_color(c: &Option<ColorView>) -> String {
+    match c {
+        None => "-".into(),
+        Some(c) => match c.rgb {
+            Some(rgb) => format!("{} ({})", c.name, rgb.hex()),
+            None => c.name.clone(),
+        },
+    }
+}
+
+/// `library show` of a theme.
+pub fn library_theme(style: Style, r: &ResolvedTheme) -> String {
+    if style.format != Format::Human {
+        return json(r);
+    }
+    let mut out = format!("{}\n", style.bold(&format!("Theme {}", r.name)));
+    let mut rw = vec![
+        ("file", format!("{}:{}", r.file, r.line)),
+        (
+            "board",
+            match (&r.board, &r.firmware_board) {
+                (Some(b), Some(f)) => format!("{b} ({f})"),
+                _ => "any".into(),
+            },
+        ),
+        (
+            "colours",
+            match &r.colors {
+                None => "the custom colours of the pad do not change".into(),
+                Some(c) => c
+                    .iter()
+                    .enumerate()
+                    .map(|(n, c)| format!("custom {n} {}", c.hex()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
+        ),
+        ("idle", theme_color(&r.idle)),
+        ("pressed", theme_color(&r.pressed)),
+    ];
+    if !r.buttons.is_empty() {
+        let lines: Vec<Vec<String>> = r
+            .buttons
+            .iter()
+            .map(|b| {
+                vec![
+                    b.button.clone(),
+                    format!("{:>4}", b.gpio),
+                    theme_color(&b.idle),
+                    theme_color(&b.pressed),
+                ]
+            })
+            .collect();
+        rw.push((
+            "buttons",
+            table(&["button", "GPIO", "idle", "pressed"], &lines),
+        ));
+    }
+    rw.push(("case", theme_color(&r.case)));
+    if !r.fields.is_empty() {
+        let fields = r
+            .fields
+            .iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(s) => format!("{k} {s}"),
+                v => format!("{k} {v}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        rw.push(("lights", fields));
+    }
+    if r.colors.is_some() {
+        rw.push(("note", colors::SHARED.to_string()));
+    }
+    rows(style, &mut out, &rw);
+    out
+}
+
+/// The theme file of a library theme: always JSON, for `leds theme
+/// apply`.
+pub fn theme_file(f: &ThemeFile) -> String {
+    serde_json::to_string_pretty(f).expect("serialising plain data cannot fail")
 }
 
 /// The slot file of a library profile: always JSON, for `profile write`.
@@ -1422,10 +1533,20 @@ pub fn library_diff(style: Style, r: &DiffReport) -> String {
     out
 }
 
+/// The pins, then the theme when the profile has one.
 pub fn library_apply(style: Style, r: &ApplyReport) -> String {
     if style.format != Format::Human {
         return json(r);
     }
+    let mut out = library_apply_pins(style, r);
+    if let Some(l) = &r.lights {
+        out.push('\n');
+        out.push_str(&theme_apply_as(style, l, r.theme.as_deref()));
+    }
+    out
+}
+
+fn library_apply_pins(style: Style, r: &ApplyReport) -> String {
     let d = &r.diff;
     let Some(w) = &r.write else {
         let head = format!(
@@ -1778,6 +1899,12 @@ pub fn theme_show(style: Style, r: &ThemeReport) -> String {
 }
 
 pub fn theme_apply(style: Style, r: &ThemeApplyReport) -> String {
+    theme_apply_as(style, r, None)
+}
+
+/// The apply of a theme, with the name of a library theme when there is
+/// one.
+pub fn theme_apply_as(style: Style, r: &ThemeApplyReport, theme: Option<&str>) -> String {
     if style.format != Format::Human {
         return json(r);
     }
@@ -1787,7 +1914,10 @@ pub fn theme_apply(style: Style, r: &ThemeApplyReport) -> String {
         (false, true) => "saved",
         (false, false) => "written",
     };
-    let name = format!("Theme on lights profile {}", r.profile);
+    let name = match theme {
+        Some(t) => format!("Theme {t} on lights profile {}", r.profile),
+        None => format!("Theme on lights profile {}", r.profile),
+    };
     let mut out = format!("{} {what}\n", style.bold(&name));
     let colours = match r.colors {
         Some(n) => format!("{n} set, changed {}", custom_list(&r.colors_changed)),

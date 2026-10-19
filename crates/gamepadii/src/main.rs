@@ -319,21 +319,85 @@ fn main() -> ExitCode {
             finish(format, result)
         }
         Some(Command::Library {
-            command: LibraryCommand::Show { name, slot_file },
+            command:
+                LibraryCommand::Show {
+                    name,
+                    slot_file,
+                    theme_file,
+                },
         }) => {
             let dir = library::library_dir();
-            let result = Library::load(dir.as_deref())
-                .and_then(|l| l.resolve(&name))
-                .map(|r| match slot_file {
-                    // A file: JSON in any format, with an end of line.
-                    true if format == Format::Human => format!("{}\n", output::slot_file(&r)),
-                    true => output::slot_file(&r),
+            // A file: JSON in any format, with an end of line.
+            let file = |text: String| match format {
+                Format::Human => format!("{text}\n"),
+                _ => text,
+            };
+            let result = Library::load(dir.as_deref()).and_then(|l| {
+                if l.is_theme(&name) {
+                    if slot_file {
+                        return Err(Error::Usage(format!(
+                            "{name:?} is a theme: a theme has no slot file"
+                        )));
+                    }
+                    let t = l.resolve_theme(&name)?;
+                    return Ok(match theme_file {
+                        true => file(output::theme_file(&t.theme_file)),
+                        false => output::library_theme(style, &t),
+                    });
+                }
+                let r = l.resolve(&name)?;
+                if theme_file {
+                    let t = l.profile_theme(&r)?.ok_or_else(|| {
+                        Error::Usage(format!("profile {:?} has no theme", r.name))
+                    })?;
+                    return Ok(file(output::theme_file(&t.theme_file)));
+                }
+                Ok(match slot_file {
+                    true => file(output::slot_file(&r)),
                     false => output::library_show(style, &r),
-                });
+                })
+            });
             finish(format, result)
         }
         Some(Command::Library {
-            command: LibraryCommand::Pull { write, force },
+            command:
+                LibraryCommand::Theme {
+                    name,
+                    profile,
+                    save,
+                    no_backup,
+                },
+        }) => {
+            let clock = SystemClock::new();
+            let open = || open(&cli);
+            let env = env(
+                &cli,
+                &root,
+                &clock,
+                &open,
+                control,
+                Timeouts::default(),
+                !no_backup,
+            );
+            let apply = ThemeApply { profile, save };
+            let dir = library::library_dir();
+            let mut progress = reporter(format);
+            let result = Library::load(dir.as_deref())
+                .and_then(|l| l.resolve_theme(&name))
+                .and_then(|t| {
+                    let r = flow::theme_apply(&env, &t.theme_file, &apply, &mut progress)?;
+                    Ok(output::theme_apply_as(style, &r, Some(&t.name)))
+                });
+            drop(progress);
+            finish(format, result)
+        }
+        Some(Command::Library {
+            command:
+                LibraryCommand::Pull {
+                    write,
+                    force,
+                    names,
+                },
         }) => {
             let clock = SystemClock::new();
             let open = || open(&cli);
@@ -346,7 +410,7 @@ fn main() -> ExitCode {
                 Timeouts::default(),
                 false,
             );
-            let result = flow::library_pull(&env).and_then(|mut r| {
+            let result = flow::library_pull(&env, names).and_then(|mut r| {
                 if let Some(path) = write {
                     let path = path.unwrap_or_else(|| format!("{}.kdl", r.board).into());
                     let dir = library::library_dir();
@@ -393,6 +457,7 @@ fn main() -> ExitCode {
                     select,
                     save,
                     no_backup,
+                    no_lights,
                 },
         }) => {
             let clock = SystemClock::new();
@@ -410,8 +475,18 @@ fn main() -> ExitCode {
             let dir = library::library_dir();
             let mut progress = reporter(format);
             let result = Library::load(dir.as_deref())
-                .and_then(|l| l.resolve(&name))
-                .and_then(|p| flow::library_apply(&env, &p, &apply, &mut progress))
+                .and_then(|l| {
+                    let p = l.resolve(&name)?;
+                    let theme = match no_lights {
+                        true => None,
+                        false => l.profile_theme(&p)?,
+                    };
+                    Ok((p, theme))
+                })
+                .and_then(|(p, t)| {
+                    let t = t.map(|t| t.theme_file);
+                    flow::library_apply(&env, &p, t.as_ref(), &apply, &mut progress)
+                })
                 .map(|r| output::library_apply(style, &r));
             drop(progress);
             finish(format, result)

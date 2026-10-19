@@ -7,11 +7,12 @@ The profile library on this computer: KDL files in ~/.config/gamepadii/profiles/
 Usage: gamepadii library [OPTIONS] <COMMAND>
 
 Commands:
-  list   List the profiles in the library, with their file, base and label. It also shows each file that does not parse, and each profile that does not pass the checks
-  show   Show a profile with its bases applied: the action of each button, and the profile that gives it
+  list   List the profiles and the themes in the library, with their file. It also shows each file that does not parse, and each profile or theme that does not pass the checks
+  show   Show a profile with its bases applied: the action of each button, and the profile that gives it. For a theme: its colours and effects
   pull   Read the enabled profiles of the pad, live, and write them as KDL (needs control channel v1.4 of the gamepadii firmware). It reads only: it changes nothing on the pad
   diff   Compare a library profile with a slot of the pad, live (needs control channel v1.4). It shows what `library apply` writes: the label, the state, and each button that changes. It reads only. Exit 0: no change; exit 1: `apply` writes
-  apply  Write a library profile to a slot of the pad, live, with no reboot (needs control channel v1.4). RAM only unless --save. gamepadii backs up the slot first, and writes nothing when the slot has the profile already. It does not change the input mode
+  apply  Write a library profile to a slot of the pad, live, with no reboot (needs control channel v1.4). RAM only unless --save. gamepadii backs up the slot first, and writes nothing when the slot has the profile already. It does not change the input mode. When the profile has a theme, gamepadii then applies the theme to the lights profile that runs, as `library theme` does
+  theme  Apply a library theme to the LEDs, live, with no reboot (needs control channel v1.5, and v1.9 for #rrggbb colours): first its custom colours, then its lights profile fields. The lights profile becomes the one that runs. RAM only unless --save. gamepadii backs up the colours and the profile first. The custom colours are global: the other lights profiles that use them change too
   help   Print this message or the help of the given subcommand(s)
 
 Options:

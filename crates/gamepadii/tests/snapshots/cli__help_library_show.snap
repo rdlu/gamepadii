@@ -2,13 +2,13 @@
 source: crates/gamepadii/tests/cli.rs
 expression: "help(&[\"library\", \"show\"])"
 ---
-Show a profile with its bases applied: the action of each button, and the profile that gives it
+Show a profile with its bases applied: the action of each button, and the profile that gives it. For a theme: its colours and effects
 
 Usage: gamepadii library show [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          The name of the profile, any case
+          The name of the profile or the theme, any case
 
 Options:
       --format <FORMAT>
@@ -26,6 +26,9 @@ Options:
 
       --json
           Same as `--format json`
+
+      --theme-file
+          Print the theme file for `gamepadii leds theme apply` (JSON): of the theme, or of the theme of the profile
 
       --host <HOST>
           Talk to the web configurator at HOST (host, host:port or http://host) without looking for the pad on USB first. The default is to find it on USB and use 192.168.7.1

@@ -2,18 +2,22 @@
 source: crates/gamepadii/tests/output.rs
 expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\\n{}\", output::library_list(human(), &list),\noutput::library_show(human(), &show), output::library_pull(human(), &pull),\noutput::library_list(json(), &list),\n&json_show[..json_show.find(\"\\\"pins\\\"\").unwrap()], output::slot_file(&show),)"
 ---
-8 profiles in the library
+9 profiles and 2 themes in the library
 directory     /profiles
-profiles      name         base     label        file
-              Default      -        Default      /profiles/pad.kdl:4
-              SilkSong     Default  SilkSong     /profiles/pad.kdl:31
-              Celeste      Default  Celeste      /profiles/pad.kdl:46
-              DKC          Default  DKC          /profiles/pad.kdl:53
-              TGX          Default  TGX          /profiles/pad.kdl:67
-              Hades        Default  Hades        /profiles/hades.kdl:1 (see the errors)
-              My Game      Default  My Game      (shipped) examples/per-game.kdl:6
-              My Game Alt  My Game  My Game Alt  (shipped) examples/per-game.kdl:22
-errors        /profiles/hades.kdl:3:10: unknown button "thumb": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, fn1, fn2, fn3, fn4, turbo
+profiles      name          base     label        file
+              Default       -        Default      /profiles/pad.kdl:4
+              SilkSong      Default  SilkSong     /profiles/pad.kdl:31
+              Celeste       Default  Celeste      /profiles/pad.kdl:46
+              DKC           Default  DKC          /profiles/pad.kdl:53
+              TGX           Default  TGX          /profiles/pad.kdl:67
+              Hades         Default  Hades        /profiles/hades.kdl:1 (see the errors)
+              My Game       Default  My Game      (shipped) examples/per-game.kdl:6
+              My Game Alt   My Game  My Game Alt  (shipped) examples/per-game.kdl:22
+              My Game Xbox  Default  My Game X    (shipped) examples/xbox-names.kdl:8
+themes        name          board        file
+              purple-green  haute42-s16  (shipped) examples/themes.kdl:18
+              snes          haute42-s16  (shipped) examples/themes.kdl:28
+errors        /profiles/hades.kdl:3:10: unknown button "thumb": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, touchpad, home, share, options, turbo
 
 Profile My Game
 file          (shipped) examples/per-game.kdl:6
@@ -21,28 +25,30 @@ bases         Default
 board         haute42-s16 (Haute42COSMOX)
 label         My Game
 input mode    XInput
-pins          button  GPIO  action                  from
-              left       5  Left                    Default
-              down       3  Down                    Default
-              right      4  Right                   Default
-              m1        27  Up                      Default
-              up         2  B1                      My Game
-              m2        26  L1                      My Game
-              rs        19  R1                      My Game
-              ls        18  L3                      Default
-              p1        10  B3                      Default
-              p2        11  B4                      Default
-              p3        12  R1                      Default
-              p4        13  L1                      Default
-              k1         6  B1                      Default
-              k2         7  B2                      Default
-              k3         8  R2                      Default
-              k4         9  L2                      Default
-              fn1       21  A2                      Default
-              fn2       20  A1                      Default
-              fn3       16  S1                      Default
-              fn4       17  S2                      Default
-              turbo     14  menu-navigation-toggle  Default
+names         gp2040
+theme         none
+pins          button    GPIO  action                  from
+              left         5  Left                    Default
+              down         3  Down                    Default
+              right        4  Right                   Default
+              m1          27  Up                      Default
+              up           2  B1                      My Game
+              m2          26  L1                      My Game
+              rs          19  R1                      My Game
+              ls          18  L3                      Default
+              p1          10  B3                      Default
+              p2          11  B4                      Default
+              p3          12  R1                      Default
+              p4          13  L1                      Default
+              k1           6  B1                      Default
+              k2           7  B2                      Default
+              k3           8  R2                      Default
+              k4           9  L2                      Default
+              touchpad    21  A2                      Default
+              home        20  A1                      Default
+              share       16  S1                      Default
+              options     17  S2                      Default
+              turbo       14  menu-navigation-toggle  Default
 
 5 profiles pulled into /profiles/pad.kdl
 profiles      1 Default
@@ -128,6 +134,33 @@ via           the control channel (/dev/bus/usb/003/007)
       "base": "My Game",
       "label": "My Game Alt",
       "ok": true
+    },
+    {
+      "name": "My Game Xbox",
+      "file": "(shipped) examples/xbox-names.kdl",
+      "shipped": true,
+      "line": 8,
+      "base": "Default",
+      "label": "My Game X",
+      "ok": true
+    }
+  ],
+  "themes": [
+    {
+      "name": "purple-green",
+      "file": "(shipped) examples/themes.kdl",
+      "shipped": true,
+      "line": 18,
+      "board": "haute42-s16",
+      "ok": true
+    },
+    {
+      "name": "snes",
+      "file": "(shipped) examples/themes.kdl",
+      "shipped": true,
+      "line": 28,
+      "board": "haute42-s16",
+      "ok": true
     }
   ],
   "errors": [
@@ -135,7 +168,7 @@ via           the control channel (/dev/bus/usb/003/007)
       "file": "/profiles/hades.kdl",
       "line": 3,
       "column": 10,
-      "message": "unknown button \"thumb\": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, fn1, fn2, fn3, fn4, turbo"
+      "message": "unknown button \"thumb\": haute42-s16 has left, down, right, m1, up, m2, rs, ls, p1, p2, p3, p4, k1, k2, k3, k4, touchpad, home, share, options, turbo"
     }
   ]
 }
@@ -152,6 +185,8 @@ via           the control channel (/dev/bus/usb/003/007)
   "firmware_board": "Haute42COSMOX",
   "label": "My Game",
   "input_mode": "xinput",
+  "names": "gp2040",
+  "theme": null,
   
 {
   "schema": 1,

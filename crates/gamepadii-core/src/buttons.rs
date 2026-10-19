@@ -16,7 +16,8 @@ use serde::{Serialize, Serializer};
 use crate::api::{PinMappings, ProfileOptions};
 
 macro_rules! buttons {
-    ($($variant:ident => $action:literal, $name:literal, $xbox:literal;)*) => {
+    ($($variant:ident => $action:literal, $name:literal, $xbox:literal, $ps:literal,
+       $switch:literal;)*) => {
         /// A logical button, as `GpioAction::BUTTON_PRESS_*` names it.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Button {
@@ -48,44 +49,61 @@ macro_rules! buttons {
                     $(Button::$variant => $xbox,)*
                 }
             }
+
+            /// The PS4 label from the same file (`Cross`, `Options`), or
+            /// the GP2040 name where PlayStation has none. The file calls
+            /// A2 "Touchpad Center"; this table calls it `Touchpad`.
+            pub const fn playstation(self) -> &'static str {
+                match self {
+                    $(Button::$variant => $ps,)*
+                }
+            }
+
+            /// The Switch label from the same file (`B`, `Plus`, `ZL`), or
+            /// the GP2040 name where Switch has none.
+            pub const fn switch(self) -> &'static str {
+                match self {
+                    $(Button::$variant => $switch,)*
+                }
+            }
         }
     };
 }
 
 buttons! {
-    Up => 1, "Up", "Up";
-    Down => 2, "Down", "Down";
-    Left => 3, "Left", "Left";
-    Right => 4, "Right", "Right";
-    B1 => 5, "B1", "A";
-    B2 => 6, "B2", "B";
-    B3 => 7, "B3", "X";
-    B4 => 8, "B4", "Y";
-    L1 => 9, "L1", "LB";
-    R1 => 10, "R1", "RB";
-    L2 => 11, "L2", "LT";
-    R2 => 12, "R2", "RT";
-    S1 => 13, "S1", "Back";
-    S2 => 14, "S2", "Start";
-    A1 => 15, "A1", "Guide";
-    A2 => 16, "A2", "A2";
-    L3 => 17, "L3", "LS";
-    R3 => 18, "R3", "RS";
-    Fn => 19, "Fn", "Fn";
-    A3 => 41, "A3", "A3";
-    A4 => 42, "A4", "A4";
-    E1 => 43, "E1", "E1";
-    E2 => 44, "E2", "E2";
-    E3 => 45, "E3", "E3";
-    E4 => 46, "E4", "E4";
-    E5 => 47, "E5", "E5";
-    E6 => 48, "E6", "E6";
-    E7 => 49, "E7", "E7";
-    E8 => 50, "E8", "E8";
-    E9 => 51, "E9", "E9";
-    E10 => 52, "E10", "E10";
-    E11 => 53, "E11", "E11";
-    E12 => 54, "E12", "E12";
+    Up => 1, "Up", "Up", "Up", "Up";
+    Down => 2, "Down", "Down", "Down", "Down";
+    Left => 3, "Left", "Left", "Left", "Left";
+    Right => 4, "Right", "Right", "Right", "Right";
+    B1 => 5, "B1", "A", "Cross", "B";
+    B2 => 6, "B2", "B", "Circle", "A";
+    B3 => 7, "B3", "X", "Square", "Y";
+    B4 => 8, "B4", "Y", "Triangle", "X";
+    L1 => 9, "L1", "LB", "L1", "L";
+    R1 => 10, "R1", "RB", "R1", "R";
+    L2 => 11, "L2", "LT", "L2", "ZL";
+    R2 => 12, "R2", "RT", "R2", "ZR";
+    S1 => 13, "S1", "Back", "Share", "Minus";
+    S2 => 14, "S2", "Start", "Options", "Plus";
+    A1 => 15, "A1", "Guide", "PS", "Home";
+    A2 => 16, "A2", "A2", "Touchpad", "Capture";
+    L3 => 17, "L3", "LS", "L3", "LS";
+    R3 => 18, "R3", "RS", "R3", "RS";
+    Fn => 19, "Fn", "Fn", "Fn", "Fn";
+    A3 => 41, "A3", "A3", "A3", "A3";
+    A4 => 42, "A4", "A4", "A4", "A4";
+    E1 => 43, "E1", "E1", "E1", "E1";
+    E2 => 44, "E2", "E2", "E2", "E2";
+    E3 => 45, "E3", "E3", "E3", "E3";
+    E4 => 46, "E4", "E4", "E4", "E4";
+    E5 => 47, "E5", "E5", "E5", "E5";
+    E6 => 48, "E6", "E6", "E6", "E6";
+    E7 => 49, "E7", "E7", "E7", "E7";
+    E8 => 50, "E8", "E8", "E8", "E8";
+    E9 => 51, "E9", "E9", "E9", "E9";
+    E10 => 52, "E10", "E10", "E10", "E10";
+    E11 => 53, "E11", "E11", "E11", "E11";
+    E12 => 54, "E12", "E12", "E12", "E12";
 }
 
 impl Button {
@@ -117,6 +135,127 @@ impl fmt::Display for Button {
 impl Serialize for Button {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(self.name())
+    }
+}
+
+/// A name system: the names of the logical buttons on one console. A
+/// library file names its actions in one system, because one word can
+/// have two meanings: `A` is B1 for Xbox and B2 for Switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NameSystem {
+    /// GP2040-CE's names: `B1`, `S2`.
+    #[default]
+    Gp2040,
+    Xbox,
+    Playstation,
+    Switch,
+}
+
+/// More names for a button in a system: the names of newer consoles.
+pub const MORE_NAMES: &[(NameSystem, &str, Button)] = &[
+    (NameSystem::Xbox, "View", Button::S1),
+    (NameSystem::Xbox, "Menu", Button::S2),
+    (NameSystem::Playstation, "Create", Button::S1),
+];
+
+/// Lower case, letters and digits only: `Touch-pad` is `touchpad`.
+fn normal(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+impl NameSystem {
+    pub const ALL: &[NameSystem] = &[
+        NameSystem::Gp2040,
+        NameSystem::Xbox,
+        NameSystem::Playstation,
+        NameSystem::Switch,
+    ];
+
+    /// The name in a library file and on the command line.
+    pub const fn key(self) -> &'static str {
+        match self {
+            NameSystem::Gp2040 => "gp2040",
+            NameSystem::Xbox => "xbox",
+            NameSystem::Playstation => "playstation",
+            NameSystem::Switch => "switch",
+        }
+    }
+
+    /// The name of `b` in this system; the GP2040 name where the system
+    /// has none.
+    pub const fn label(self, b: Button) -> &'static str {
+        match self {
+            NameSystem::Gp2040 => b.name(),
+            NameSystem::Xbox => b.xbox(),
+            NameSystem::Playstation => b.playstation(),
+            NameSystem::Switch => b.switch(),
+        }
+    }
+
+    /// The button that `name` names in this system (any case), by its
+    /// label or by one of [`MORE_NAMES`]. GP2040 names are not in it.
+    pub fn button(self, name: &str) -> Option<Button> {
+        let want = normal(name);
+        Button::ALL
+            .iter()
+            .copied()
+            .find(|b| normal(self.label(*b)) == want)
+            .or_else(|| {
+                MORE_NAMES
+                    .iter()
+                    .find(|(s, n, _)| *s == self && normal(n) == want)
+                    .map(|(_, _, b)| *b)
+            })
+    }
+
+    /// The names of the system, for an error: `A (B1), B (B2), ...`, with
+    /// the more names after the label: `Back/View (S1)`.
+    pub fn names(self) -> String {
+        Button::ALL
+            .iter()
+            .filter(|b| self == NameSystem::Gp2040 || self.label(**b) != b.name())
+            .map(|b| {
+                let mut n = self.label(*b).to_string();
+                for (_, more, _) in MORE_NAMES.iter().filter(|(s, _, o)| *s == self && o == b) {
+                    n.push('/');
+                    n.push_str(more);
+                }
+                match self {
+                    NameSystem::Gp2040 => n,
+                    _ => format!("{n} ({})", b.name()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl fmt::Display for NameSystem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.key())
+    }
+}
+
+impl std::str::FromStr for NameSystem {
+    type Err = String;
+
+    /// The key in any case; `ps` is `playstation`.
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.to_ascii_lowercase();
+        if s == "ps" {
+            return Ok(NameSystem::Playstation);
+        }
+        NameSystem::ALL
+            .iter()
+            .copied()
+            .find(|n| n.key() == s)
+            .ok_or_else(|| {
+                format!("{s:?} is not a name system (gp2040, xbox, playstation, switch)")
+            })
     }
 }
 
@@ -369,6 +508,30 @@ mod tests {
         );
         assert_eq!(Button::S2.both(), "S2 (Start)");
         assert_eq!(Button::Up.both(), "Up");
+    }
+
+    #[test]
+    fn name_systems() {
+        use NameSystem::*;
+        assert_eq!(Xbox.button("a"), Some(Button::B1));
+        assert_eq!(Switch.button("A"), Some(Button::B2));
+        assert_eq!(Playstation.button("cross"), Some(Button::B1));
+        assert_eq!(Playstation.button("Touch-pad"), Some(Button::A2));
+        assert_eq!(Switch.button("capture"), Some(Button::A2));
+        assert_eq!(Xbox.button("view"), Some(Button::S1));
+        assert_eq!(Xbox.button("Menu"), Some(Button::S2));
+        assert_eq!(Playstation.button("create"), Some(Button::S1));
+        assert_eq!(Switch.button("ZR"), Some(Button::R2));
+        assert_eq!(Gp2040.button("a"), None);
+        assert_eq!(Switch.button("View"), None, "an Xbox name");
+        // Xbox has no name for A2.
+        assert_eq!(Xbox.label(Button::A2), "A2");
+        assert_eq!("PS".parse(), Ok(Playstation));
+        assert_eq!("Switch".parse(), Ok(Switch));
+        assert!("snes".parse::<NameSystem>().is_err());
+        assert!(Xbox.names().starts_with("A (B1), B (B2), X (B3)"));
+        assert!(Xbox.names().contains("Back/View (S1)"));
+        assert!(Gp2040.names().starts_with("Up, Down, Left, Right, B1"));
     }
 
     #[test]
