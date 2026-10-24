@@ -49,6 +49,7 @@ it here in the same change.
 | D-pad | The four direction buttons: up, down, left and right. |
 | debounce | A check that a button change stays for some reads, so that a short electrical change (a bounce) does not count as a press. |
 | diff | The list of the differences between two versions of a thing. `gamepadii library diff` shows the differences between a library profile and a slot of the pad. |
+| Dependabot | The GitHub service that opens PRs to update the crates and the GitHub Actions. |
 | effect | The LED animation of a lights profile, for example `static-color` or `rainbow-synced`. A lights profile has one when a button is released, one when it is pressed, and one for the case. |
 | endpoint | One address of the web-config server, for example `/api/getGamepadOptions`. |
 | firmware line | A family of firmware versions: the v0.7.12 release, or the upstream main branch. The two lines have different settings and endpoints. |
@@ -77,13 +78,16 @@ it here in the same change.
 | OLED | The small display on the pad. It shows the buttons and the active profile. |
 | panic | A firmware failure that stops the firmware. Our firmware writes the message to the log and then restarts the pad. |
 | pin scan | A temporary state that PIN_SCAN starts (control channel 1.7). Each pin with no action and no function becomes an input, so that gamepadii can read a button on it. It changes no setting. |
+| PAT (personal access token) | A secret text that gives a program access to GitHub with the rights of a user. The release workflow uses one. |
 | PR (pull request) | A request to merge a branch into `main` on GitHub. |
 | profile | A set of button mappings on the pad. The pad has up to 6 profiles. |
 | profile slot | One of the 6 places on the pad for a profile. Profile 1 is the board's own mapping. gamepadii can write slots 2 to 6. |
 | protobuf | A binary format for structured data. The firmware keeps its settings in this format. |
 | pull-up | A resistor in the chip that keeps an input pin high when nothing pushes it low. A pushed button makes the pin low. |
 | RAM only | A change that the pad keeps until it restarts. The pad does not write it to flash memory. |
-| release | A firmware version that the GP2040-CE project published with a version number, for example v0.7.12. |
+| release | A version that a project published with a version number: a GP2040-CE firmware version (v0.7.12) or a gamepadii version (v0.1.0). |
+| release PR | The PR that release-plz keeps open. It has the next gamepadii version and its CHANGELOG section. A merge of it makes the release. |
+| release-plz | The tool that makes the release PR, and the tag and the GitHub release after the merge. |
 | RGB | A colour as three values: red, green and blue, 0 to 255 each. gamepadii writes it in hex, as `#rrggbb`. |
 | S16 | The Haute42 S16, the first pad that gamepadii supports. |
 | sequence number | The number of one record in the log of the pad. The pad counts the records from 0, from the start of the log. |
@@ -94,6 +98,7 @@ it here in the same change.
 | STALL | The USB reply that tells the host that the firmware did not accept a request. |
 | stick | An analog control of a gamepad, with an X and a Y axis. The S16 has no stick: the firmware gives the axes at the centre. |
 | stock | Firmware from the GP2040-CE project, without our changes. |
+| tag | A git name for one commit. A gamepadii release has the tag `vX.Y.Z`. |
 | test-boot build | A build for tests only. It starts in web-config after each installation, so that a test can continue without a person. |
 | theme | In the profile library, a `theme` node: the colours and effects of one lights profile, by button name. gamepadii makes a theme file from it. Not the same as a custom theme. |
 | theme file | A JSON file with custom colours and the fields of one lights profile. `gamepadii leds theme show --json` makes one, and `gamepadii leds theme apply` reads one. |

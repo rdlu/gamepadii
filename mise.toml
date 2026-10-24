@@ -48,3 +48,7 @@ run = ["cargo update", { task = "check" }]
 [tasks.demos]
 description = "Make the README demos again (needs vhs, ffmpeg and the 0xProto Nerd Font)"
 run = "docs/demos/build.sh"
+
+[tasks.release-preview]
+description = "Show the next version and CHANGELOG section that release-plz makes (needs release-plz)"
+run = "release-plz update && git --no-pager diff && git checkout -- CHANGELOG.md Cargo.toml Cargo.lock"
