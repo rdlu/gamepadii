@@ -18,8 +18,15 @@ cargo run -- [args]
 
 All three of test, fmt --check and clippy must pass before a commit
 (`mise run check`). `mise tasks` lists the rest: `test-live`, `review`,
-`status`, `install`, `outdated`, `update`. CI is `.github/workflows/ci.yml`;
-every action is pinned to a commit SHA with its version in a comment.
+`status`, `install`, `outdated`, `update`, `release-preview`. CI is
+`.github/workflows/ci.yml`; every action is pinned to a commit SHA with its
+version in a comment. Dependabot (`.github/dependabot.yml`) keeps the crates
+and the actions current.
+
+Releases: release-plz keeps a release PR open; a merge of it makes the tag
+and the GitHub release (`docs/RELEASE.md`, `release-plz.toml`). The commit
+types set the version and the CHANGELOG, so use them correctly. Do not merge
+a release PR without the user's OK: it publishes a version.
 
 ## Conventions
 

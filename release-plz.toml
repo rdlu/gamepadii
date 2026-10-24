@@ -1,0 +1,58 @@
+# release-plz keeps a release PR open with the next version and the CHANGELOG
+# section. A merge of that PR makes the tag and the GitHub release
+# (.github/workflows/release-plz.yml). The steps are in docs/RELEASE.md.
+
+[workspace]
+# The versions come from the git tags, not from crates.io. Nothing is published.
+git_only = true
+publish = false
+semver_check = false
+# Release only when a release PR is merged, not at each push to main.
+release_always = false
+pr_labels = ["release"]
+# In 0.x, a feat gives the next minor version (0.1.0 -> 0.2.0), a fix the next patch.
+features_always_increment_minor = true
+# Only these commits ask for a release. docs, chore, ci and test commits do not.
+# For a security fix in a dependency, give the commit the type fix(deps).
+release_commits = "^(feat|fix|perf|revert)"
+
+# The two crates have one version, one tag and one CHANGELOG.
+[[package]]
+name = "gamepadii"
+changelog_path = "CHANGELOG.md"
+changelog_include = ["gamepadii-core"]
+git_tag_name = "v{{ version }}"
+version_group = "gamepadii"
+
+# The core reads its last version from the same tag, and makes no tag or release.
+[[package]]
+name = "gamepadii-core"
+version_group = "gamepadii"
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[changelog]
+# Only user-facing commits go in the CHANGELOG. Edit the text in the release PR.
+body = """
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor -%}
+"""
+trim = false
+protect_breaking_commits = true
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Added" },
+  { message = "^fix", group = "<!-- 1 -->Fixed" },
+  { message = "^(perf|revert)", group = "<!-- 2 -->Changed" },
+  { message = ".*", skip = true },
+]
+postprocessors = [
+  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/rdlu/gamepadii/pull/${1}))" },
+]
