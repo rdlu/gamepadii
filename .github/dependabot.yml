@@ -1,0 +1,32 @@
+# Weekly update PRs for the Rust crates and the GitHub Actions.
+# Each ecosystem gets one grouped PR. CI must pass before a merge.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # kdl 6.6 and later need Rust 1.95; the MSRV is 1.88 (see Cargo.toml).
+      # Remove this entry when the MSRV changes.
+      - dependency-name: kdl
+        versions: [">= 6.6"]
+
+  # Dependabot keeps the commit SHA pins and the version comments in ci.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
